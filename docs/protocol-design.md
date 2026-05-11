@@ -19,6 +19,28 @@ This document is the deeper engineering companion to the README. The README sell
 
 ---
 
+## What yDelta does differently
+
+A fixed-rate lending protocol can ship any subset of the properties below. yDelta is designed so that all of them are **structural** — not curator-toggles, not optional features, not bolt-ons that activate on configuration.
+
+**Capital is yield-alive across the entire lifecycle.** Every atom under protocol control sits on marginfi. This applies to lender capital waiting for a match, borrower collateral securing an active loan, idle vault liquidity, and principal a borrower has drawn but not yet withdrawn to their wallet. The protocol has no notion of "in-escrow but not earning."
+
+**The orderbook has a structural variable-rate backstop, and the variable portion is upgradeable.** Borrow intent that exceeds available fixed-rate liquidity falls through to marginfi at variable rate, so the borrower never faces a partial-fill cliff. When better fixed-rate terms appear later, the borrower can opportunistically convert the variable portion back to fixed-rate. The fallback is a backstop, not a one-way commitment.
+
+**Vaults express multiple curator strategies on one capital pool per asset.** A single `GlobalVault` per mint hosts many independent `RiskProfile`s, each with its own curator, LTV ceiling, term cap, and per-market exposure cap. A depositor can hold positions in multiple profiles inside the same vault; a profile can quote across up to 8 markets simultaneously. Strategy diversity does not require fragmenting depositor capital into separate vault accounts.
+
+**Risk preferences are symmetric.** Both lenders and borrowers declare LTV explicitly. The match condition is strict transitivity — `actual ≤ borrower-declared ≤ profile-cap ≤ protocol-floor` — which lets the orderbook self-segment into risk tiers without an off-chain matchmaker.
+
+**Fixed terms run to maturity.** A loan opens at the locked rate, accrues for the full term, and resolves on borrower repay or keeper settlement after grace. There is no auto-rolling into shorter terms. Repricing is opt-in (and only available to borrowers on the variable-rate fallback), never imposed by the protocol.
+
+**Lenders can exit before maturity through the same matching engine.** Secondary loan-sale orders rest on the primary bids tree and cross against fresh asks at par. The borrower's terms are unchanged because they are contractual. The secondary path reuses the primary matching engine, LTV math, and cranker flow — not a separate venue.
+
+**Order placement is zero-CPI on the fast path.** Encumbrance is bookkeeping, not a token transfer. Placing, canceling, updating, and matching against a wallet-side maker fires no CPIs — only deposit, withdraw, repay, claim, and the P2Pool fallback path touch external programs. Makers can reprice continuously without compute tax per adjustment.
+
+The combination is the protocol's identity: credit is priced on the orderbook, backstopped by marginfi, kept productive in every state, and shaped by both sides of the trade — all built on one shared set of mechanisms.
+
+---
+
 ## 1. Market model
 
 At the highest level, yDelta matches:
@@ -411,6 +433,27 @@ This does two things for the protocol:
 
 Using `p0` is not only about fallback liquidity today. It is also about choosing a rail that makes broader Solana protocol access easier to build around over time.
 
+### 14.1 Upgrading variable-rate debt to fixed-rate
+
+The fallback path is reversible. A borrower who took on `P2Pool` debt is not locked into the variable rate for the loan's life.
+
+`convert_p2pool_to_fixed` lets a borrower walk the asks tree against their existing P2Pool position and convert any portion that crosses into fresh fixed-rate loan bodies. The cross gate is:
+
+```text
+ask.rate_bps      ≤ max_acceptable_rate_bps
+ask.term_seconds  ≥ remaining_term_of_p2pool_loan
+```
+
+Each successful cross emits a fresh `Fixed` `MatchedLoan` queue node. Any unfilled residual stays on the original P2Pool body. Full conversion closes the P2Pool PDA.
+
+Conceptually:
+
+- the fallback is a backstop, not a one-way commitment
+- borrowers can opportunistically reprice when fixed-rate liquidity appears
+- the same matching engine is reused — no separate "refinance" codepath
+
+This closes the loop on the two-layer posture: variable-rate borrows are not strictly worse than fixed-rate borrows, because the borrower can migrate up whenever the book offers them better terms.
+
 The strategic posture: **the orderbook is where credit gets priced; marginfi is where credit gets backstopped.** The two layers complement rather than compete.
 
 ---
@@ -491,14 +534,95 @@ Resolution does not need to be all-or-nothing. Positions can be reduced in steps
 
 ---
 
-## 19. Reading the implementation
+## 19. Execution efficiency
+
+Fixed-rate orderbooks on Solana have to do orderbook work at orderbook speed. yDelta hits this by keeping `place_order` / `cancel_order` / `update_order` as pure bookkeeping on the market account whenever possible.
+
+The seat-share invariant from §3 is what enables this:
+
+```text
+encumbrance is a number that moves between two slots on a seat,
+not a token transfer that has to round-trip through a bank.
+```
+
+Operationally:
+
+- a wallet-side bid matching a wallet-side ask fires **zero CPIs**
+- `cancel_order` and `update_order` fire **zero CPIs**
+- only `deposit`, `withdraw`, `repay`, and the P2Pool fallback path actually need to touch marginfi
+
+The consequence is a market that can hold orders of magnitude more live state per unit of compute. A book with 100k resting orders, where every cancel-and-reprice is a pure-memory mutation, costs dramatically less than one where every operation has to round-trip through an external lending pool.
+
+This matters for liquidity. Market makers reprice constantly. A protocol that taxes each reprice with CPI overhead pushes makers to quote wider, less often, in fewer markets. yDelta is designed so that quote churn is structurally cheap, which means the book can carry tighter, deeper, more responsive liquidity.
+
+---
+
+## 20. Two marginfi accounts per market
+
+A single marginfi v0.1.8 account cannot simultaneously hold an asset position and a liability position on the same bank. That constraint matters here because a yDelta market has both:
+
+- lender USDC sitting as an asset on the debt bank
+- borrower USDC liability (via P2Pool fallback) on the same debt bank
+
+If both lived on the same account, the second flow would be blocked by marginfi's per-`(account, bank)` mutual exclusion.
+
+yDelta sidesteps the constraint by wrapping **two** marginfi accounts per market:
+
+- a lender-side account that holds the debt-mint asset
+- a borrower-side account that holds the collateral asset and any P2Pool debt liability
+
+Both accounts have the same authority (`market_signer`), so the program can sign for either side. The split is invisible to users — they see a single market, deposit and withdraw normally — but it is what lets the protocol express both halves of a credit flow against the same underlying bank without giving up the yield-alive property on either side.
+
+This is the cleanest example of how yDelta's design works with marginfi's constraints rather than around them.
+
+---
+
+## 21. Admin and pause primitives
+
+Every admin role in the protocol — market admin, vault admin, profile curator, protocol-wide admin — uses a two-step transfer pattern:
+
+```text
+initiate_transfer  →  sets pending_admin
+accept_transfer    →  pending_admin signs to commit
+```
+
+This prevents the most common admin-key footgun: a transfer to a non-controlled key. A typo in the initiator's instruction data cannot brick the role, because nothing has changed yet on the receiving side. The would-be successor has to actively sign before they take over.
+
+There are also two kill switches:
+
+- **per-market pause** — admin-set; while on, every state-mutating ix on that market rejects, while read-only ixs (mirror sync, simulation gates) stay live
+- **global pause** — protocol-admin-set; same gating, but applied at the loader level across every ix that takes the `global_config` account
+
+The design intent is that emergencies can be contained without redeploying the program. A market that loses oracle freshness, a vault that hits an accounting anomaly, a marginfi-side issue that needs to be quarantined — any of these can be frozen at the affected scope while the rest of the protocol keeps running.
+
+Fresh markets ship paused by default. The admin has to explicitly unpause after verifying fee config, marginfi wiring, and oracle plumbing. This is defense-in-depth against the "fresh keypair every run" hazard in setup scripts.
+
+---
+
+## 22. Oracle integration
+
+LTV math is only as trustworthy as the price feeds underneath it. yDelta accepts three oracle shapes through the marginfi adapter:
+
+- **Pyth-Push** — single oracle account; rejects partial-verified updates outright (`MIN_PYTH_PUSH_VERIFICATION_LEVEL = Full`)
+- **Switchboard-Pull** — single oracle account; decoded from the pulled feed's result value
+- **StakedWithPythPush** — three accounts (Pyth feed + LST mint + stake state); the Pyth SOL price is adjusted by the stake-pool's accounting to derive the LST exchange rate
+
+Every oracle read passes a confidence-interval check before LTV math runs. The threshold is `bank.config.oracle_max_confidence × price` (default 10%). A volatile or unconfident reading rejects the LTV gate rather than producing a degraded number.
+
+The design intent is uniform across feeds: a stale, retracted, or low-confidence price is **not** a price for purposes of LTV. The match-time check fails closed. This pushes the failure mode toward "loan doesn't open" rather than "loan opens at the wrong LTV" — the safer of the two.
+
+---
+
+## 23. Reading the implementation
 
 The codebase maps closely to the design:
 
 - `programs/ydelta/src/program/processor/place_order.rs` — primary order flow, borrower LTV checks, fallback routing
-- `programs/ydelta/src/state/market.rs` — market-level state and fee configuration
+- `programs/ydelta/src/program/processor/convert_p2pool_to_fixed.rs` — the variable-to-fixed upgrade path
+- `programs/ydelta/src/state/market.rs` — market-level state, fee configuration, split integration accounts
 - `programs/ydelta/src/state/vault.rs` — `GlobalVault` and risk-profile accounting
 - `programs/ydelta/src/state/loan.rs` — promoted fixed-loan state
+- `programs/ydelta/src/protocol/marginfi.rs` — marginfi v0.1.8 adapter, oracle confidence checks
 - `programs/ydelta/tests/cases/` — lifecycle and mechanism coverage, including vaults, fallback, borrower LTV, secondary flows, and liquidation
 
 ---

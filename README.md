@@ -17,7 +17,7 @@ Lenders post asks (`rate × term × max-LTV`). Borrowers post bids (`rate × ter
 
 - [yDelta](#ydelta)
   - [Table of contents](#table-of-contents)
-  - [1. Why yDelta](#1-why-ydelta)
+  - [1. What yDelta does differently](#1-what-ydelta-does-differently)
   - [2. Own-term credit](#2-own-term-credit)
   - [3. Yield-alive capital](#3-yield-alive-capital)
   - [4. Strategy vaults: the lending optimizer](#4-strategy-vaults-the-lending-optimizer)
@@ -38,16 +38,25 @@ Lenders post asks (`rate × term × max-LTV`). Borrowers post bids (`rate × ter
 
 ---
 
-## 1. Why yDelta
+## 1. What yDelta does differently
 
-Solana DeFi today gives you two flavours of credit:
+yDelta is fixed-rate, fixed-term lending built around two ideas that are hard to combine: a real orderbook for price discovery, and a yield rail underneath so capital is never idle. Most fixed-rate protocols ship a subset of what's below. yDelta is designed so all of it is **structural** — not curator-toggles, not optional features, not bolt-ons.
 
-- **Variable-rate lending pools** (marginfi, Kamino, Solend). You deposit, the protocol auto-allocates, you earn whatever rate the utilisation curve produces. Rates change minute-to-minute. There's no way to lock in a return.
-- **Perp / structured-product venues** (Drift, Loopscale). Fixed-term lending exists but as part of larger structured-credit primitives — orderbook is opaque to the depositor, and capital sits idle whenever it isn't actively matched.
+1. **Capital is yield-alive for the entire lifecycle.** Every deposit immediately routes into marginfi at the program level. Resting orders, encumbered collateral, idle vault liquidity, and even borrowed principal earn supply APY by default — until the user actively withdraws to a wallet. There is no "atoms in escrow earning nothing" state anywhere in the protocol.
 
-There's no native venue for the simplest credit primitive: **"I want to lend $10,000 USDC at 9% APR for 30 days, and a borrower at the same rate finds me — and my money keeps earning while I wait."** No interest-rate swap. No pool curve. Just a price match between two willing counterparties, with marginfi as the backstop that keeps every atom productive.
+2. **The orderbook has a built-in variable-rate backstop, and the variable portion is upgradeable.** When fixed-rate liquidity doesn't fill a bid, the residual falls through to `marginfi.borrow` so the borrower walks away with full requested principal — no partial-fill cliff. Later, `convert_p2pool_to_fixed` lets the borrower walk the asks tree and migrate the variable portion back to fixed-rate when better terms appear. The fallback is a backstop, not a one-way commitment.
 
-That's yDelta.
+3. **Vaults run multiple curator strategies on one capital pool per asset.** A single `GlobalVault` per mint hosts many `RiskProfile` entries, each with its own curator, LTV ceiling, term cap, and per-market exposure cap. A depositor can hold seats in multiple profiles inside the same vault; a profile can quote across up to 8 markets simultaneously. Strategy diversity is layered on shared capital, not fragmented into separate vault accounts.
+
+4. **Risk preferences are symmetric — both sides declare LTV.** Lenders set `max_ltv_bps` per profile; borrowers declare their own `borrower_ltv_bps` per bid. Strict transitivity (`actual ≤ borrower ≤ profile-cap ≤ marginfi-init`) lets the orderbook self-segment into explicit risk tiers — conservative bids only cross conservative asks, without an off-chain matchmaker.
+
+5. **Fixed terms genuinely run to maturity.** A loan opens at the locked rate, accrues for the full term, and resolves on borrower repay or keeper settlement after grace. There is no auto-rolling into shorter terms. Repricing is opt-in via `convert_p2pool_to_fixed` (and only for borrowers on the variable-rate fallback), never imposed by the protocol.
+
+6. **Lenders can exit before maturity through the same matching engine.** `SecondaryLoanSale` orders rest on the primary bids tree; the matching engine crosses them against fresh asks at par. The borrower's terms are unchanged because they're contractual. One LTV check at placement covers every full cross and every split — the secondary book reuses the same engine, math, and cranker flow as primary orders.
+
+7. **Designed for orderbook speed.** `place_order`, `cancel_order`, and `update_order` against wallet-side makers fire **zero CPIs** — encumbrance is pure-memory bookkeeping on the market account. Atoms only move on `deposit` / `withdraw` / `repay` / `claim` and the P2Pool fallback. Makers can reprice continuously without paying compute tax for each adjustment.
+
+Taken together: yDelta prices credit on the orderbook, backstops it with marginfi, keeps every atom productive in every state, and lets both sides shape the deal — all built on the same set of mechanisms rather than separate paths bolted together.
 
 ---
 
@@ -184,6 +193,8 @@ borrow request
 ```
 
 The default behaviour is fallback-on. Borrowers who want strict orderbook semantics (`flags = OB_ONLY`) opt out — unfilled residual rests on the book or drops with `OrderFilledIocLog`.
+
+**Upgrade path: variable → fixed.** A borrower who took the fallback isn't stuck on the variable rate. `convert_p2pool_to_fixed` walks the asks tree and crosses every compatible wallet ask whose `rate_bps ≤ max_acceptable_rate_bps` AND `term_seconds ≥ remaining_term`, converting the variable-rate P2Pool debt into fresh fixed-rate `MatchedLoan` queue nodes. Each cross emits a primary-style match; the unfilled residual stays on the original P2Pool loan body. Full conversion closes the P2Pool PDA. So the fallback is genuinely a backstop, not a trap — when fixed-rate liquidity appears, the borrower can flip their debt over without unwinding.
 
 This is yDelta's strategic posture: **the orderbook is where credit gets priced; marginfi is where credit gets backstopped.** The two layers complement rather than compete.
 
