@@ -1,0 +1,19 @@
+.target/
+target/
+
+# Reference repos cloned for cross-checking; not part of the project tree.
+reference/
+
+# Local-only artifacts produced by `scripts/setup/*` — curator keypairs,
+# per-cluster deployment metadata, market-specific outputs.
+.local/
+
+# SDK build output.
+dist/
+node_modules/
+
+# Operator secrets / per-environment overrides consumed by scripts/setup/.
+# `.env.example` is the checked-in template; never check in real `.env`.
+.env
+.env.local
+.env.*.local

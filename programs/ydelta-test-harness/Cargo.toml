@@ -1,0 +1,25 @@
+[package]
+name = "ydelta-test-harness"
+version = "0.1.0"
+edition = "2021"
+description = "Test-only wrapper program around yDelta's MarginfiV18Adapter. Loaded next to marginfi.so + ydelta.so in integration tests so the trait methods can be invoked through real CPI without polluting ydelta's production ix surface."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "ydelta_test_harness"
+
+[features]
+default = []
+no-entrypoint = []
+
+[dependencies]
+# Pull ydelta's library surface (the adapter, the trait) WITHOUT its
+# entrypoint — this is a sibling program, not ydelta itself.
+ydelta = { workspace = true, features = ["no-entrypoint"] }
+marginfi-mocks = { workspace = true }
+solana-program = { workspace = true }
+solana-invoke = { workspace = true }
+solana-security-txt = { workspace = true }
+borsh = { workspace = true }
+num_enum = { workspace = true }
+bytemuck = { workspace = true }

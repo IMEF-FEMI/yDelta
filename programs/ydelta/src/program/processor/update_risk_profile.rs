@@ -1,0 +1,102 @@
+//! Update mutable policy fields on an existing `RiskProfile`.
+//! `allowed_market_count` (would lock out future market joins by
+//! exceeding what's already claimed).
+
+use std::cell::RefMut;
+
+use borsh::{BorshDeserialize, BorshSerialize};
+use hypertree::{HyperTreeReadOperations, NIL};
+use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, pubkey::Pubkey};
+
+use crate::program::YdeltaError;
+use crate::require;
+use crate::state::vault::{
+    get_mut_helper_risk_profile, GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
+};
+use crate::state::{GLOBAL_VAULT_FIXED_SIZE, RISK_PROFILE_ALLOWED_MARKETS_CAP};
+use crate::validation::loaders::CreateRiskProfileContext;
+
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
+pub struct UpdateRiskProfileParams {
+    pub profile_id: u8,
+    pub new_max_ltv_bps: Option<u16>,
+    pub new_max_term_seconds: Option<u32>,
+    pub new_allowed_market_max: Option<u8>,
+}
+
+pub fn process_update_risk_profile(
+    _program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    let params = UpdateRiskProfileParams::try_from_slice(data)?;
+    // Reuse CreateRiskProfileContext: same admin gate (global_vault_admin),
+    // same accounts (payer + global_config + vault + system_program).
+    let CreateRiskProfileContext {
+        payer: _,
+        vault,
+        _system_program: _,
+    } = CreateRiskProfileContext::load(accounts)?;
+
+    if let Some(v) = params.new_max_ltv_bps {
+        require!(
+            v > 0 && v < 10_000,
+            YdeltaError::VaultProfileLtvOutOfRange,
+            "new_max_ltv_bps {} must be in (0, 10_000)",
+            v
+        )?;
+    }
+    if let Some(v) = params.new_max_term_seconds {
+        require!(
+            v > 0,
+            YdeltaError::VaultProfileTermInvalid,
+            "new_max_term_seconds must be > 0"
+        )?;
+    }
+    if let Some(v) = params.new_allowed_market_max {
+        require!(
+            v >= 1 && v <= RISK_PROFILE_ALLOWED_MARKETS_CAP,
+            YdeltaError::VaultProfileAllowedMarketsExceeded,
+            "new_allowed_market_max {} must be in 1..={}",
+            v,
+            RISK_PROFILE_ALLOWED_MARKETS_CAP
+        )?;
+    }
+
+    let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
+    let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
+    let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
+
+    let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+    let profile_idx = {
+        let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+        tree.lookup_index(&probe)
+    };
+    require!(
+        profile_idx != NIL,
+        YdeltaError::VaultProfileNotFound,
+        "profile_id {} not found",
+        params.profile_id
+    )?;
+
+    let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+
+    if let Some(v) = params.new_allowed_market_max {
+        require!(
+            v >= profile.allowed_market_count,
+            YdeltaError::VaultProfileAllowedMarketsExceeded,
+            "cannot reduce allowed_market_max ({}) below live allowed_market_count ({})",
+            v,
+            { profile.allowed_market_count }
+        )?;
+        profile.allowed_market_max = v;
+    }
+    if let Some(v) = params.new_max_ltv_bps {
+        profile.max_ltv_bps = v;
+    }
+    if let Some(v) = params.new_max_term_seconds {
+        profile.max_term_seconds = v;
+    }
+
+    Ok(())
+}

@@ -1,0 +1,88 @@
+{
+  "name": "@ydelta/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for yDelta — fixed-rate / fixed-term lending on a Solana CLOB",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/src/index.d.ts",
+  "files": [
+    "dist/",
+    "client/ts/src",
+    "client/ts/README.md"
+  ],
+  "license": "Apache-2.0",
+  "keywords": [
+    "ydelta",
+    "solana",
+    "defi",
+    "lending",
+    "fixed-rate",
+    "clob"
+  ],
+  "scripts": {
+    "build": "rimraf dist && yarn build:cjs && yarn build:esm && yarn build:types",
+    "build:cjs": "tsc -p tsconfig.cjs.json --noEmit false",
+    "build:esm": "tsc -p tsconfig.esm.json --noEmit false",
+    "build:types": "tsc -p tsconfig.types.json --noEmit false",
+    "typecheck": "tsc --noEmit --pretty",
+    "format": "prettier --check client/ts",
+    "format:write": "prettier --write client/ts",
+    "lint": "eslint 'client/ts/**/*.ts' 'client/idl/**/*.ts' --ext ts --quiet",
+    "test": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-mocha 'client/ts/tests/*.test.ts' --timeout 1200000",
+    "test:integration": "BPF_OUT_DIR=$PWD/target/deploy TS_NODE_PROJECT='./tsconfig.cjs.json' ts-mocha 'client/ts/tests/integration/*.test.ts' --timeout 1200000",
+    "test:all": "BPF_OUT_DIR=$PWD/target/deploy TS_NODE_PROJECT='./tsconfig.cjs.json' ts-mocha 'client/ts/tests/**/*.test.ts' --timeout 1200000",
+    "idl:generate": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node client/idl/build.ts",
+    "idl:client": "echo 'Solita / Codama codegen — wire when needed; the JSON is the source of truth.'",
+    "idl": "yarn idl:generate",
+    "setup:deploy": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/deploy.ts",
+    "setup:init-market": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/init-market.ts",
+    "setup:risk-profiles": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/create-risk-profiles.ts",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@metaplex-foundation/beet": "^0.7.1",
+    "@metaplex-foundation/beet-solana": "^0.4.0",
+    "@mrgnlabs/marginfi-client-v2": "^6.4.1",
+    "@mrgnlabs/mrgn-common": "^2.0.7",
+    "@solana/spl-token": "^0.4.8",
+    "@solana/web3.js": "^1.95.0",
+    "bn.js": "^5.2.1",
+    "borsh": "^2.0.0",
+    "bs58": "^6.0.0",
+    "js-sha256": "^0.11.0",
+    "keccak256": "^1.0.6"
+  },
+  "devDependencies": {
+    "@metaplex-foundation/rustbin": "^0.3.1",
+    "@metaplex-foundation/solita": "^0.20.1",
+    "@types/bn.js": "^5.1.5",
+    "@types/chai": "^4.3.16",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.14.0",
+    "@coral-xyz/anchor": "^0.30.1",
+    "anchor-bankrun": "^0.5.0",
+    "solana-bankrun": "^0.4.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "chai": "^4.4.1",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "mocha": "^10.4.0",
+    "prettier": "^3.3.2",
+    "rimraf": "^5.0.7",
+    "ts-mocha": "^10.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "trailingComma": "all",
+    "useTabs": false,
+    "bracketSpacing": true,
+    "semi": true,
+    "tabWidth": 2
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

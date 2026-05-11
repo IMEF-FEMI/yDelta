@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = [
+  "lib",
+  "programs/marginfi-mocks",
+  "programs/ydelta",
+  "programs/ydelta-test-harness",
+]
+# Root-level cargo commands (`cargo build`, `cargo build-sbf`, `cargo
+# test`) target the program crate by default. Build other workspace
+# members explicitly with `-p <crate>`.
+default-members = ["programs/ydelta"]
+# Note: the off-chain indexer is a sibling project at `../indexer/`
+# (separate Cargo project, separate Cargo.lock, rustc 1.89 for
+# carbon-core 0.12's solana-* ^3.0 deps). It lives outside the ydelta
+# repo entirely.
+
+[workspace.dependencies]
+shank = "0.4.2"
+spl-token = { version = "8.0.0", features = ["no-entrypoint"] }
+spl-token-2022 = { version = "9.0.0", features = ["no-entrypoint"] }
+solana-program = "=2.2"
+borsh = "=0.10"
+bytemuck = "1.7.2"
+num_enum = "=0.5.11"
+thiserror = "1.0.66"
+solana-security-txt = "1.1.0"
+static_assertions = "=1.1.0"
+solana-invoke = "0.4.0"
+
+anyhow = "1.0.66"
+# Pin the full solana-* test stack to the 2.2 minor series. The 2.3.x line
+# pulls `blake3 1.8.x` -> `constant_time_eq 0.4.2`, which uses
+# `cargo-features = ["edition2024"]` and won't parse under the SBF
+# toolchain's rustc 1.79. Tilde requirements keep us on 2.2.x patch updates
+# only. Drop these pins once the local solana-cli upgrades to >= 2.3.
+solana-program-test = "~2.2.0"
+solana-logger = "~2.2.0"
+solana-sdk = "~2.2.0"
+tokio = "1.28.0"
+
+hypertree = { path = "lib" }
+marginfi-mocks = { path = "programs/marginfi-mocks" }
+ydelta = { path = "programs/ydelta" }
+
+# Hypertree gates its certora feature behind these crates. The yDelta crate does
+# NOT enable certora; these entries exist solely so `hypertree` can resolve
+# `workspace = true` for its optional deps when the feature is off.
+nondet = { git = "https://github.com/Certora/solana-cvt", branch = "solana-v2.2" }
+cvt = { git = "https://github.com/Certora/solana-cvt", branch = "solana-v2.2" }
+calltrace = { git = "https://github.com/Certora/solana-cvt", branch = "solana-v2.2" }
+
+arrayref = "0.3.7"
+# Const-generic fixed-precision unsigned integers (Uint<256, 4>, etc.).
+# Used in `ydelta::math` for the mul_scale / div_scale 256-bit intermediate.
+# `default-features = false` keeps it no_std and skips unrelated extras.
+ruint = { version = "1.12", default-features = false }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+overflow-checks = true
+strip = "debuginfo"
+
+[profile.release.build-override]
+codegen-units = 1
+incremental = false
+opt-level = 3
+strip = "debuginfo"
+
+[profile.test]
+lto = "fat"
+opt-level = 3
+debug = false
+codegen-units = 1
+overflow-checks = true
+strip = "debuginfo"

@@ -1,0 +1,190 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ydelta: build (sbf)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/build-program.sh",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$rustc"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ydelta: test (native)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/test.sh",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$rustc"],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ydelta: test (sbf)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/test.sh",
+            "args": ["--sbf"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$rustc"],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ydelta: test cluster (sbf)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/test.sh",
+            "args": ["--sbf", "cases::${input:testCluster}::"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$rustc"],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ydelta: test cluster (native)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/test.sh",
+            "args": ["cases::${input:testCluster}::"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$rustc"],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ydelta: single test (native, verbose)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/single-test.sh",
+            "args": ["--native", "${input:testName}"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$rustc"],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ydelta: single test (sbf, verbose)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/single-test.sh",
+            "args": ["${input:testName}"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$rustc"],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ydelta: lint",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/lint.sh",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$rustc"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "testName",
+            "type": "promptString",
+            "description": "Test name (substring filter, e.g. match_account_count_constant_in_n)",
+            "default": ""
+        },
+        {
+            "id": "testCluster",
+            "type": "pickString",
+            "description": "Test cluster (file in programs/ydelta/tests/cases/)",
+            "options": [
+                "adapter_borrow_repay",
+                "adapter_conversions",
+                "adapter_deposit",
+                "adapter_withdraw",
+                "bank_config_view",
+                "borrower_ltv",
+                "claim_repayment",
+                "claim_repayment_for_risk_profile",
+                "claim_seat",
+                "convert_p2pool_to_fixed",
+                "create_market",
+                "deposit_withdraw",
+                "encumbrance_conservation",
+                "fee_config",
+                "liquidation",
+                "loan_lifecycle",
+                "ltv_at_match",
+                "r#match",
+                "ob_only_flag",
+                "oracle_price",
+                "p2pool",
+                "place_order",
+                "process_matched_loan",
+                "repay",
+                "secondary_cross_to_risk_profile",
+                "secondary_lifecycle",
+                "secondary_orders",
+                "self_match",
+                "sync_market_seats_for_risk_profile",
+                "user_account",
+                "vault",
+                "vault_e2e",
+                "vault_match",
+                "vault_multi_profile"
+            ]
+        }
+    ]
+}

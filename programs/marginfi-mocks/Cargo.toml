@@ -1,0 +1,22 @@
+[package]
+name = "marginfi-mocks"
+version = "0.1.0"
+edition = "2021"
+description = "Slim vendored types and CPI builders for marginfi v0.1.8 (mainnet). Used by yDelta's MarginfiV18Adapter to construct CPIs WITHOUT taking marginfi as a crate dependency."
+
+[lib]
+crate-type = ["lib"]
+name = "marginfi_mocks"
+
+[features]
+default = []
+# Ix builders only — no on-chain entrypoint. Always enabled for callers that
+# don't deploy this crate as a program (which is everyone — this is a wire
+# format library, not a program).
+no-entrypoint = []
+
+[dependencies]
+solana-program = { workspace = true }
+bytemuck = { workspace = true, features = ["derive"] }
+borsh = { workspace = true }
+static_assertions = { workspace = true }

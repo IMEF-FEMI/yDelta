@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "es2020",
+    "outDir": "./dist/cjs",
+    "declaration": false,
+    "noEmit": false
+  },
+  "include": ["client/ts/src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "reference", "client/ts/tests"]
+}

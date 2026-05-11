@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "baseUrl": "client/ts/src",
+    "module": "esnext",
+    "target": "es2020",
+    "lib": ["ES2020"],
+    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "noEmit": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "declaration": true,
+    "types": ["mocha", "node"],
+    "paths": {
+      "@ydelta/*": ["ydelta/*"],
+      "@math/*": ["math/*"],
+      "@oracle/*": ["oracle/*"],
+      "@previews/*": ["previews/*"]
+    }
+  },
+  "ts-node": {
+    "compilerOptions": {
+      "module": "commonjs",
+      "target": "es2020"
+    }
+  },
+  "include": [
+    "client/ts/src/**/*.ts",
+    "client/ts/tests/**/*.ts",
+    "client/idl/**/*.ts",
+    "scripts/setup/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", "reference"]
+}

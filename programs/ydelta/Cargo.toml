@@ -1,0 +1,62 @@
+[package]
+name = "ydelta"
+version = "0.1.0"
+edition = "2021"
+description = "Fixed-rate / fixed-term lending protocol with risk-tiered orderbook on Solana"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "ydelta"
+
+[lints.rust]
+# Solana's SBF target uses `target_os = "solana"`. Host rustc doesn't
+# know about it and emits a "unexpected `cfg` condition value" warning
+# for every `cfg(target_os = "solana")` site. The require! macro fans
+# this out to ~650 warnings; whitelist the cfg values to keep the
+# warning surface meaningful.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_os, values("solana"))',
+    'cfg(feature, values("custom-panic"))',
+    'cfg(feature, values("custom-heap"))',
+] }
+
+[features]
+default = []
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+test = []
+# When enabled, the test fixture loads `target/deploy/ydelta.so` via the
+# SBPF VM instead of linking `process_instruction` natively. Use
+# `cargo test-sbf -p ydelta --features test-sbf` (or `scripts/test.sh --sbf`)
+# — `cargo test-sbf` handles the SBF build + `SBF_OUT_DIR` automatically.
+test-sbf = []
+trace = ["hypertree/trace"]
+
+[dependencies]
+hypertree = { workspace = true }
+marginfi-mocks = { workspace = true }
+bytemuck = { workspace = true, features = ["derive"] }
+solana-program = { workspace = true }
+spl-token = { workspace = true }
+spl-token-2022 = { workspace = true }
+borsh = { workspace = true }
+num_enum = { workspace = true }
+thiserror = { workspace = true }
+static_assertions = { workspace = true }
+solana-invoke = { workspace = true }
+solana-security-txt = { workspace = true }
+shank = { workspace = true }
+arrayref = { workspace = true }
+ruint = { workspace = true }
+
+[dev-dependencies]
+solana-program-test = { workspace = true }
+solana-sdk = { workspace = true }
+solana-logger = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+# Test-harness program loaded as a sibling .so in adapter integration tests.
+ydelta-test-harness = { path = "../ydelta-test-harness", features = ["no-entrypoint"] }
+# `solana account --output json` decoder for the mainnet fixtures.
+base64 = "0.22"
+serde_json = "1"
