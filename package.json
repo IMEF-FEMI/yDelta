@@ -36,6 +36,8 @@
     "idl": "yarn idl:generate",
     "setup:deploy": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/deploy.ts",
     "setup:init-market": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/init-market.ts",
+    "setup:check-market-state": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/check-market-state.ts",
+    "setup:unpause-market": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/unpause-market.ts",
     "setup:risk-profiles": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/create-risk-profiles.ts",
     "setup:encode-keypairs": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/encode-keypairs.ts",
     "clean": "rimraf dist"
