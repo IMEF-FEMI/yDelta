@@ -266,8 +266,8 @@ impl TestFixture {
     /// Plant a Pyth-push (`PriceUpdateV2`) account at each synthetic
     /// oracle pubkey so the matching engine's `oracle_price` decode
     /// succeeds. Sets price = 1_000_000 atoms with exponent = -6 →
-    /// $1.00 fp48. publish_time = far in the future so the staleness
-    /// check never fires for native test runs.
+    /// $1.00 fp48. publish_time = host wall-clock so `Clock - publish ≈
+    /// 0` and the staleness gate accepts.
     ///
     /// **NOT real Pyth state** — the bytes only need to satisfy the
     /// adapter's offset reads. Tests asserting real price values
@@ -291,9 +291,8 @@ impl TestFixture {
         let exponent: i32 = -6;
         // Solana's ProgramTest seeds Clock.unix_timestamp from the host's
         // real time at boot. Match it here so the staleness gate sees
-        // age ≈ 0 and the future-skew gate accepts. Tests that advance
-        // the clock past the bank's 600s max_age call set_clock_unix
-        // and refresh oracles explicitly.
+        // age ≈ 0. Tests that advance the clock past the bank's 600s
+        // max_age call set_clock_unix and refresh oracles explicitly.
         let publish_time: i64 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)

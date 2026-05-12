@@ -42,7 +42,8 @@ pub fn process_place_order_for_risk_profile(
 ) -> ProgramResult {
     let params = PlaceOrderForRiskProfileParams::try_from_slice(data)?;
     let CancelOrderForRiskProfileContext {
-        payer,
+        fee_payer,
+        curator,
         vault,
         market,
         _system_program,
@@ -77,7 +78,7 @@ pub fn process_place_order_for_risk_profile(
         let profile_node = crate::state::vault::get_helper_risk_profile(dynamic, profile_idx);
         let profile = profile_node.get_value();
         require!(
-            *payer.info.key == profile.curator,
+            *curator.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,
             "place_order_for_risk_profile: signer is not profile.curator"
         )?;
@@ -112,7 +113,7 @@ pub fn process_place_order_for_risk_profile(
     };
 
     // ─── Insert the market-side RestingOrder ───
-    expand_market_if_needed(payer.info, &market)?;
+    expand_market_if_needed(fee_payer.info, &market)?;
     let order_sequence: u64 = {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let da = get_mut_dynamic_account::<MarketFixed>(market_data);
@@ -184,8 +185,8 @@ pub fn process_place_order_for_risk_profile(
         let lamports_diff = new_min.saturating_sub(old_min);
         if lamports_diff > 0 {
             invoke(
-                &system_instruction::transfer(payer.info.key, vault.info.key, lamports_diff),
-                &[payer.info.clone(), vault.info.clone()],
+                &system_instruction::transfer(fee_payer.info.key, vault.info.key, lamports_diff),
+                &[fee_payer.info.clone(), vault.info.clone()],
             )?;
         }
         #[allow(deprecated)]

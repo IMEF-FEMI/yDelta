@@ -31,7 +31,8 @@ pub fn process_claim_seat_for_risk_profile(
 ) -> ProgramResult {
     let params = ClaimSeatForRiskProfileParams::try_from_slice(data)?;
     let ClaimSeatForRiskProfileContext {
-        payer,
+        fee_payer,
+        curator,
         vault,
         market,
         system_program,
@@ -49,13 +50,19 @@ pub fn process_claim_seat_for_risk_profile(
         "max_exposure_atoms must be > 0 (use a generous u64 if you intend uncapped)"
     )?;
 
-    // ─── Validate profile + cap on simultaneous market participation ───
-    // The per-profile market list is a counter, not a whitelist:
-    // reject if the profile already holds seats in
-    // `allowed_market_max` distinct markets. Also snapshot
-    // `max_ltv_bps` so we can stamp it on the market-side seat for
-    // the borrower-LTV risk-tier gate (the matching loop reads it
-    // from market state — vault state is not borrowable mid-match).
+    // ─── Curator gate + profile validation + market-cap check ───
+    // Curator-gated (not admin-gated): only the profile's own
+    // curator can claim seats on behalf of that profile. Same
+    // signer semantics as `place_order_for_risk_profile` /
+    // `update_order_for_risk_profile` — curators have full
+    // operational authority over their own profile's footprint
+    // without involving the vault admin per (profile, market).
+    //
+    // Also snapshot `max_ltv_bps` so we can stamp it on the
+    // market-side seat for the borrower-LTV risk-tier gate (the
+    // matching loop reads it from market state — vault state is
+    // not borrowable mid-match), and enforce the per-profile cap
+    // on simultaneous market participation.
     let profile_max_ltv_bps: u16 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
@@ -74,6 +81,11 @@ pub fn process_claim_seat_for_risk_profile(
         let profile_node = crate::state::vault::get_helper_risk_profile(dynamic, profile_idx);
         let profile = profile_node.get_value();
         require!(
+            *curator.info.key == profile.curator,
+            YdeltaError::VaultCuratorRequired,
+            "claim_seat_for_risk_profile: signer is not profile.curator"
+        )?;
+        require!(
             profile.allowed_market_count < profile.allowed_market_max,
             YdeltaError::VaultProfileAllowedMarketsExceeded,
             "profile {} already holds seats in {} markets (max {})",
@@ -85,7 +97,7 @@ pub fn process_claim_seat_for_risk_profile(
     };
 
     // ─── Insert market-side ClaimedSeat with cap fields populated ───
-    expand_market_if_needed(payer.info, &market)?;
+    expand_market_if_needed(fee_payer.info, &market)?;
     let seat_index_in_market: hypertree::DataIndex;
     {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;

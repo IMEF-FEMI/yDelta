@@ -53,7 +53,7 @@ async fn claim_seat_records_market_in_active_markets() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, PROFILE_ID, MAX_EXPOSURE_ATOMS)
+        .claim_seat_for_risk_profile(&curator, PROFILE_ID, MAX_EXPOSURE_ATOMS)
         .await
         .unwrap();
 
@@ -104,7 +104,7 @@ async fn sync_propagates_updated_max_ltv_to_seat() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, PROFILE_ID, MAX_EXPOSURE_ATOMS)
+        .claim_seat_for_risk_profile(&curator, PROFILE_ID, MAX_EXPOSURE_ATOMS)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -187,7 +187,7 @@ async fn sync_rejects_foreign_market() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, PROFILE_ID, MAX_EXPOSURE_ATOMS)
+        .claim_seat_for_risk_profile(&curator, PROFILE_ID, MAX_EXPOSURE_ATOMS)
         .await
         .unwrap();
 

@@ -10,16 +10,21 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Build a `PlaceOrderForRiskProfile` ix. Curator-gated — `payer` must equal
-/// `profile.curator`. Inserts both the market-side `RestingOrder`
-/// (Ask only, vault is debt-side lender) and the vault-side
-/// `RiskProfileOrderRef`. Order is bounded by `vault_seat.max_exposure_atoms`
-/// and rests indefinitely until the curator cancels.
+/// Build a `PlaceOrderForRiskProfile` ix. Curator-gated — `curator`
+/// must equal `profile.curator`. Inserts both the market-side
+/// `RestingOrder` (Ask only, vault is debt-side lender) and the
+/// vault-side `RiskProfileOrderRef`. Order is bounded by
+/// `vault_seat.max_exposure_atoms` and rests indefinitely until the
+/// curator cancels.
+///
+/// Split-payer layout: `fee_payer` covers tx fee + any rent for
+/// vault `node_free_list` expansion. `curator` only signs.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_for_risk_profile_instruction(
     mint: &Pubkey,
     market: &Pubkey,
-    payer: &Pubkey,
+    fee_payer: &Pubkey,
+    curator: &Pubkey,
     profile_id: u8,
     rate_bps: u16,
     term_seconds: u32,
@@ -38,7 +43,8 @@ pub fn place_order_for_risk_profile_instruction(
     Instruction {
         program_id: crate::id(),
         accounts: vec![
-            AccountMeta::new(*payer, true),
+            AccountMeta::new(*fee_payer, true),
+            AccountMeta::new_readonly(*curator, true),
             AccountMeta::new_readonly(global_config_pda().0, false),
             AccountMeta::new(vault, false),
             AccountMeta::new(*market, false),

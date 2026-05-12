@@ -131,7 +131,7 @@ async fn secondary_bid_crosses_risk_profile_ask_full_transfer() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, /*profile_id=*/ 0, MAX_EXPOSURE_ATOMS)
+        .claim_seat_for_risk_profile(&curator, /*profile_id=*/ 0, MAX_EXPOSURE_ATOMS)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;

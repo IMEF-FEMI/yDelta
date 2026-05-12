@@ -150,7 +150,7 @@ async fn global_vault_admin_claims_seat() {
     fixture.refresh_blockhash().await;
     fixture
         .claim_seat_for_risk_profile(
-            &admin,
+            &curator,
             /*profile_id=*/ 0,
             /*max_exposure=*/ 500_000_000,
         )

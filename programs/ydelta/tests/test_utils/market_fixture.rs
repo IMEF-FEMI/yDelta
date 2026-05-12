@@ -1706,21 +1706,26 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Admin claim_seat_for_risk_profile on the USDC vault, this market.
+    /// Curator-gated `claim_seat_for_risk_profile` on the USDC vault,
+    /// this market. Signer must equal `profile.curator` set at
+    /// `create_risk_profile` time. The fixture's funded `self.payer`
+    /// is used as the fee_payer slot in the ix (covers tx fee + any
+    /// rent expansion); the curator only signs.
     pub async fn claim_seat_for_risk_profile(
         &self,
-        admin: &Keypair,
+        curator: &Keypair,
         profile_id: u8,
         max_exposure_atoms: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = claim_seat_for_risk_profile_instruction(
             &mainnet::usdc_mint(),
             &self.market.pubkey(),
-            &admin.pubkey(),
+            &self.payer.pubkey(),
+            &curator.pubkey(),
             profile_id,
             max_exposure_atoms,
         );
-        let kp = admin.insecure_clone();
+        let kp = curator.insecure_clone();
         self.process(ix, &[&kp]).await
     }
 
@@ -1749,9 +1754,11 @@ impl MarketFixture {
     /// Variant of `claim_seat_for_risk_profile` that targets an
     /// arbitrary market (e.g. the secondary market created by
     /// `create_second_market`). Used by the multi-market test.
+    /// Curator-gated — signer must equal `profile.curator`.
+    /// `self.payer` is the fee_payer / rent funder.
     pub async fn claim_seat_for_risk_profile_in_market(
         &self,
-        admin: &Keypair,
+        curator: &Keypair,
         profile_id: u8,
         market_pk: Pubkey,
         max_exposure_atoms: u64,
@@ -1759,11 +1766,12 @@ impl MarketFixture {
         let ix = claim_seat_for_risk_profile_instruction(
             &mainnet::usdc_mint(),
             &market_pk,
-            &admin.pubkey(),
+            &self.payer.pubkey(),
+            &curator.pubkey(),
             profile_id,
             max_exposure_atoms,
         );
-        let kp = admin.insecure_clone();
+        let kp = curator.insecure_clone();
         self.process(ix, &[&kp]).await
     }
 
@@ -1781,6 +1789,7 @@ impl MarketFixture {
         let ix = place_order_for_risk_profile_instruction(
             &mainnet::usdc_mint(),
             &market_pk,
+            &self.payer.pubkey(),
             &curator.pubkey(),
             profile_id,
             rate_bps,
@@ -1812,6 +1821,8 @@ impl MarketFixture {
 
     /// Curator place_order_for_risk_profile. Risk-profile orders are non-expiring
     /// — only the curator can remove them via cancel_order_for_risk_profile.
+    /// `self.payer` is used as the ix's fee_payer (covers tx fee + any
+    /// rent for vault node-block expansion); curator only signs.
     pub async fn place_order_for_risk_profile(
         &self,
         curator: &Keypair,
@@ -1823,6 +1834,7 @@ impl MarketFixture {
         let ix = place_order_for_risk_profile_instruction(
             &mainnet::usdc_mint(),
             &self.market.pubkey(),
+            &self.payer.pubkey(),
             &curator.pubkey(),
             profile_id,
             rate_bps,

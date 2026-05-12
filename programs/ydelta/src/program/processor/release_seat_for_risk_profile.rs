@@ -30,11 +30,14 @@ pub fn process_release_seat_for_risk_profile(
     data: &[u8],
 ) -> ProgramResult {
     let params = ReleaseSeatForRiskProfileParams::try_from_slice(data)?;
-    // Reuse ClaimSeatForRiskProfileContext: same admin gate (global_vault_admin),
-    // same accounts (payer + global_config + vault + market +
-    // system_program), same mint-bind invariant.
+    // Reuse ClaimSeatForRiskProfileContext: same split-payer shape
+    // (fee_payer + curator + global_config + vault + market +
+    // system_program), same mint-bind invariant. Curator gate is
+    // enforced below (the loader no longer enforces it because the
+    // profile-id only exists in params, not in account metadata).
     let ClaimSeatForRiskProfileContext {
-        payer: _,
+        fee_payer: _,
+        curator,
         vault,
         market,
         system_program: _,
@@ -42,6 +45,31 @@ pub fn process_release_seat_for_risk_profile(
 
     let vault_key = *vault.info.key;
     let market_key = *market.info.key;
+
+    // ─── Curator gate ───
+    // Only the profile's own curator can release its seat. Symmetric
+    // with `claim_seat_for_risk_profile`. Reads the profile to
+    // compare against the supplied signer.
+    {
+        let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
+        let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
+        let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
+        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+        let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+        let idx = tree.lookup_index(&probe);
+        require!(
+            idx != NIL,
+            crate::program::YdeltaError::VaultProfileNotFound,
+            "profile_id {} not found",
+            params.profile_id
+        )?;
+        let profile = crate::state::vault::get_helper_risk_profile(dynamic, idx).get_value();
+        require!(
+            *curator.info.key == profile.curator,
+            crate::program::YdeltaError::VaultCuratorRequired,
+            "release_seat_for_risk_profile: signer is not profile.curator"
+        )?;
+    }
 
     // ─── Locate the seat in the market and verify it is empty. ───
     let seat_index = {

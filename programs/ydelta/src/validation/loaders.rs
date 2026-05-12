@@ -2946,9 +2946,19 @@ impl<'a, 'info> ClaimCuratorFeeContext<'a, 'info> {
     }
 }
 
-/// Account list for `ClaimSeatForRiskProfile`.
+/// Account list for `ClaimSeatForRiskProfile` (and reused by
+/// `ReleaseSeatForRiskProfile`).
+///
+/// Split-payer layout:
+///   [0] `fee_payer` (signer, writable) — pays tx fee + on-chain rent
+///       for any vault/market dynamic-region expansion the ix triggers.
+///       Typically a bot wallet that the curator doesn't need to fund.
+///   [1] `curator`   (signer)           — satisfies the per-profile
+///       curator gate enforced in the processor. No lamports are
+///       debited from this account.
 pub(crate) struct ClaimSeatForRiskProfileContext<'a, 'info> {
-    pub payer: Signer<'a, 'info>,
+    pub fee_payer: Signer<'a, 'info>,
+    pub curator: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
     pub system_program: Program<'a, 'info>,
@@ -2958,7 +2968,8 @@ impl<'a, 'info> ClaimSeatForRiskProfileContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
-        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let fee_payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let curator = Signer::new(next_account_info(account_iter)?)?;
         let _ = load_global_config(account_iter)?;
         let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
             next_account_info(account_iter)?,
@@ -2967,24 +2978,15 @@ impl<'a, 'info> ClaimSeatForRiskProfileContext<'a, 'info> {
         require_market_not_paused(&market)?;
         let system_program = Program::new(next_account_info(account_iter)?, &system_program::id())?;
 
-        // Admin gate.
-        let global_vault_admin: Pubkey = vault.get_fixed()?.global_vault_admin;
-        require!(
-            *payer.info.key == global_vault_admin,
-            YdeltaError::VaultAdminRequired,
-            "claim_seat_for_risk_profile: signer is not vault.global_vault_admin"
-        )?;
-
-        // Mint binding. Without this check, a foreign-mint vault could
-        // claim a seat on this market and place orders that the
-        // borrower-side place_order would settle against the market's
-        // canonical debt-mint vault — black-holing liquidity behind
-        // loans whose lender_global_vault is on a different mint and can no
-        // longer settle.
+        // Curator gate runs in the processor (it needs `params.profile_id`,
+        // which loaders don't see). Mint binding stays here because it
+        // doesn't depend on the profile id and applies symmetrically to
+        // every claim attempt.
         require_vault_mint_matches_market(&vault, &market)?;
 
         Ok(Self {
-            payer,
+            fee_payer,
+            curator,
             vault,
             market,
             system_program,
@@ -2993,8 +2995,18 @@ impl<'a, 'info> ClaimSeatForRiskProfileContext<'a, 'info> {
 }
 
 /// Account list for `CancelOrderForRiskProfile`. Curator-gated.
+/// Reused by `place_order_for_risk_profile` and
+/// `update_order_for_risk_profile`.
+///
+/// Split-payer layout, same shape as `ClaimSeatForRiskProfileContext`:
+///   [0] `fee_payer` (signer, writable) — pays tx fee + any rent for
+///       dynamic-region expansion (place_order may grow the vault's
+///       `node_free_list`).
+///   [1] `curator`   (signer)           — satisfies the per-profile
+///       curator gate.
 pub(crate) struct CancelOrderForRiskProfileContext<'a, 'info> {
-    pub payer: Signer<'a, 'info>,
+    pub fee_payer: Signer<'a, 'info>,
+    pub curator: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
     pub _system_program: Program<'a, 'info>,
@@ -3004,7 +3016,8 @@ impl<'a, 'info> CancelOrderForRiskProfileContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
-        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let fee_payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let curator = Signer::new(next_account_info(account_iter)?)?;
         let _ = load_global_config(account_iter)?;
         let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
             next_account_info(account_iter)?,
@@ -3020,7 +3033,8 @@ impl<'a, 'info> CancelOrderForRiskProfileContext<'a, 'info> {
         require_vault_mint_matches_market(&vault, &market)?;
 
         Ok(Self {
-            payer,
+            fee_payer,
+            curator,
             vault,
             market,
             _system_program,

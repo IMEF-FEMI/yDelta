@@ -77,7 +77,7 @@ async fn setup_through_promote(
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, PROFILE_ID, MAX_EXPOSURE_ATOMS)
+        .claim_seat_for_risk_profile(&curator, PROFILE_ID, MAX_EXPOSURE_ATOMS)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -725,7 +725,7 @@ async fn risk_profile_earns_yield_from_two_markets() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile_in_market(&admin, PROFILE_ID, market2_pk, MAX_EXPOSURE_ATOMS)
+        .claim_seat_for_risk_profile_in_market(&curator, PROFILE_ID, market2_pk, MAX_EXPOSURE_ATOMS)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;

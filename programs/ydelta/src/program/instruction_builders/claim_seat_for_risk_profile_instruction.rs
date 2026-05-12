@@ -10,11 +10,18 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Build a vault-admin `ClaimSeatForRiskProfile` instruction.
+/// Build a curator-gated `ClaimSeatForRiskProfile` instruction.
+///
+/// Split-payer layout: `fee_payer` covers tx fee + the rent for any
+/// market dynamic-region expansion the ix triggers. `curator` signs
+/// to satisfy the per-profile `profile.curator` gate; no lamports are
+/// debited from it. The two may be the same pubkey, in which case
+/// Solana de-dups the signer set automatically.
 pub fn claim_seat_for_risk_profile_instruction(
     mint: &Pubkey,
     market: &Pubkey,
-    payer: &Pubkey,
+    fee_payer: &Pubkey,
+    curator: &Pubkey,
     profile_id: u8,
     max_exposure_atoms: u64,
 ) -> Instruction {
@@ -31,7 +38,8 @@ pub fn claim_seat_for_risk_profile_instruction(
     Instruction {
         program_id: crate::id(),
         accounts: vec![
-            AccountMeta::new(*payer, true),
+            AccountMeta::new(*fee_payer, true),
+            AccountMeta::new_readonly(*curator, true),
             AccountMeta::new_readonly(global_config_pda().0, false),
             AccountMeta::new(vault, false),
             AccountMeta::new(*market, false),

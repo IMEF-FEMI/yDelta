@@ -663,7 +663,7 @@ pub fn read_bank_asset_share_value_fp48(
 /// the bank read isn't available).
 ///
 /// Math:
-/// ```
+/// ```text
 /// idle = total_principal - deployed - encumbered_in_orders
 ///
 /// // Supply yield (only if snapshot exists; first call seeds it).

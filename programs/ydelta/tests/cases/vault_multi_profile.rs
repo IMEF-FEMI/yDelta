@@ -141,16 +141,17 @@ async fn two_profiles_claim_seats_in_same_market() {
         .await
         .unwrap();
 
-    // Admin claims seats for both profiles. Each gets its own
-    // max_exposure cap.
+    // Each profile's curator claims that profile's seat. Each gets
+    // its own max_exposure cap. (Curator-gated; cross-curator claim
+    // is rejected — see `cross_curator_cannot_claim_seat_for_other_profile`.)
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, 0, 100_000_000)
+        .claim_seat_for_risk_profile(&curator_a, 0, 100_000_000)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, 1, 500_000_000)
+        .claim_seat_for_risk_profile(&curator_b, 1, 500_000_000)
         .await
         .unwrap();
 
@@ -183,15 +184,16 @@ async fn cross_curator_cannot_place_for_other_profile() {
         .await
         .unwrap();
 
-    // Both profiles claim a seat in the market.
+    // Both profiles claim a seat in the market. Each signs with its
+    // own curator (claim_seat is curator-gated).
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, 0, 100_000_000)
+        .claim_seat_for_risk_profile(&curator_a, 0, 100_000_000)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, 1, 500_000_000)
+        .claim_seat_for_risk_profile(&curator_b, 1, 500_000_000)
         .await
         .unwrap();
 

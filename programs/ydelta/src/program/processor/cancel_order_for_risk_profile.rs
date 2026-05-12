@@ -34,7 +34,8 @@ pub fn process_cancel_order_for_risk_profile(
 ) -> ProgramResult {
     let params = CancelOrderForRiskProfileParams::try_from_slice(data)?;
     let CancelOrderForRiskProfileContext {
-        payer,
+        fee_payer: _,
+        curator,
         vault,
         market,
         _system_program,
@@ -67,7 +68,7 @@ pub fn process_cancel_order_for_risk_profile(
         )?;
         let profile_node = crate::state::vault::get_helper_risk_profile(dynamic, profile_idx);
         require!(
-            *payer.info.key == profile_node.get_value().curator,
+            *curator.info.key == profile_node.get_value().curator,
             YdeltaError::VaultCuratorRequired,
             "cancel_order_for_risk_profile: signer is not profile.curator"
         )?;

@@ -229,56 +229,75 @@ fn global_vault_withdraw_params_borsh_round_trip() {
 // ─────────────────── Group E — curator ixs ───────────────────
 
 #[test]
-fn claim_seat_for_risk_profile_ix_has_four_accounts() {
+fn claim_seat_for_risk_profile_ix_has_six_accounts() {
     let mint = Pubkey::new_unique();
     let market = Pubkey::new_unique();
-    let payer = Keypair::new();
-    let ix = claim_seat_for_risk_profile_instruction(&mint, &market, &payer.pubkey(), 0, 1_000_000);
-    // payer + global_config + vault + market + system_program = 5
-    assert_eq!(ix.accounts.len(), 5);
+    let fee_payer = Keypair::new();
+    let curator = Keypair::new();
+    let ix = claim_seat_for_risk_profile_instruction(
+        &mint,
+        &market,
+        &fee_payer.pubkey(),
+        &curator.pubkey(),
+        0,
+        1_000_000,
+    );
+    // fee_payer + curator + global_config + vault + market + system_program = 6
+    assert_eq!(ix.accounts.len(), 6);
 }
 
 #[test]
-fn place_order_for_risk_profile_ix_has_four_accounts() {
+fn place_order_for_risk_profile_ix_has_six_accounts() {
     let mint = Pubkey::new_unique();
     let market = Pubkey::new_unique();
-    let payer = Keypair::new();
+    let fee_payer = Keypair::new();
+    let curator = Keypair::new();
     let ix = place_order_for_risk_profile_instruction(
         &mint,
         &market,
-        &payer.pubkey(),
+        &fee_payer.pubkey(),
+        &curator.pubkey(),
         0,
         500,
         30 * 86_400,
         0,
     );
-    assert_eq!(ix.accounts.len(), 5);
+    assert_eq!(ix.accounts.len(), 6);
 }
 
 #[test]
-fn cancel_order_for_risk_profile_ix_has_four_accounts() {
+fn cancel_order_for_risk_profile_ix_has_six_accounts() {
     let mint = Pubkey::new_unique();
     let market = Pubkey::new_unique();
-    let payer = Keypair::new();
-    let ix = cancel_order_for_risk_profile_instruction(&mint, &market, &payer.pubkey(), 0);
-    assert_eq!(ix.accounts.len(), 5);
+    let fee_payer = Keypair::new();
+    let curator = Keypair::new();
+    let ix = cancel_order_for_risk_profile_instruction(
+        &mint,
+        &market,
+        &fee_payer.pubkey(),
+        &curator.pubkey(),
+        0,
+    );
+    assert_eq!(ix.accounts.len(), 6);
 }
 
 #[test]
-fn update_order_for_risk_profile_ix_has_four_accounts() {
+fn update_order_for_risk_profile_ix_has_six_accounts() {
     let mint = Pubkey::new_unique();
     let market = Pubkey::new_unique();
-    let payer = Keypair::new();
+    let fee_payer = Keypair::new();
+    let curator = Keypair::new();
     let ix = update_order_for_risk_profile_instruction(
         &mint,
         &market,
-        &payer.pubkey(),
+        &fee_payer.pubkey(),
+        &curator.pubkey(),
         0,
         600,
         45 * 86_400,
         0,
     );
-    assert_eq!(ix.accounts.len(), 5);
+    assert_eq!(ix.accounts.len(), 6);
 }
 
 #[test]

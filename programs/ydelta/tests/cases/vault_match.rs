@@ -61,7 +61,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
     fixture.refresh_blockhash().await;
     fixture
         .claim_seat_for_risk_profile(
-            &admin, /*profile_id=*/ 0, /*max_exposure=*/ 50_000_000,
+            &curator, /*profile_id=*/ 0, /*max_exposure=*/ 50_000_000,
         )
         .await
         .unwrap();
@@ -163,7 +163,7 @@ async fn vault_match_rejected_when_idle_pool_exceeded() {
     // Generous exposure cap so this test exercises the idle gate.
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, 0, /*max_exposure=*/ 1_000_000)
+        .claim_seat_for_risk_profile(&curator, 0, /*max_exposure=*/ 1_000_000)
         .await
         .unwrap();
     // Vault places ask with principal=max_exposure (1M atoms — far
@@ -259,7 +259,7 @@ async fn risk_profile_order_persists_after_full_fill() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_seat_for_risk_profile(&admin, 0, /*max_exposure=*/ 1_000_000)
+        .claim_seat_for_risk_profile(&curator, 0, /*max_exposure=*/ 1_000_000)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -350,7 +350,7 @@ async fn risk_profile_match_skips_at_cap_saturation() {
     fixture.refresh_blockhash().await;
     // Cap = 100. First borrower will fully saturate it.
     fixture
-        .claim_seat_for_risk_profile(&admin, 0, /*max_exposure=*/ 100)
+        .claim_seat_for_risk_profile(&curator, 0, /*max_exposure=*/ 100)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;

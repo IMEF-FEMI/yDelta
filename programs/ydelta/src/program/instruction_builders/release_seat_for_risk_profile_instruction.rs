@@ -10,11 +10,14 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Build a vault-admin `ReleaseSeatForRiskProfile` instruction.
+/// Build a curator-gated `ReleaseSeatForRiskProfile` instruction.
+/// Same split-payer layout as the other risk-profile ixs:
+/// `fee_payer` pays tx fee, `curator` signs as the profile's curator.
 pub fn release_seat_for_risk_profile_instruction(
     mint: &Pubkey,
     market: &Pubkey,
-    payer: &Pubkey,
+    fee_payer: &Pubkey,
+    curator: &Pubkey,
     profile_id: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
@@ -25,7 +28,8 @@ pub fn release_seat_for_risk_profile_instruction(
     Instruction {
         program_id: crate::id(),
         accounts: vec![
-            AccountMeta::new(*payer, true),
+            AccountMeta::new(*fee_payer, true),
+            AccountMeta::new_readonly(*curator, true),
             AccountMeta::new_readonly(global_config_pda().0, false),
             AccountMeta::new(vault, false),
             AccountMeta::new(*market, false),

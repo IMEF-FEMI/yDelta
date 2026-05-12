@@ -47,6 +47,10 @@ const _MARGINFI_ORACLE_MIN_AGE_SECS: i64 = 10;
 /// publishers and Solana's `Clock`. yDelta-specific gate; marginfi
 /// doesn't reject future-dated oracle data explicitly (the Pyth SDK
 /// handles its own range checks). Defense-in-depth.
+///
+/// TODO(oracle-future-skew): the gate using this constant is currently
+/// disabled in `read_oracle_price` — see the matching TODO there.
+#[allow(dead_code)]
 const MAX_FUTURE_SKEW_SECS: i64 = 10;
 
 /// Expected number of oracle accounts for a given `OracleSetup`. Mirrors
@@ -211,7 +215,15 @@ pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResul
         max_age
     };
     let age = now - publish_time;
-    if age < -MAX_FUTURE_SKEW_SECS || age > effective_max_age {
+    // TODO(oracle-future-skew): restore the symmetric gate
+    //     `if age < -MAX_FUTURE_SKEW_SECS || age > effective_max_age`
+    // once we have a defensible tolerance. Disabled on 2026-05-12 after
+    // tx 2z2L…Kj1d failed with OracleStale: Pyth `publish_time` ran
+    // ~41 min ahead of `Clock::unix_timestamp` because Solana's
+    // stake-weighted clock lags wall-clock while Pyth publishers use
+    // wall-clock. Marginfi v2's reference reader doesn't gate future
+    // skew either. See `MAX_FUTURE_SKEW_SECS` (currently unused).
+    if age > effective_max_age {
         return Err(AdapterError::OracleStale.into());
     }
     Ok(price_fp48)
