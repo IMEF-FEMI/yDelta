@@ -664,7 +664,7 @@
   dependencies:
     tslib "^2.8.0"
 
-"@switchboard-xyz/common@^4.0.0", "@switchboard-xyz/common@^4.1.0":
+"@switchboard-xyz/common@4.1.11", "@switchboard-xyz/common@^4.0.0", "@switchboard-xyz/common@^4.1.0", "@switchboard-xyz/common@^4.1.1":
   version "4.1.11"
   resolved "https://registry.yarnpkg.com/@switchboard-xyz/common/-/common-4.1.11.tgz#c280d64842b87cb35a39e1338d3e540acedaf71d"
   integrity sha512-zNclN+7Be28qL5dFlScL4qGCPAe/kLUQ7umNsT9+V9WC3jB3uUdYVlzsQzJc3WVYAGn0xc6gKJ0S/XW7NAxhzQ==
@@ -692,6 +692,22 @@
     axios "^1.9"
     bs58 "^6.0.0"
     buffer "^6.0.3"
+    isomorphic-ws "^5.0.0"
+    js-yaml "^4.1.0"
+    ws "^8.18.1"
+
+"@switchboard-xyz/on-demand@^2.14.4":
+  version "2.17.6"
+  resolved "https://registry.yarnpkg.com/@switchboard-xyz/on-demand/-/on-demand-2.17.6.tgz#c97956340ae6420c7c4afb962b784c04d9070cc4"
+  integrity sha512-uHHoT7/XOcuDZ54midnuedjhWX2Z4z+BlOcjzA/zZwNtnbai7tmqdOPXnFBXgxVrYz5GCBEUjQpCXyANrKtWpA==
+  dependencies:
+    "@coral-xyz/anchor-31" "npm:@coral-xyz/anchor@0.31.1"
+    "@isaacs/ttlcache" "^1.4.1"
+    "@switchboard-xyz/common" "^4.1.1"
+    axios "^1.9"
+    bs58 "^6.0.0"
+    buffer "^6.0.3"
+    events "^3.3.0"
     isomorphic-ws "^5.0.0"
     js-yaml "^4.1.0"
     ws "^8.18.1"
@@ -1623,6 +1639,11 @@ eventemitter3@^5.0.1:
   version "5.0.4"
   resolved "https://registry.yarnpkg.com/eventemitter3/-/eventemitter3-5.0.4.tgz#a86d66170433712dde814707ac52b5271ceb1feb"
   integrity sha512-mlsTRyGaPBjPedk6Bvw+aqbsXDtoAyAzm5MO7JgU+yVRyMQ5O8bD4Kcci7BS85f93veegeCPkL8R4GLClnjLFw==
+
+events@^3.3.0:
+  version "3.3.0"
+  resolved "https://registry.yarnpkg.com/events/-/events-3.3.0.tgz#31a95ad0a924e2d2c419a813aeb2c4e878ea7400"
+  integrity sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==
 
 eyes@^0.1.8:
   version "0.1.8"

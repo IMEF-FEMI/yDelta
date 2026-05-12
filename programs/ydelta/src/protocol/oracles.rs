@@ -26,15 +26,24 @@ use super::AdapterError;
 /// Result type alias — keeps signatures readable.
 type AdapterResult<T> = Result<T, solana_program::program_error::ProgramError>;
 
-/// Mirrors marginfi v2's `MAX_PYTH_ORACLE_AGE`
-/// (`reference/marginfi-v2/type-crate/src/constants.rs`). Used when a
-/// bank's `oracle_max_age` is the sentinel value 0. Marginfi only
-/// applies this default when `oracle_setup == PythPushOracle`; yDelta
-/// applies it for all setups (including Switchboard) — strictly more
-/// conservative since a Switchboard bank with `oracle_max_age = 0`
-/// would have been rejected at marginfi's bank-config validation,
-/// so we never see one in practice.
-const DEFAULT_ORACLE_MAX_AGE_SECS: i64 = 60;
+/// Default staleness window used when a bank's `oracle_max_age` is
+/// the sentinel value 0.
+///
+/// Higher than marginfi v2's own `MAX_PYTH_ORACLE_AGE = 60`: yDelta's
+/// place_order, process_matched_loan, and liquidation flows all run
+/// once-per-tx (no streaming book), so a longer staleness window
+/// trades a small amount of price-vs-execution drift for far fewer
+/// revert-and-retry cycles when a publisher feed goes briefly idle.
+/// 400 s covers typical Pyth/Switchboard publisher gaps observed on
+/// low-volume feeds without leaving the gate open to extended
+/// outages.
+///
+/// Note: this default only kicks in for banks with `oracle_max_age
+/// == 0`. Banks with an explicit configured value (e.g. the SOL
+/// collateral bank with `oracle_max_age = 70`) still use the bank's
+/// own setting — tighten or loosen those on chain via the marginfi
+/// bank-config admin path.
+const DEFAULT_ORACLE_MAX_AGE_SECS: i64 = 400;
 
 /// Marginfi v2's `ORACLE_MIN_AGE = 10` — banks with
 /// `oracle_max_age` below this fail marginfi's bank-config

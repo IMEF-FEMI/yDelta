@@ -229,6 +229,13 @@ pub enum YdeltaInstruction {
     /// Errors with `LoanNotMatured` if pre-grace, or
     /// `InvalidArgument` if already settled.
     CheckMaturityLiquidatable = 41,
+    /// Curator-gated. Update an already-claimed vault seat's
+    /// `max_exposure_atoms` cap in place. Counterpart to
+    /// `ClaimSeatForRiskProfile`'s one-shot stamp — lets the cranker
+    /// keep the cap tracking the profile's live risk score × deposit
+    /// base without releasing and re-claiming the seat. Rejects a new
+    /// value below the seat's current `deployed_atoms`.
+    SetSeatMaxExposureForRiskProfile = 42,
 }
 
 impl YdeltaInstruction {
@@ -245,7 +252,7 @@ mod tests {
     fn instruction_tags_are_stable() {
         // Tags are contiguous 0..=last_tag. Every value in range
         // round-trips; everything beyond errors out.
-        let last_tag: u8 = 41;
+        let last_tag: u8 = 42;
         for i in 0..=255u8 {
             match YdeltaInstruction::try_from(i) {
                 Ok(ix) => {

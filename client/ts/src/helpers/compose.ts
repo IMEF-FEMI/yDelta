@@ -1,12 +1,17 @@
 import {
+  AddressLookupTableAccount,
   Connection,
   PublicKey,
   TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
 } from '@solana/web3.js';
 import BN from 'bn.js';
+import { CrossbarClient } from '@switchboard-xyz/common';
 import { YDELTA_PROGRAM_ID } from '../utils/programId';
 import { Market } from '../market';
 import { Loan } from '../loan';
+import { makeSwbCrankIxsForBanks } from '../marginfi';
 import {
   createClaimSeatInstruction,
   createDepositInstruction,
@@ -47,7 +52,11 @@ import {
   UpdateOrderInstructionArgs,
 } from '../ydelta/instructions';
 import { Side, OrderKind, OrderType } from '../ydelta/types/enums';
-import { createAtaIfMissing, TOKEN_PROGRAM_ID } from '../utils/solana';
+import {
+  createAtaIfMissing,
+  resolveMintTokenProgram,
+  TOKEN_PROGRAM_ID,
+} from '../utils/solana';
 import { globalVaultPda } from '../utils/pdas';
 
 export type ClaimSeatComposeArgs = {
@@ -237,7 +246,8 @@ function placeOrderIxsImpl(
 }
 
 /** Place a primary bid. Auto-prepends `ClaimSeat` when the trader has no seat
- *  in `market`. */
+ *  in `market`. Synchronous — caller must pre-resolve `borrowerDebtToken` +
+ *  `tokenProgram`. Prefer {@link placeBidIxsAsync} for FE flows. */
 export function placeBidIxs(
   compose: PlaceOrderComposeArgs,
   fields: PlaceOrderFields,
@@ -245,12 +255,102 @@ export function placeBidIxs(
   return placeOrderIxsImpl(compose, Side.Bid, fields);
 }
 
-/** Place a primary ask. Asks must not carry collateral (`collateralAtoms = 0`). */
+/** Place a primary ask. Asks must not carry collateral (`collateralAtoms = 0`).
+ *  Synchronous — see {@link placeAskIxsAsync} for the FE-friendly variant. */
 export function placeAskIxs(
   compose: PlaceOrderComposeArgs,
   fields: Omit<PlaceOrderFields, 'collateralAtoms'>,
 ): TransactionInstruction[] {
   return placeOrderIxsImpl(compose, Side.Ask, { ...fields, collateralAtoms: 0 });
+}
+
+/**
+ * Inputs to the FE-friendly `placeBidIxsAsync` / `placeAskIxsAsync`
+ * builders. Compared to {@link PlaceOrderComposeArgs}, callers don't
+ * need to pre-resolve:
+ *
+ *   - `borrowerDebtToken` — derived from `payer` + `market.debtMint()`
+ *     + the resolved token program.
+ *   - `tokenProgram` — resolved from `market.debtMint()`'s on-chain
+ *     account owner (`spl-token` vs `spl-token-2022`).
+ *
+ * Plus the builder auto-prepends a `createATA` ix when the signer's
+ * debt-ATA doesn't exist yet. Mirrors what `depositWithATAIxs` already
+ * does for deposits.
+ */
+export type PlaceOrderComposeArgsAsync = {
+  connection: Connection;
+  market: Market;
+  payer: PublicKey;
+  marginfiGroup: PublicKey;
+  debtBank: PublicKey;
+  collateralBank: PublicKey;
+  debtOracles: PublicKey[];
+  collateralOracles: PublicKey[];
+  debtLiquidityVault: PublicKey;
+  debtBankLiquidityVaultAuthority: PublicKey;
+  marginfiProgram: PublicKey;
+  /** Loan PDA when placing a `SecondaryLoanSale` bid. */
+  secondaryLoan?: PublicKey;
+  programId?: PublicKey;
+};
+
+async function resolveAsyncComposeArgs(
+  async_: PlaceOrderComposeArgsAsync,
+): Promise<{
+  preIxs: TransactionInstruction[];
+  compose: PlaceOrderComposeArgs;
+}> {
+  const debtMint = async_.market.debtMint();
+  const tokenProgram = await resolveMintTokenProgram(async_.connection, debtMint);
+  const { ata: borrowerDebtToken, createIx } = await createAtaIfMissing(
+    async_.connection,
+    async_.payer,
+    async_.payer,
+    debtMint,
+    tokenProgram,
+  );
+  const preIxs: TransactionInstruction[] = createIx ? [createIx] : [];
+  return {
+    preIxs,
+    compose: {
+      market: async_.market,
+      payer: async_.payer,
+      marginfiGroup: async_.marginfiGroup,
+      debtBank: async_.debtBank,
+      collateralBank: async_.collateralBank,
+      debtOracles: async_.debtOracles,
+      collateralOracles: async_.collateralOracles,
+      debtLiquidityVault: async_.debtLiquidityVault,
+      debtBankLiquidityVaultAuthority: async_.debtBankLiquidityVaultAuthority,
+      borrowerDebtToken,
+      tokenProgram,
+      marginfiProgram: async_.marginfiProgram,
+      programId: async_.programId,
+      secondaryLoan: async_.secondaryLoan,
+    },
+  };
+}
+
+/** FE-friendly Bid builder. Resolves the debt-mint's token program from
+ *  chain, derives the signer's debt-ATA, auto-prepends `createATA` if
+ *  missing, then runs the same compose pipeline as `placeBidIxs`. */
+export async function placeBidIxsAsync(
+  args: PlaceOrderComposeArgsAsync,
+  fields: PlaceOrderFields,
+): Promise<TransactionInstruction[]> {
+  const { preIxs, compose } = await resolveAsyncComposeArgs(args);
+  return [...preIxs, ...placeBidIxs(compose, fields)];
+}
+
+/** FE-friendly Ask builder. Same auto-resolution as
+ *  {@link placeBidIxsAsync}; pins `collateralAtoms = 0`. */
+export async function placeAskIxsAsync(
+  args: PlaceOrderComposeArgsAsync,
+  fields: Omit<PlaceOrderFields, 'collateralAtoms'>,
+): Promise<TransactionInstruction[]> {
+  const { preIxs, compose } = await resolveAsyncComposeArgs(args);
+  return [...preIxs, ...placeAskIxs(compose, fields)];
 }
 
 export type CancelOrderComposeArgs = {
@@ -800,8 +900,17 @@ export async function globalVaultWithdrawIxs(
 
 // ────────────────────── Risk-profile market-side ixs ──────────────────────
 
+/**
+ * Account args shared by every market-side risk-profile ix
+ * (claim_seat, place_order, cancel_order, update_order,
+ * release_seat). All five use the split-payer layout: `feePayer`
+ * covers tx fee + any rent for dynamic-region expansion (writable
+ * + signer), `curator` only signs to satisfy the on-chain
+ * `profile.curator` gate. The two may be the same pubkey.
+ */
 export type RiskProfileMarketIxArgs = {
-  payer: PublicKey;
+  feePayer: PublicKey;
+  curator: PublicKey;
   market: Market | PublicKey;
   /** Vault debt mint — derives the GlobalVault PDA. */
   mint: PublicKey;
@@ -820,7 +929,7 @@ export function claimSeatForRiskProfileIx(
 ): TransactionInstruction {
   const programId = args.programId ?? YDELTA_PROGRAM_ID;
   return createClaimSeatForRiskProfileInstruction(
-    { payer: args.payer, mint: args.mint, market: marketKey(args.market) },
+    { feePayer: args.feePayer, curator: args.curator, mint: args.mint, market: marketKey(args.market) },
     {
       profileId: args.profileId,
       maxExposureAtoms: toBN(args.maxExposureAtoms),
@@ -834,7 +943,7 @@ export function claimSeatForRiskProfileIx(
 export function releaseSeatForRiskProfileIx(args: RiskProfileMarketIxArgs): TransactionInstruction {
   const programId = args.programId ?? YDELTA_PROGRAM_ID;
   return createReleaseSeatForRiskProfileInstruction(
-    { payer: args.payer, mint: args.mint, market: marketKey(args.market) },
+    { feePayer: args.feePayer, curator: args.curator, mint: args.mint, market: marketKey(args.market) },
     { profileId: args.profileId },
     programId,
   );
@@ -876,7 +985,7 @@ export function placeOrderForRiskProfileIx(
 ): TransactionInstruction {
   const programId = args.programId ?? YDELTA_PROGRAM_ID;
   return createPlaceOrderForRiskProfileInstruction(
-    { payer: args.payer, mint: args.mint, market: marketKey(args.market) },
+    { feePayer: args.feePayer, curator: args.curator, mint: args.mint, market: marketKey(args.market) },
     {
       profileId: args.profileId,
       rateBps: args.rateBps,
@@ -892,7 +1001,7 @@ export function placeOrderForRiskProfileIx(
 export function cancelOrderForRiskProfileIx(args: RiskProfileMarketIxArgs): TransactionInstruction {
   const programId = args.programId ?? YDELTA_PROGRAM_ID;
   return createCancelOrderForRiskProfileInstruction(
-    { payer: args.payer, mint: args.mint, market: marketKey(args.market) },
+    { feePayer: args.feePayer, curator: args.curator, mint: args.mint, market: marketKey(args.market) },
     { profileId: args.profileId },
     programId,
   );
@@ -911,7 +1020,7 @@ export function updateOrderForRiskProfileIx(
 ): TransactionInstruction {
   const programId = args.programId ?? YDELTA_PROGRAM_ID;
   return createUpdateOrderForRiskProfileInstruction(
-    { payer: args.payer, mint: args.mint, market: marketKey(args.market) },
+    { feePayer: args.feePayer, curator: args.curator, mint: args.mint, market: marketKey(args.market) },
     {
       profileId: args.profileId,
       newRateBps: args.newRateBps,
@@ -1158,4 +1267,188 @@ export function acceptProtocolAdminIx(
     { pendingAdmin: args.pendingAdmin },
     programId,
   );
+}
+
+// ────────────────────── Switchboard pre-flight crank ──────────────────────
+//
+// Every yDelta ix that calls `MarginfiV18Adapter::oracle_price` —
+// PlaceOrder, LiquidateLoan, SettleMaturedLoan, ConvertP2PoolToFixed,
+// ClaimRepaymentForRiskProfile, ClaimCuratorFee — needs each touched
+// bank's primary oracle to be fresh. Switchboard-Pull feeds only
+// refresh when someone sends a "fetch update" tx; the on-chain bank's
+// `oracle_max_age` window is often 70s, which is far below mainnet
+// keeper cadence. The UI absorbs the cost of cranking just-in-time so
+// the user's order tx doesn't trip `OracleStale` (custom 102).
+//
+// Pattern mirrors marginfi-client-v2's `makeBorrowTx` (see
+// `node_modules/@mrgnlabs/marginfi-client-v2/src/models/account/
+// wrapper.ts`): build a separate v0 crank tx + a v0 action tx and
+// return both. Callers submit them sequentially (`crankTx` first; once
+// it confirms, `actionTx` lands while the feed is still inside its
+// `max_age` window). Two txs because the combined footprint —
+// crank ixs + LUTs + action ix + ydelta accounts — routinely exceeds
+// Solana's 1232-byte tx limit on stalest-feed paths.
+
+export type BuildCrankAndActionV0TxsArgs = {
+  connection: Connection;
+  payer: PublicKey;
+  /** Banks whose oracles must be fresh for `actionIxs` to succeed.
+   *  For PlaceOrder, that's `[debtBank, collateralBank]`; for
+   *  settlement / liquidation, same; for ConvertP2PoolToFixed, same. */
+  banks: PublicKey[];
+  /** The downstream action's instructions. Built via the ix-only compose
+   *  helpers above (`placeBidIxs`, `liquidateLoanIxs`, etc.). */
+  actionIxs: TransactionInstruction[];
+  /** Optional LUTs for the action tx. Pass any market / oracle LUTs the
+   *  caller maintains. */
+  actionLuts?: AddressLookupTableAccount[];
+  /** Self-hosted Crossbar override (`NEXT_PUBLIC_SWITCHBOARD_CROSSSBAR_API`-style). */
+  crossbarClient?: CrossbarClient;
+};
+
+export type BuildCrankAndActionV0TxsResult = {
+  /** Unsigned v0 crank tx, present only when at least one touched bank
+   *  uses a Switchboard-Pull oracle. Submit + confirm before
+   *  `actionTx`. */
+  crankTx?: VersionedTransaction;
+  /** LUTs used to compile `crankTx`. Re-attach if you (de)serialize the
+   *  tx between this call and signing — `VersionedTransaction` doesn't
+   *  carry them once compiled. */
+  crankLuts: AddressLookupTableAccount[];
+  /** Unsigned v0 action tx. */
+  actionTx: VersionedTransaction;
+  /** Bank pubkeys that ended up in the crank set (subset of input). */
+  swbBanks: PublicKey[];
+};
+
+/**
+ * Build a `(crankTx?, actionTx)` pair for a yDelta action that calls
+ * `oracle_price`. Returns `crankTx = undefined` when no touched bank
+ * uses a Switchboard-Pull oracle (all-Pyth banks need no crank).
+ *
+ * Both txs are returned **unsigned**. Caller fetches a blockhash and
+ * passes it via `compileToV0Message` — done internally — but must sign
+ * and submit. Mirrors the eva01 pattern of treating the crank as its
+ * own tx so a combined-tx size overflow doesn't block the action.
+ */
+export async function buildCrankAndActionV0Txs(
+  args: BuildCrankAndActionV0TxsArgs,
+): Promise<BuildCrankAndActionV0TxsResult> {
+  const {
+    value: { blockhash },
+  } = await args.connection.getLatestBlockhashAndContext('confirmed');
+
+  const { instructions: crankIxs, luts: crankLuts, swbBanks } =
+    await makeSwbCrankIxsForBanks({
+      connection: args.connection,
+      payer: args.payer,
+      banks: args.banks,
+      crossbarClient: args.crossbarClient,
+    });
+
+  let crankTx: VersionedTransaction | undefined;
+  if (crankIxs.length > 0) {
+    const crankMsg = new TransactionMessage({
+      payerKey: args.payer,
+      recentBlockhash: blockhash,
+      instructions: crankIxs,
+    }).compileToV0Message(crankLuts);
+    crankTx = new VersionedTransaction(crankMsg);
+  }
+
+  const actionMsg = new TransactionMessage({
+    payerKey: args.payer,
+    recentBlockhash: blockhash,
+    instructions: args.actionIxs,
+  }).compileToV0Message(args.actionLuts ?? []);
+  const actionTx = new VersionedTransaction(actionMsg);
+
+  return { crankTx, crankLuts, actionTx, swbBanks };
+}
+
+/**
+ * Wallet-shaped signer interface. Matches Phantom / Backpack / Anchor
+ * wallet adapters' `signTransaction(tx) → tx` shape. Keypair-style
+ * signers (server-side) can `.sign([keypair])` directly and skip this.
+ */
+export type SignVersionedTransaction = (
+  tx: VersionedTransaction,
+) => Promise<VersionedTransaction>;
+
+export type SubmitWithCrankResult = {
+  /** Crank signature, or `null` when no crank was needed. */
+  crankSig: string | null;
+  /** Action tx signature. */
+  actionSig: string;
+};
+
+export type SubmitWithCrankArgs = BuildCrankAndActionV0TxsArgs & {
+  signTransaction: SignVersionedTransaction;
+  /** When `true`, refresh the action tx's blockhash after the crank
+   *  confirms — protects against the action's recent_blockhash
+   *  expiring on slow RPCs (>~60s between crank confirm and action
+   *  send). Default `true`. */
+  refreshActionBlockhash?: boolean;
+  /** Commitment for `confirmTransaction`. Defaults to `'confirmed'`. */
+  commitment?: 'processed' | 'confirmed' | 'finalized';
+};
+
+/**
+ * End-to-end "place this action on chain" helper for FE flows.
+ *
+ * 1. Builds `(crankTx?, actionTx)` via {@link buildCrankAndActionV0Txs}.
+ * 2. If `crankTx` is present, signs + sends + confirms it.
+ * 3. (Optional) refreshes the action's blockhash so it can't expire
+ *    while we were waiting on the crank confirm.
+ * 4. Signs + sends + confirms the action tx.
+ *
+ * Drops in directly behind `useWallet().signTransaction` in any
+ * `@solana/wallet-adapter`-driven UI.
+ */
+export async function submitWithCrank(
+  args: SubmitWithCrankArgs,
+): Promise<SubmitWithCrankResult> {
+  const commitment = args.commitment ?? 'confirmed';
+  const refresh = args.refreshActionBlockhash ?? true;
+
+  const { crankTx, actionTx } = await buildCrankAndActionV0Txs({
+    connection: args.connection,
+    payer: args.payer,
+    banks: args.banks,
+    actionIxs: args.actionIxs,
+    actionLuts: args.actionLuts,
+    crossbarClient: args.crossbarClient,
+  });
+
+  let crankSig: string | null = null;
+  if (crankTx) {
+    const signedCrank = await args.signTransaction(crankTx);
+    crankSig = await args.connection.sendRawTransaction(signedCrank.serialize());
+    await args.connection.confirmTransaction(
+      {
+        signature: crankSig,
+        ...(await args.connection.getLatestBlockhash(commitment)),
+      },
+      commitment,
+    );
+    if (refresh) {
+      // V0 messages: caller hasn't signed yet, so mutating the
+      // recent_blockhash on the unsigned `actionTx` is safe.
+      actionTx.message.recentBlockhash = (
+        await args.connection.getLatestBlockhash(commitment)
+      ).blockhash;
+    }
+  }
+
+  const signedAction = await args.signTransaction(actionTx);
+  const actionSig = await args.connection.sendRawTransaction(signedAction.serialize());
+  await args.connection.confirmTransaction(
+    {
+      signature: actionSig,
+      ...(await args.connection.getLatestBlockhash(commitment)),
+    },
+    commitment,
+  );
+
+  return { crankSig, actionSig };
 }

@@ -12,8 +12,14 @@ import { PlaceOrderForRiskProfileParams } from '../types/PlaceOrderForRiskProfil
 
 export const placeOrderForRiskProfileInstructionDiscriminator = YdeltaInstructionTag.PlaceOrderForRiskProfile;
 
+/**
+ * Split-payer layout: `feePayer` pays tx fee + any rent for vault
+ * node-block expansion (writable + signer). `curator` only signs
+ * (no debit) and must equal `profile.curator`.
+ */
 export type PlaceOrderForRiskProfileInstructionAccounts = {
-  payer: PublicKey;
+  feePayer: PublicKey;
+  curator: PublicKey;
   mint: PublicKey;
   market: PublicKey;
 };
@@ -45,7 +51,8 @@ export function createPlaceOrderForRiskProfileInstruction(
   const [vault] = globalVaultPda(accounts.mint, programId);
 
   const keys: AccountMeta[] = [
-    { pubkey: accounts.payer, isWritable: true, isSigner: true },
+    { pubkey: accounts.feePayer, isWritable: true, isSigner: true },
+    { pubkey: accounts.curator, isWritable: false, isSigner: true },
     { pubkey: globalConfigPda(programId)[0], isWritable: false, isSigner: false },
     { pubkey: vault, isWritable: true, isSigner: false },
     { pubkey: accounts.market, isWritable: true, isSigner: false },

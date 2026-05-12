@@ -22,8 +22,14 @@ const Struct = new beet.BeetArgsStruct<{
   'ReleaseSeatForRiskProfileInstructionArgs',
 );
 
+/**
+ * Split-payer layout. Release frees blocks back to the free list
+ * so `feePayer` just covers the tx fee; `curator` signs to satisfy
+ * the on-chain `profile.curator` gate.
+ */
 export type ReleaseSeatForRiskProfileInstructionAccounts = {
-  payer: PublicKey;
+  feePayer: PublicKey;
+  curator: PublicKey;
   mint: PublicKey;
   market: PublicKey;
 };
@@ -40,7 +46,8 @@ export function createReleaseSeatForRiskProfileInstruction(
   const [vault] = globalVaultPda(accounts.mint, programId);
 
   const keys: AccountMeta[] = [
-    { pubkey: accounts.payer, isWritable: true, isSigner: true },
+    { pubkey: accounts.feePayer, isWritable: true, isSigner: true },
+    { pubkey: accounts.curator, isWritable: false, isSigner: true },
     { pubkey: globalConfigPda(programId)[0], isWritable: false, isSigner: false },
     { pubkey: vault, isWritable: true, isSigner: false },
     { pubkey: accounts.market, isWritable: true, isSigner: false },

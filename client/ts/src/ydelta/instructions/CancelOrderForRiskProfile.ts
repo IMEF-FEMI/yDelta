@@ -12,8 +12,14 @@ import { CancelOrderForRiskProfileParams } from '../types/CancelOrderForRiskProf
 
 export const cancelOrderForRiskProfileInstructionDiscriminator = YdeltaInstructionTag.CancelOrderForRiskProfile;
 
+/**
+ * Split-payer layout. Cancel doesn't expand a region (it returns
+ * blocks to the free list), so `feePayer` only covers the tx fee;
+ * `curator` signs to satisfy the on-chain `profile.curator` gate.
+ */
 export type CancelOrderForRiskProfileInstructionAccounts = {
-  payer: PublicKey;
+  feePayer: PublicKey;
+  curator: PublicKey;
   mint: PublicKey;
   market: PublicKey;
 };
@@ -42,7 +48,8 @@ export function createCancelOrderForRiskProfileInstruction(
   const [vault] = globalVaultPda(accounts.mint, programId);
 
   const keys: AccountMeta[] = [
-    { pubkey: accounts.payer, isWritable: true, isSigner: true },
+    { pubkey: accounts.feePayer, isWritable: true, isSigner: true },
+    { pubkey: accounts.curator, isWritable: false, isSigner: true },
     { pubkey: globalConfigPda(programId)[0], isWritable: false, isSigner: false },
     { pubkey: vault, isWritable: true, isSigner: false },
     { pubkey: accounts.market, isWritable: true, isSigner: false },

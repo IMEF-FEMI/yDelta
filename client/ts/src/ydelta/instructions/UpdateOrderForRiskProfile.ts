@@ -12,8 +12,15 @@ import { UpdateOrderForRiskProfileParams } from '../types/UpdateOrderForRiskProf
 
 export const updateOrderForRiskProfileInstructionDiscriminator = YdeltaInstructionTag.UpdateOrderForRiskProfile;
 
+/**
+ * Split-payer layout. Update is a cancel-and-replace internally;
+ * steady-state cost is just the tx fee (the freed block is reused
+ * by the re-place), but `feePayer` will cover any rent if expansion
+ * does happen. `curator` only signs.
+ */
 export type UpdateOrderForRiskProfileInstructionAccounts = {
-  payer: PublicKey;
+  feePayer: PublicKey;
+  curator: PublicKey;
   mint: PublicKey;
   market: PublicKey;
 };
@@ -45,7 +52,8 @@ export function createUpdateOrderForRiskProfileInstruction(
   const [vault] = globalVaultPda(accounts.mint, programId);
 
   const keys: AccountMeta[] = [
-    { pubkey: accounts.payer, isWritable: true, isSigner: true },
+    { pubkey: accounts.feePayer, isWritable: true, isSigner: true },
+    { pubkey: accounts.curator, isWritable: false, isSigner: true },
     { pubkey: globalConfigPda(programId)[0], isWritable: false, isSigner: false },
     { pubkey: vault, isWritable: true, isSigner: false },
     { pubkey: accounts.market, isWritable: true, isSigner: false },

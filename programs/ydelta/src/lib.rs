@@ -54,6 +54,7 @@ use program::{
     repay::process_repay,
     set_fee_config::process_set_fee_config,
     set_market_pause::process_set_market_pause,
+    set_seat_max_exposure_for_risk_profile::process_set_seat_max_exposure_for_risk_profile,
     settle_matured_loan::process_settle_matured_loan,
     sync_market_position::process_sync_market_position,
     sync_market_seats_for_risk_profile::process_sync_market_seats_for_risk_profile,
@@ -196,6 +197,9 @@ pub fn process_instruction(
         }
         YdeltaInstruction::CheckMaturityLiquidatable => {
             process_check_maturity_liquidatable(program_id, accounts, data)?
+        }
+        YdeltaInstruction::SetSeatMaxExposureForRiskProfile => {
+            process_set_seat_max_exposure_for_risk_profile(program_id, accounts, data)?
         }
     }
 

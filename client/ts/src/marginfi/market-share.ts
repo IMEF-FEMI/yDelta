@@ -1,5 +1,9 @@
 import { PublicKey } from '@solana/web3.js';
 import BigNumber from 'bignumber.js';
+import {
+  getAssetQuantity,
+  getLiabilityQuantity,
+} from '@mrgnlabs/marginfi-client-v2';
 import { Market } from '../market';
 import { MarginfiReader } from './client';
 import { getBankLiquidity, getBankRates } from './bank';
@@ -39,6 +43,9 @@ export async function getMarketBankRelationship({
   const liquidity = await getBankLiquidity(reader, bank);
   const rates = await getBankRates(reader, bank);
   const bankParsed = await reader.loadBank(bank);
+  // marginfi-client-v2's exported pure helpers expect the same field
+  // shape `BankView` carries; cast through `any` at the call boundary.
+  const bankForHelpers = bankParsed as any;
 
   const lenderIntegrationKey = market.header().lenderIntegrationAccount;
   const borrowerIntegrationKey = market.header().borrowerIntegrationAccount;
@@ -56,11 +63,11 @@ export async function getMarketBankRelationship({
   let borrowedAtoms = new BigNumber(0);
   if (lenderAcc) {
     const shares = readBalanceShares(lenderAcc.data, bank, 'asset');
-    if (shares) suppliedAtoms = bankParsed.getAssetQuantity(shares);
+    if (shares) suppliedAtoms = getAssetQuantity(bankForHelpers, shares);
   }
   if (borrowerAcc) {
     const shares = readBalanceShares(borrowerAcc.data, bank, 'liability');
-    if (shares) borrowedAtoms = bankParsed.getLiabilityQuantity(shares);
+    if (shares) borrowedAtoms = getLiabilityQuantity(bankForHelpers, shares);
   }
 
   return {

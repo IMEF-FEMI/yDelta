@@ -1,6 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import BigNumber from 'bignumber.js';
 import BN from 'bn.js';
+import { getLiabilityQuantity } from '@mrgnlabs/marginfi-client-v2';
 import { Loan } from '../loan';
 import { Market } from '../market';
 import { LoanType } from '../ydelta/types/enums';
@@ -35,7 +36,10 @@ export async function getP2PoolLiveLiability(
   }
   const bank = await reader.loadBank(debtBank);
   const shares = mantissaToShareDecimal(loan.data().borrowerMarginfiBorrowShares);
-  const liabilityAtoms = bank.getLiabilityQuantity(shares);
+  // Use marginfi-client-v2's exported pure helper. Our `BankView` is
+  // duck-shape compatible (assetShareValue / liabilityShareValue
+  // BigNumber fields), so casting through `any` is intentional.
+  const liabilityAtoms = getLiabilityQuantity(bank as any, shares);
   const principal = bnToBigNumber(loan.data().principalDebtAtoms);
   const accrued = BigNumber.max(liabilityAtoms.minus(principal), new BigNumber(0));
   const ageSeconds = Math.max(1, Math.floor(Date.now() / 1000) - Number(loan.startedAt()));

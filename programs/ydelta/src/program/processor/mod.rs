@@ -24,6 +24,7 @@ pub mod release_seat_for_risk_profile;
 pub mod repay;
 pub mod set_fee_config;
 pub mod set_market_pause;
+pub mod set_seat_max_exposure_for_risk_profile;
 pub mod settle_matured_loan;
 pub mod shared;
 pub mod sync_market_position;

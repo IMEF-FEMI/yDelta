@@ -390,6 +390,23 @@ pub struct ClaimSeatForRiskProfileLog {
 }
 impl_discriminant!(ClaimSeatForRiskProfileLog);
 
+/// Emitted by `set_seat_max_exposure_for_risk_profile`. Records the
+/// before/after cap so off-chain consumers can audit cranker-driven
+/// resizes.
+#[repr(C)]
+#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
+pub struct SetSeatMaxExposureForRiskProfileLog {
+    pub global_vault: Pubkey,
+    pub market: Pubkey,
+    pub profile_id: u8,
+    pub _pad0: [u8; 7],
+    pub previous_max_exposure_atoms: u64,
+    pub new_max_exposure_atoms: u64,
+    pub seat_index_in_market: DataIndex,
+    pub _pad1: [u8; 4],
+}
+impl_discriminant!(SetSeatMaxExposureForRiskProfileLog);
+
 /// Emitted by `place_order_for_risk_profile`. Records the resting
 /// order's market sequence number, rate, and term.
 #[repr(C)]

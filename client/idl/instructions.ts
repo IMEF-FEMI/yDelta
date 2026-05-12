@@ -8,6 +8,15 @@ const writableSigner = (name: string, docs?: string): IdlInstruction['accounts']
   isSigner: true,
   ...(docs ? { docs: [docs] } : {}),
 });
+/** Signer that contributes its signature but isn't debited. Used by
+ *  the split-payer risk-profile ixs where the curator authorises but
+ *  the fee_payer carries any lamport flow. */
+const readonlySigner = (name: string, docs?: string): IdlInstruction['accounts'][number] => ({
+  name,
+  isMut: false,
+  isSigner: true,
+  ...(docs ? { docs: [docs] } : {}),
+});
 const writable = (name: string, docs?: string): IdlInstruction['accounts'][number] => ({
   name,
   isMut: true,
@@ -385,10 +394,13 @@ export const instructions: IdlInstruction[] = [
   {
     name: 'ClaimSeatForRiskProfile',
     discriminant: { type: 'u8', value: 15 },
-    docs: ['Vault admin opens a market seat for a profile with a per-market cap.'],
+    docs: [
+      "Curator opens a market seat for a profile with a per-market cap. Split-payer: feePayer covers tx fee + rent for the new seat block; curator only signs to satisfy the profile.curator gate.",
+    ],
     args: [{ name: 'params', type: { defined: 'ClaimSeatForRiskProfileParams' } }],
     accounts: [
-      writableSigner('payer'),
+      writableSigner('feePayer', 'Tx fee payer + rent funder for market seat-block expansion.'),
+      readonlySigner('curator', 'Must equal `RiskProfile.curator`. No lamports debited.'),
       GLOBAL_CONFIG,
       writable('vault'),
       writable('market'),
@@ -400,10 +412,13 @@ export const instructions: IdlInstruction[] = [
   {
     name: 'PlaceOrderForRiskProfile',
     discriminant: { type: 'u8', value: 16 },
-    docs: ['Curator places a vault Ask.'],
+    docs: [
+      "Curator places a vault Ask. Split-payer: feePayer covers tx fee + any vault node-block rent; curator only signs.",
+    ],
     args: [{ name: 'params', type: { defined: 'PlaceOrderForRiskProfileParams' } }],
     accounts: [
-      writableSigner('payer'),
+      writableSigner('feePayer', 'Tx fee payer + rent funder for any node-block expansion.'),
+      readonlySigner('curator', 'Must equal `RiskProfile.curator`.'),
       GLOBAL_CONFIG,
       writable('vault'),
       writable('market'),
@@ -415,10 +430,13 @@ export const instructions: IdlInstruction[] = [
   {
     name: 'CancelOrderForRiskProfile',
     discriminant: { type: 'u8', value: 17 },
-    docs: ['Curator cancels a vault order.'],
+    docs: [
+      "Curator cancels a vault order. Split-payer: feePayer covers tx fee (no expansion happens); curator only signs.",
+    ],
     args: [{ name: 'params', type: { defined: 'CancelOrderForRiskProfileParams' } }],
     accounts: [
-      writableSigner('payer'),
+      writableSigner('feePayer', 'Tx fee payer.'),
+      readonlySigner('curator', 'Must equal `RiskProfile.curator`.'),
       GLOBAL_CONFIG,
       writable('vault'),
       writable('market'),
@@ -430,10 +448,13 @@ export const instructions: IdlInstruction[] = [
   {
     name: 'UpdateOrderForRiskProfile',
     discriminant: { type: 'u8', value: 18 },
-    docs: ['Curator updates a vault order via cancel-and-replace.'],
+    docs: [
+      "Curator updates a vault order via cancel-and-replace. Split-payer: feePayer covers tx fee + any rent if expansion fires; curator only signs.",
+    ],
     args: [{ name: 'params', type: { defined: 'UpdateOrderForRiskProfileParams' } }],
     accounts: [
-      writableSigner('payer'),
+      writableSigner('feePayer', 'Tx fee payer + rent funder for any node-block expansion.'),
+      readonlySigner('curator', 'Must equal `RiskProfile.curator`.'),
       GLOBAL_CONFIG,
       writable('vault'),
       writable('market'),
@@ -763,10 +784,13 @@ export const instructions: IdlInstruction[] = [
   {
     name: 'ReleaseSeatForRiskProfile',
     discriminant: { type: 'u8', value: 37 },
-    docs: ['Tear down an empty vault-owned ClaimedSeat in a market.'],
+    docs: [
+      "Tear down an empty vault-owned ClaimedSeat in a market. Curator-gated; split-payer: feePayer covers tx fee, curator only signs.",
+    ],
     args: [{ name: 'params', type: { defined: 'ReleaseSeatForRiskProfileParams' } }],
     accounts: [
-      writableSigner('payer'),
+      writableSigner('feePayer', 'Tx fee payer.'),
+      readonlySigner('curator', 'Must equal `RiskProfile.curator`.'),
       GLOBAL_CONFIG,
       writable('vault'),
       writable('market'),

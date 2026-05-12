@@ -1,7 +1,26 @@
 import { PublicKey } from '@solana/web3.js';
 import BigNumber from 'bignumber.js';
-import { Bank, MarginRequirementType, PriceBias } from '@mrgnlabs/marginfi-client-v2';
+import {
+  computeInterestRates,
+  computeRemainingCapacity,
+  computeUtilizationRate,
+  getAssetQuantity,
+  getLiabilityQuantity,
+  getTotalAssetQuantity,
+  getTotalLiabilityQuantity,
+  MarginRequirementType,
+  OraclePrice,
+  PriceBias,
+} from '@mrgnlabs/marginfi-client-v2';
 import { MarginfiReader } from './client';
+import { BankView } from './bank-view';
+
+/** Marginfi-client-v2's pure helpers consume a duck-typed `bank` /
+ *  `bank.config` parameter. Our `BankView` matches that shape (same
+ *  field names, BigNumber values), so casting to `any` at the call
+ *  boundary is intentional — TS can't unify our local types with the
+ *  package's internal types, but the runtime shape is identical. */
+type AnyBank = any;
 
 export type BankRates = {
   /** Annualised deposit APR — what marginfi LPs earn for supplying. */
@@ -16,13 +35,10 @@ export type BankRates = {
 };
 
 /** Live rate + utilization snapshot for a marginfi bank. */
-export async function getBankRates(
-  reader: MarginfiReader,
-  bank: PublicKey,
-): Promise<BankRates> {
+export async function getBankRates(reader: MarginfiReader, bank: PublicKey): Promise<BankRates> {
   const b = await reader.loadBank(bank);
-  const { lendingRate, borrowingRate } = b.computeInterestRates();
-  const utilization = b.computeUtilizationRate();
+  const { lendingRate, borrowingRate } = computeInterestRates(b as AnyBank);
+  const utilization = computeUtilizationRate(b as AnyBank);
   return {
     supplyApr: lendingRate.toNumber(),
     borrowApr: borrowingRate.toNumber(),
@@ -51,9 +67,9 @@ export async function getBankLiquidity(
   bank: PublicKey,
 ): Promise<BankLiquidity> {
   const b = await reader.loadBank(bank);
-  const totalAssetAtoms = b.getTotalAssetQuantity();
-  const totalLiabilityAtoms = b.getTotalLiabilityQuantity();
-  const cap = b.computeRemainingCapacity();
+  const totalAssetAtoms = getTotalAssetQuantity(b as AnyBank);
+  const totalLiabilityAtoms = getTotalLiabilityQuantity(b as AnyBank);
+  const cap = computeRemainingCapacity(b as AnyBank);
   return {
     totalAssetAtoms,
     totalLiabilityAtoms,
@@ -106,28 +122,85 @@ export async function getPairwiseLtv(
   };
 }
 
+/** Convert a share quantity to atoms via the bank's `assetShareValue`.
+ *  Convenience around marginfi-client-v2's exported `getAssetQuantity`. */
+export function bankAssetQuantity(bank: BankView, shares: BigNumber): BigNumber {
+  return getAssetQuantity(bank as AnyBank, shares);
+}
+
+/** Convert a share quantity to atoms via the bank's `liabilityShareValue`. */
+export function bankLiabilityQuantity(bank: BankView, shares: BigNumber): BigNumber {
+  return getLiabilityQuantity(bank as AnyBank, shares);
+}
+
 /** USD value of a `shares` amount on a bank, given a cached oracle price.
- *  Use `MarginfiReader.setSpotPrice(bank, usd)` to wire the price first. */
+ *  Use `MarginfiReader.setSpotPrice(bank, usd)` to wire the price first.
+ *
+ *  This builds the USD value the same way marginfi-client-v2's
+ *  `computeAssetUsdValue` / `computeLiabilityUsdValue` would, but
+ *  inlined here so we don't pull in the broken `Bank` class.
+ *  `margin == Equity` skips the weight multiplier (which marginfi
+ *  applies only on Initial/Maintenance tiers). */
 export function bankAssetUsdValue(
   reader: MarginfiReader,
-  bank: Bank,
+  bank: BankView,
   shares: BigNumber,
   margin: MarginRequirementType = MarginRequirementType.Equity,
 ): BigNumber {
   const price = reader.oraclePriceFor(bank.address);
   if (!price) throw new Error(`no oracle price wired for bank ${bank.address.toBase58()}`);
-  return bank.computeAssetUsdValue(price, shares, margin, PriceBias.None);
+  const atoms = bankAssetQuantity(bank, shares);
+  const weight = weightForMargin(bank.config.assetWeightInit, bank.config.assetWeightMaint, margin);
+  return atoms
+    .times(getPriceValue(price, PriceBias.None))
+    .times(weight)
+    .dividedBy(new BigNumber(10).pow(bank.mintDecimals));
 }
 
 export function bankLiabilityUsdValue(
   reader: MarginfiReader,
-  bank: Bank,
+  bank: BankView,
   shares: BigNumber,
   margin: MarginRequirementType = MarginRequirementType.Equity,
 ): BigNumber {
   const price = reader.oraclePriceFor(bank.address);
   if (!price) throw new Error(`no oracle price wired for bank ${bank.address.toBase58()}`);
-  return bank.computeLiabilityUsdValue(price, shares, margin, PriceBias.None);
+  const atoms = bankLiabilityQuantity(bank, shares);
+  const weight = weightForMargin(
+    bank.config.liabilityWeightInit,
+    bank.config.liabilityWeightMaint,
+    margin,
+  );
+  return atoms
+    .times(getPriceValue(price, PriceBias.None))
+    .times(weight)
+    .dividedBy(new BigNumber(10).pow(bank.mintDecimals));
+}
+
+function weightForMargin(init: BigNumber, maint: BigNumber, m: MarginRequirementType): BigNumber {
+  switch (m) {
+    case MarginRequirementType.Initial:
+      return init;
+    case MarginRequirementType.Maintenance:
+      return maint;
+    case MarginRequirementType.Equity:
+    default:
+      return new BigNumber(1);
+  }
+}
+
+function getPriceValue(p: OraclePrice, bias: PriceBias): BigNumber {
+  // Mirrors `services/price/utils::getPrice` — `PriceBias.None` uses
+  // the realtime point estimate, Lowest/Highest cross the band.
+  switch (bias) {
+    case PriceBias.Lowest:
+      return p.priceWeighted.lowestPrice;
+    case PriceBias.Highest:
+      return p.priceWeighted.highestPrice;
+    case PriceBias.None:
+    default:
+      return p.priceRealtime.price;
+  }
 }
 
 /** APR → APY conversion (continuous compounding). */

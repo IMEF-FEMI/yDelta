@@ -1,40 +1,40 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import BigNumber from 'bignumber.js';
-import {
-  Bank,
-  MARGINFI_IDL,
-  OraclePrice,
-  PythPushFeedIdMap,
-} from '@mrgnlabs/marginfi-client-v2';
+import { OraclePrice } from '@mrgnlabs/marginfi-client-v2';
+
+import { BankView, loadBankView } from './bank-view';
 
 /** Read-only marginfi client wrapper. */
 
 export const MARGINFI_PROGRAM_ID = new PublicKey('MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA');
 
+/**
+ * Read-only cache + thin wrapper around the raw-bytes `BankView`
+ * decoder. Use this instead of constructing `MarginfiClient` from
+ * `@mrgnlabs/marginfi-client-v2` — the package's `Bank.fromBuffer` is
+ * broken on mainnet banks (case-mismatch + WrappedI80F48 shape issues
+ * in v6.4.1; see `bank-view.ts` for the writeup).
+ */
 export class MarginfiReader {
-  private banks = new Map<string, Bank>();
+  private banks = new Map<string, BankView>();
   private prices = new Map<string, OraclePrice>();
-  private feedMap?: PythPushFeedIdMap;
 
   constructor(public readonly connection: Connection) {}
 
   /** Fetch + parse a single marginfi `Bank`. Cached by pubkey. */
-  async loadBank(bank: PublicKey, force = false): Promise<Bank> {
+  async loadBank(bank: PublicKey, force = false): Promise<BankView> {
     const key = bank.toBase58();
     if (!force) {
       const cached = this.banks.get(key);
       if (cached) return cached;
     }
-    const info = await this.connection.getAccountInfo(bank);
-    if (!info) throw new Error(`marginfi bank ${key} not found on ${this.connection.rpcEndpoint}`);
-    if (!this.feedMap) this.feedMap = new Map();
-    const parsed = Bank.fromBuffer(bank, info.data, MARGINFI_IDL, this.feedMap);
+    const parsed = await loadBankView(this.connection, bank);
     this.banks.set(key, parsed);
     return parsed;
   }
 
   /** Force a re-fetch of `bank`. */
-  async refresh(bank: PublicKey): Promise<Bank> {
+  async refresh(bank: PublicKey): Promise<BankView> {
     return this.loadBank(bank, /*force=*/ true);
   }
 
@@ -77,4 +77,47 @@ export class MarginfiReader {
   oraclePriceFor(bank: PublicKey): OraclePrice | undefined {
     return this.prices.get(bank.toBase58());
   }
+}
+
+// Re-export the lean snapshot shape so callers can keep using it (kept
+// as a type alias on top of BankView for backwards-compat with the
+// already-shipped SWB-crank flow).
+export type BankSnapshot = {
+  address: PublicKey;
+  mint: PublicKey;
+  liquidityVault: PublicKey;
+  liquidityVaultAuthorityBump: number;
+  oracleSetup: number;
+  oracleKeys: PublicKey[];
+  oracleMaxAge: number;
+};
+
+/** Lean snapshot — same surface the SWB-crank path uses. Forwards to
+ *  the full `BankView` decoder. */
+export async function loadBankSnapshot(
+  connection: Connection,
+  address: PublicKey,
+): Promise<BankSnapshot> {
+  const v = await loadBankView(connection, address);
+  return {
+    address: v.address,
+    mint: v.mint,
+    liquidityVault: v.liquidityVault,
+    liquidityVaultAuthorityBump: v.liquidityVaultAuthorityBump,
+    oracleSetup: v.config.oracleSetup,
+    oracleKeys: v.config.oracleKeys,
+    oracleMaxAge: v.config.oracleMaxAge,
+  };
+}
+
+export function bankSnapshotFromView(v: BankView): BankSnapshot {
+  return {
+    address: v.address,
+    mint: v.mint,
+    liquidityVault: v.liquidityVault,
+    liquidityVaultAuthorityBump: v.liquidityVaultAuthorityBump,
+    oracleSetup: v.config.oracleSetup,
+    oracleKeys: v.config.oracleKeys,
+    oracleMaxAge: v.config.oracleMaxAge,
+  };
 }
