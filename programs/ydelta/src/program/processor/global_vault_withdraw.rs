@@ -162,18 +162,34 @@ pub fn process_global_vault_withdraw(
             "computed atoms_out is 0 — shares too small to redeem any atoms"
         )?;
 
-        // Idle = total_principal − deployed − encumbered. Reject if
-        // depositor would pull from deployed liquidity.
-        let idle: u64 = profile
-            .total_principal_atoms
-            .saturating_sub(profile.deployed_principal_atoms)
-            .saturating_sub(profile.encumbered_in_orders_atoms);
+        // Reject if the depositor would pull from liquidity that's
+        // reserved for resting orders or already deployed into loans.
+        //
+        // The cap is denominated in **assets-atoms**, not principal:
+        // `atoms_out` is `shares × total_assets / total_shares`, so it
+        // includes the depositor's slice of accrued yield. The vault's
+        // real-time liquid backing is the marginfi integration
+        // account's `asset_shares × asset_share_value` (yield accrues
+        // there directly). Deployed principal has already left
+        // marginfi to the borrower side and so is naturally absent
+        // from this balance — we only need to reserve
+        // `encumbered_in_orders_atoms`, which still sits in marginfi
+        // until matching withdraws it on-demand to fund the loan.
+        let mfi_asset_shares: u128 = crate::protocol::marginfi::read_asset_shares_u128(
+            integration_account.info,
+            lending_pool.info.key,
+        )?;
+        let mfi_atoms: u64 = MarginfiV18Adapter
+            .shares_to_amount(&[lending_pool.info.clone()], mfi_asset_shares)?;
+        let withdrawable: u64 = mfi_atoms.saturating_sub(profile.encumbered_in_orders_atoms);
         require!(
-            idle >= atoms_out,
+            withdrawable >= atoms_out,
             YdeltaError::VaultInsufficientIdleAtoms,
-            "idle_principal_atoms ({}) < atoms_out ({}) — wait for repayments \
-             or curator to cancel outstanding orders",
-            idle,
+            "marginfi liquidity ({} atoms) − encumbered_in_orders_atoms ({}) < \
+             atoms_out ({}) — wait for repayments or curator to cancel \
+             outstanding orders",
+            mfi_atoms,
+            { profile.encumbered_in_orders_atoms },
             atoms_out
         )?;
 

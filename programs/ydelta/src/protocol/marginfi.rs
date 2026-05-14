@@ -82,7 +82,7 @@ fn borrow_marginfi_account(data: &[u8]) -> Result<&MarginfiAccount, ProgramError
 /// Read the asset_shares balance of `marginfi_account` for `bank_pk`.
 /// Returns 0 if the account has no active balance for this bank yet (first
 /// deposit case).
-fn read_asset_shares_u128(
+pub(crate) fn read_asset_shares_u128(
     marginfi_account_info: &AccountInfo,
     bank_pk: &solana_program::pubkey::Pubkey,
 ) -> Result<u128, ProgramError> {
