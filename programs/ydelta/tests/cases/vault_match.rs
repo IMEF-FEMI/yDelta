@@ -87,6 +87,21 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
         profile.total_principal_atoms, 100_000_000,
         "total_principal_atoms unchanged by match (atoms still in vault.integration)"
     );
+    assert_eq!(
+        profile.deployed_principal_atoms, 0,
+        "deployed_principal_atoms must remain 0 until cranker settles"
+    );
+    // Vault-idle invariant must hold post-match.
+    fixture.assert_vault_idle_invariant(0).await;
+    // Matched-collateral conservation: Σ MatchedLoan.collateral == bid collateral.
+    assert_eq!(
+        fixture.sum_matched_loan_collateral().await,
+        collateral_atoms,
+        "Σ MatchedLoan.collateral_atoms == bid collateral_atoms"
+    );
+    // Borrower seat: full-fill IOC bid leaves no residual encumbrance.
+    let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
+    assert_eq!(borrower_seat.collateral_encumbered_shares, 0);
 }
 
 /// Match-time idle-pool cap: the vault has only N atoms idle but the
@@ -140,19 +155,17 @@ async fn vault_match_capped_at_idle_pool() {
             ydelta::state::market_helpers::FLAG_OB_ONLY,
         )
         .await;
-    assert!(
-        result.is_ok(),
-        "match-time idle cap (50 idle < 100 bid) must partial-fill, \
-         not fail the tx; got: {:?}",
-        result
-    );
+    result.expect("match-time idle cap (50 idle < 100 bid) must partial-fill, not fail the tx");
 
-    // Vault profile encumbered for exactly the idle balance — the cross
-    // could not exceed it.
+    // Vault profile encumbered for the idle balance minus the matching
+    // engine's per-profile marginfi-rounding reserve — the cross caps
+    // at `idle - reserve`, not at the gross idle.
+    use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
     let profile = fixture.read_risk_profile(0).await;
     assert_eq!(
-        profile.encumbered_in_orders_atoms, 50,
-        "vault cross is capped at the profile's idle balance (50)"
+        profile.encumbered_in_orders_atoms,
+        50 - MARGINFI_ROUNDING_RESERVE_ATOMS,
+        "vault cross is capped at idle minus the marginfi-rounding reserve"
     );
     assert_eq!(
         profile.deployed_principal_atoms, 0,
@@ -234,6 +247,22 @@ async fn risk_profile_order_persists_after_full_fill() {
         profile.encumbered_in_orders_atoms, 1_000_000,
         "vault profile encumbered for the full match",
     );
+    // Matched-collateral conservation: the single MatchedLoan must
+    // carry exactly the bid's posted collateral (dust-sweep invariant).
+    assert_eq!(
+        fixture.sum_matched_loan_collateral().await,
+        50_000_000,
+        "Σ MatchedLoan.collateral_atoms must equal bid collateral"
+    );
+    // Vault-idle invariant on the crossed profile.
+    fixture.assert_vault_idle_invariant(0).await;
+    // Borrower seat must have zero collateral encumbrance after a
+    // full-fill IOC bid.
+    let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
+    assert_eq!(
+        borrower_seat.collateral_encumbered_shares, 0,
+        "fully-filled IOC bid must leave zero borrower collateral encumbrance"
+    );
 }
 
 /// Once the profile's idle pool is exhausted, the matching engine
@@ -272,6 +301,10 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
+    // OB_ONLY: any 1-atom residual after the matching engine's
+    // `MARGINFI_ROUNDING_RESERVE_ATOMS` cap should drop, not route to
+    // P2Pool — the test counts MatchedLoans below and wants exactly the
+    // single Fixed cross.
     fixture
         .place_order_with_flags(
             &borrower_a,
@@ -281,7 +314,7 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
             30 * 86_400,
             100,
             5_000,
-            0,
+            ydelta::state::market_helpers::FLAG_OB_ONLY,
         )
         .await
         .unwrap();
@@ -312,10 +345,13 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
             ydelta::state::market_helpers::FLAG_OB_ONLY,
         )
         .await;
-    assert!(
-        result.is_ok(),
-        "exhausted idle pool must skip the maker, not error; got {:?}",
-        result,
+    result.expect("exhausted idle pool must skip the maker, not error");
+    // Borrower B's seat must NOT show any encumbered collateral after
+    // the skip — the OB_ONLY residual drop fully restores it.
+    let seat_b = fixture.read_seat(&borrower_b.pubkey()).await;
+    assert_eq!(
+        seat_b.collateral_encumbered_shares, 0,
+        "skipped maker → no residual borrower-side collateral encumbrance"
     );
 
     // Only one MatchedLoan was created (borrower A's). Borrower B's
@@ -326,9 +362,14 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
         "only borrower A's match should produce a MatchedLoan; borrower B's bid skipped past the idle-exhausted maker",
     );
 
-    // The profile is encumbered at exactly the deposited idle amount.
+    // The profile is encumbered at the deposited idle minus the
+    // matching engine's marginfi-rounding reserve.
+    use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
     let profile = fixture.read_risk_profile(0).await;
-    assert_eq!(profile.encumbered_in_orders_atoms, 100);
+    assert_eq!(
+        profile.encumbered_in_orders_atoms,
+        100 - MARGINFI_ROUNDING_RESERVE_ATOMS,
+    );
     let _ = mainnet::usdc_mint();
 }
 
@@ -455,11 +496,12 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     let result = fixture
         .global_vault_withdraw(&depositor_0, token_0, 0, p0.total_shares)
         .await;
-    assert!(
-        result.is_err(),
-        "withdrawing past profile 0's own idle (0.5 USDC) must reject \
-         even though the shared marginfi balance covers it — that capital \
-         backs profile 1",
+    // Per-profile idle gate must surface the exact
+    // VaultInsufficientIdleAtoms variant; a generic is_err() check
+    // would also accept a different (incorrect) rejection path.
+    crate::assert_custom_error!(
+        result,
+        ydelta::program::YdeltaError::VaultInsufficientIdleAtoms
     );
 
     // A withdrawal WITHIN profile 0's idle (0.4 USDC) still succeeds.
@@ -479,4 +521,8 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         p1.total_principal_atoms, 5_000_000,
         "profile 1's principal must be untouched by profile 0's withdrawal",
     );
+    // Both profiles must satisfy the vault-idle invariant after the
+    // per-profile gate test exercises the share-burn path.
+    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
 }

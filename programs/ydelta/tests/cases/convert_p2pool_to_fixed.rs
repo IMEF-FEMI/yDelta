@@ -261,10 +261,16 @@ async fn partial_conversion_keeps_p2pool_active() {
         converted.lender_rate_bps, 600,
         "converted Fixed loan adopts the crossed ask's rate"
     );
+    // Converted principal is capped by the 40-atom profile idle minus
+    // the matching engine's per-profile marginfi-rounding reserve.
+    use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
     assert_eq!(
-        converted.principal_debt_atoms, 40,
-        "converted principal is capped by the 40-atom profile idle"
+        converted.principal_debt_atoms,
+        40 - MARGINFI_ROUNDING_RESERVE_ATOMS,
+        "converted principal == profile idle minus marginfi-rounding reserve"
     );
+    // Conservation must hold on the new Fixed loan at promotion.
+    fixture.assert_loan_conservation_holds(1).await;
 }
 
 /// The P2Pool→fixed refinance matcher MUST enforce the crossed vault
@@ -317,7 +323,8 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
 
     // Convert must FAIL: the sole vault ask is skipped by the per-cross
     // profile-LTV-cap gate, leaving no compatible maker → the processor
-    // errors with "no asks crossed".
+    // errors. Exact reject path is the "no asks crossed" branch which
+    // surfaces InvalidArgument from convert_p2pool_to_fixed.
     let result = fixture
         .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
         .await;
@@ -325,6 +332,14 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
         result.is_err(),
         "convert must be rejected — the only ask's profile cap (1% LTV) \
          is breached by the cross"
+    );
+    // Stamping more strictly: the exact error path depends on whether
+    // the processor falls back to "no crosses" or the LTV gate fires
+    // directly. Both paths leave the P2Pool loan completely untouched.
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(
+        market.matched_loan_sequence, 1,
+        "rejected convert must not insert a new MatchedLoan"
     );
 
     // The P2Pool loan is untouched: still Active, still P2Pool, the

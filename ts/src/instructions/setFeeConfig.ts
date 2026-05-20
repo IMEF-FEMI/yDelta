@@ -1,0 +1,49 @@
+import { PublicKey, SystemProgram, TransactionInstruction } from '@solana/web3.js';
+
+import { globalConfigPda } from '../pdas.js';
+import { ro, rw, signerRw, ydeltaIx } from './_helpers.js';
+import { Writer } from './_serialise.js';
+import { InstructionTag } from './_tags.js';
+
+/**
+ * Tag 18 — `SetFeeConfig`. Each field is independent: pass `null` /
+ * `undefined` to leave unchanged, or a number to update. Runs even while
+ * the market is paused (it's the admin-only header mutation that lets the
+ * market unpause for the first time, since `set_market_pause(false)` is
+ * gated on `fee_config_set`).
+ */
+export interface SetFeeConfigArgs {
+  admin: PublicKey;
+  market: PublicKey;
+  protocolFeeBpsFloor?: number | null;
+  originationBps?: number | null;
+  curatorSplitBps?: number | null;
+  curatorFeeBps?: number | null;
+  liquidationKeeperBps?: number | null;
+  liquidationProtocolBps?: number | null;
+  ltvBufferBps?: number | null;
+  gracePeriodSeconds?: number | null;
+}
+
+export function setFeeConfigInstruction(args: SetFeeConfigArgs): TransactionInstruction {
+  const data = new Writer()
+    .u8(InstructionTag.SetFeeConfig)
+    .optionU16(args.protocolFeeBpsFloor ?? null)
+    .optionU16(args.originationBps ?? null)
+    .optionU16(args.curatorSplitBps ?? null)
+    .optionU16(args.curatorFeeBps ?? null)
+    .optionU16(args.liquidationKeeperBps ?? null)
+    .optionU16(args.liquidationProtocolBps ?? null)
+    .optionU16(args.ltvBufferBps ?? null)
+    .optionU32(args.gracePeriodSeconds ?? null)
+    .toBuffer();
+  return ydeltaIx(
+    [
+      signerRw(args.admin),
+      ro(globalConfigPda()[0]),
+      rw(args.market),
+      ro(SystemProgram.programId),
+    ],
+    data,
+  );
+}

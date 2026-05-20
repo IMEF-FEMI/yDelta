@@ -1,87 +1,44 @@
 {
   "name": "@ydelta/sdk",
   "version": "0.1.0",
-  "description": "TypeScript SDK for yDelta — fixed-rate / fixed-term lending on a Solana CLOB",
-  "main": "./dist/cjs/index.js",
-  "module": "./dist/esm/index.js",
-  "types": "./dist/types/src/index.d.ts",
+  "description": "TypeScript SDK for yDelta — quote-only fixed-rate lending on Solana",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "module": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
   "files": [
     "dist/",
-    "client/ts/src",
-    "client/ts/README.md"
-  ],
-  "license": "Apache-2.0",
-  "keywords": [
-    "ydelta",
-    "solana",
-    "defi",
-    "lending",
-    "fixed-rate",
-    "clob"
+    "ts/idl/",
+    "ts/src/",
+    "ts/README.md"
   ],
   "scripts": {
-    "build": "rimraf dist && yarn build:cjs && yarn build:esm && yarn build:types",
-    "build:cjs": "tsc -p tsconfig.cjs.json --noEmit false",
-    "build:esm": "tsc -p tsconfig.esm.json --noEmit false",
-    "build:types": "tsc -p tsconfig.types.json --noEmit false",
-    "typecheck": "tsc --noEmit --pretty",
-    "format": "prettier --check client/ts",
-    "format:write": "prettier --write client/ts",
-    "lint": "eslint 'client/ts/**/*.ts' 'client/idl/**/*.ts' --ext ts --quiet",
-    "test": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-mocha 'client/ts/tests/*.test.ts' --timeout 1200000",
-    "test:integration": "BPF_OUT_DIR=$PWD/target/deploy TS_NODE_PROJECT='./tsconfig.cjs.json' ts-mocha 'client/ts/tests/integration/*.test.ts' --timeout 1200000",
-    "test:all": "BPF_OUT_DIR=$PWD/target/deploy TS_NODE_PROJECT='./tsconfig.cjs.json' ts-mocha 'client/ts/tests/**/*.test.ts' --timeout 1200000",
-    "idl:generate": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node client/idl/build.ts",
-    "idl:client": "echo 'Solita / Codama codegen — wire when needed; the JSON is the source of truth.'",
-    "idl": "yarn idl:generate",
-    "setup:deploy": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/deploy.ts",
-    "setup:init-market": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/init-market.ts",
-    "setup:check-market-state": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/check-market-state.ts",
-    "setup:unpause-market": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/unpause-market.ts",
-    "setup:place-ask": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/place-ask.ts",
-    "setup:risk-profiles": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/create-risk-profiles.ts",
-    "setup:encode-keypairs": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/encode-keypairs.ts",
-    "setup:cancel-orders": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/cancel-orders.ts",
-    "setup:user-balances": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/user-balances.ts",
-    "setup:withdraw-all": "TS_NODE_PROJECT='./tsconfig.cjs.json' ts-node scripts/setup/withdraw-all.ts",
+    "build": "rimraf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "format": "prettier --write 'ts/**/*.ts' 'ts/**/*.json'",
+    "lint": "eslint 'ts/**/*.ts'",
+    "test": "vitest run",
     "clean": "rimraf dist"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "^0.30.1",
-    "@metaplex-foundation/beet": "^0.7.1",
-    "@metaplex-foundation/beet-solana": "^0.4.0",
     "@mrgnlabs/marginfi-client-v2": "^6.4.1",
-    "@mrgnlabs/mrgn-common": "^2.0.7",
     "@solana/spl-token": "^0.4.8",
     "@solana/web3.js": "^1.95.0",
-    "@switchboard-xyz/common": "4.1.11",
     "@switchboard-xyz/on-demand": "^2.14.4",
     "bn.js": "^5.2.1",
     "borsh": "^2.0.0",
-    "bs58": "^6.0.0",
-    "js-sha256": "^0.11.0",
-    "keccak256": "^1.0.6"
+    "bs58": "^6.0.0"
   },
   "devDependencies": {
-    "@metaplex-foundation/rustbin": "^0.3.1",
-    "@metaplex-foundation/solita": "^0.20.1",
     "@types/bn.js": "^5.1.5",
-    "@types/chai": "^4.3.16",
-    "@types/mocha": "^10.0.6",
     "@types/node": "^20.14.0",
-    "@typescript-eslint/eslint-plugin": "^7.13.0",
-    "@typescript-eslint/parser": "^7.13.0",
-    "anchor-bankrun": "^0.5.0",
-    "chai": "^4.4.1",
-    "eslint": "^8.57.0",
-    "eslint-config-prettier": "^9.1.0",
-    "mocha": "^10.4.0",
+    "eslint": "^9.0.0",
     "prettier": "^3.3.2",
     "rimraf": "^5.0.7",
     "solana-bankrun": "^0.4.0",
-    "ts-mocha": "^10.0.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
   },
   "prettier": {
     "singleQuote": true,
@@ -89,10 +46,8 @@
     "useTabs": false,
     "bracketSpacing": true,
     "semi": true,
-    "tabWidth": 2
-  },
-  "publishConfig": {
-    "access": "public"
+    "tabWidth": 2,
+    "printWidth": 100
   },
   "packageManager": "yarn@4.14.1+sha512.64df448055b2d37ba269d7db535a469b8da93f8ef1140c25fd7a83c00a8fbaacb214ca0e02553b92a2c54cef78bb67d0b4817fab02001df0e24fac0faccc3b42"
 }

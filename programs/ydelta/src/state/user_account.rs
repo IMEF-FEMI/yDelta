@@ -4,9 +4,11 @@ use std::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
 use hypertree::{
-    get_helper, get_mut_helper, DataIndex, Get, HyperTreeReadOperations,
-    HyperTreeValueIteratorTrait, RBNode, RedBlackTree, RedBlackTreeReadOnly, NIL,
+    get_helper, get_mut_helper, DataIndex, Get, HyperTreeReadOperations, RBNode, RedBlackTree,
+    RedBlackTreeReadOnly, NIL,
 };
+#[cfg(debug_assertions)]
+use hypertree::HyperTreeValueIteratorTrait;
 use shank::{ShankAccount, ShankType};
 use solana_program::{entrypoint::ProgramResult, program_error::ProgramError, pubkey::Pubkey};
 use static_assertions::const_assert_eq;

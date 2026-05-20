@@ -157,6 +157,19 @@ async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
+    // Conservation must hold across the full repay.
+    fixture.assert_loan_conservation_holds(0).await;
+    // Repaid loan: outstanding == 0; principal_retired_atoms tracks
+    // the cumulative atoms retired (principal + accrued interest),
+    // so it must be >= principal_debt_atoms (full retirement).
+    let loan_post_repay = fixture.read_loan(0).await;
+    assert_eq!(loan_post_repay.outstanding_debt_atoms, 0);
+    assert!(
+        loan_post_repay.principal_retired_atoms >= loan_post_repay.principal_debt_atoms,
+        "full repay must retire >= the gross principal (got retired={}, principal={})",
+        loan_post_repay.principal_retired_atoms,
+        loan_post_repay.principal_debt_atoms,
+    );
 
     // Pre-claim: profile state holds the active loan; deployed != 0.
     let profile_pre_claim = fixture.read_risk_profile(PROFILE_ID).await;
@@ -209,6 +222,8 @@ async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
         profile_post.total_principal_atoms,
         VAULT_DEPOSIT_ATOMS,
     );
+    // Vault-idle invariant post-claim.
+    fixture.assert_vault_idle_invariant(PROFILE_ID).await;
 
     // Loan PDA closed.
     let (loan_addr, _) = loan_pda(&fixture.market.pubkey(), 0);
@@ -273,8 +288,8 @@ async fn last_share_burn_rejected_while_loan_deployed() {
 
     let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
 
-    // Attempt to burn ALL shares — the last-share burn. Must reject:
-    // capital is in flight.
+    // Attempt to burn ALL shares — the last-share burn. Must reject
+    // with the exact VaultInsufficientIdleAtoms variant.
     fixture.refresh_blockhash().await;
     let result = fixture
         .global_vault_withdraw(
@@ -284,9 +299,9 @@ async fn last_share_burn_rejected_while_loan_deployed() {
             profile.total_shares,
         )
         .await;
-    assert!(
-        result.is_err(),
-        "burning the last vault share while a loan is deployed must reject",
+    crate::assert_custom_error!(
+        result,
+        ydelta::program::YdeltaError::VaultInsufficientIdleAtoms
     );
 
     // The profile state must be untouched — the rejection reverts the tx.
@@ -325,17 +340,19 @@ async fn claim_rejected_pre_maturity() {
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Don't time-warp. Lock-up requires now >= matures_at_unix.
+    // Don't time-warp. Lock-up requires now >= matures_at_unix. Pass
+    // an explicit cranker_refund so the loader's "trailing accounts"
+    // check passes and we genuinely exercise the loan-state gate
+    // (not just a missing-accounts failure that masks the real path).
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     let result = fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, None)
+        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
         .await;
-    assert!(
-        result.is_err(),
-        "claim must reject when now < matures_at_unix; got {:?}",
-        result,
-    );
+    // Pre-maturity rejection must surface LoanNotMatured exactly — a
+    // generic is_err() would also accept e.g. InvalidArgument from
+    // a different code path.
+    crate::assert_custom_error!(result, ydelta::program::YdeltaError::LoanNotMatured);
 }
 
 #[tokio::test]
@@ -354,14 +371,15 @@ async fn claim_rejected_when_outstanding_nonzero() {
 
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
+    // Pass a valid cranker_refund so the loader gate is satisfied
+    // and we exercise the outstanding-balance gate genuinely (not a
+    // missing-accounts failure that masks the real reject path).
     let result = fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, None)
+        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
         .await;
-    assert!(
-        result.is_err(),
-        "claim must reject when outstanding_debt_atoms > 0; got {:?}",
-        result,
-    );
+    // outstanding>0 rejection must surface InvalidArgument exactly
+    // (the explicit gate at the head of claim_repayment_for_risk_profile).
+    crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
 }
 
 /// Vault yield realization for a depositor: deposit X atoms, run a loan
@@ -965,4 +983,10 @@ async fn risk_profile_earns_yield_from_two_markets() {
         profile_final.deployed_principal_atoms == 0,
         "all loans repaid → deployed_principal must be 0"
     );
+    assert_eq!(
+        profile_final.encumbered_in_orders_atoms, 0,
+        "encumbered_in_orders must zero out after both loans claim"
+    );
+    // Vault-idle invariant post-claim of both loans.
+    fixture.assert_vault_idle_invariant(PROFILE_ID).await;
 }

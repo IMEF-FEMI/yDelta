@@ -138,9 +138,21 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
     assert_eq!(loan.principal_debt_atoms, principal_atoms);
     assert_eq!(loan.outstanding_debt_atoms, principal_atoms); // origination_bps = 0
     assert_eq!(loan.lender_claimable_atoms, principal_atoms);
+    // Rate-stamping invariants: lender_rate == ask_rate (600);
+    // borrower_rate == max(bid_rate, ask_rate + protocol_fee_bps_floor).
+    // protocol_fee_bps_floor defaults to 0 → borrower_rate == 800 (bid_rate).
     assert_eq!(loan.borrower_rate_bps, 800);
     assert_eq!(loan.lender_rate_bps, 600);
     assert!(loan.matures_at_unix > loan.started_at_unix);
+    // Term must be exactly the placed term — the cranker's stamp.
+    assert_eq!(
+        (loan.matures_at_unix - loan.started_at_unix) as u32,
+        30 * 86_400,
+        "promoted loan term must equal matched_at term_seconds"
+    );
+    // Conservation identity at promote-time.
+    let _ = loan_data;
+    fixture.assert_loan_conservation_holds(cranking_sequence).await;
 
     // Bob's seat is now credited with amount_to_shares(net_principal).
     let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
@@ -164,6 +176,19 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
 
     // origination_bps defaulted to 0, so no fee accrued.
     assert_eq!(header_post.accumulated_protocol_fee_shares, 0);
+
+    // Vault-idle invariant — vault profile's encumbered_in_orders
+    // got drained into deployed_principal_atoms at crank time.
+    fixture.assert_vault_idle_invariant(0).await;
+    let profile = fixture.read_risk_profile(0).await;
+    assert_eq!(
+        profile.deployed_principal_atoms, principal_atoms,
+        "promote must increment deployed_principal_atoms by the loan's principal"
+    );
+    assert_eq!(
+        profile.encumbered_in_orders_atoms, 0,
+        "promote must drain encumbered_in_orders to 0"
+    );
 }
 
 #[tokio::test]

@@ -1634,6 +1634,71 @@ impl MarketFixture {
         );
         *get_helper_seat(dynamic, idx).get_value()
     }
+
+    // ─────────────────── Invariant helpers ───────────────────
+
+    /// Assert `LoanFixed` satisfies the conservation identity at the
+    /// given loan sequence:
+    ///   `outstanding_debt + principal_retired == lender_claimable +
+    ///    accumulated_protocol_fee + accumulated_curator_fee`.
+    /// Pulled out as a fixture helper so any state-mutating test can
+    /// cheaply re-check it after a repay/liquidate/settle event.
+    ///
+    /// The identity is enforced via `apply_partial_resolution` on
+    /// Fixed-type loans only. P2Pool loans use `outstanding_debt_atoms`
+    /// as a non-canonical mirror (the canonical liability lives on the
+    /// borrower's marginfi-account); they intentionally skip the
+    /// principal-retired bookkeeping. This helper short-circuits for
+    /// P2Pool — callers asserting the identity on P2Pool loans is a
+    /// misuse, not a production bug.
+    pub async fn assert_loan_conservation_holds(&self, sequence: u64) {
+        let loan = self.read_loan(sequence).await;
+        if loan.loan_type == ydelta::state::loan::LoanType::P2Pool as u8 {
+            // P2Pool: outstanding_debt_atoms is decorative; canonical
+            // liability lives on the borrower marginfi-account. Skip.
+            return;
+        }
+        let claim_side: u128 = (loan.lender_claimable_atoms as u128)
+            + (loan.accumulated_protocol_fee_atoms as u128)
+            + (loan.accumulated_curator_fee_atoms as u128);
+        let owed_side: u128 =
+            (loan.outstanding_debt_atoms as u128) + (loan.principal_retired_atoms as u128);
+        assert_eq!(
+            claim_side, owed_side,
+            "loan_conservation violated on seq={}: \
+             outstanding({}) + retired({}) = {} != \
+             lender_claimable({}) + protocol_fee({}) + curator_fee({}) = {}",
+            sequence,
+            loan.outstanding_debt_atoms,
+            loan.principal_retired_atoms,
+            owed_side,
+            loan.lender_claimable_atoms,
+            loan.accumulated_protocol_fee_atoms,
+            loan.accumulated_curator_fee_atoms,
+            claim_side,
+        );
+    }
+
+    /// Assert the vault-idle invariant on a given risk profile:
+    ///   `total_principal_atoms >= deployed_principal_atoms +
+    ///    encumbered_in_orders_atoms`.
+    /// This is what guarantees a depositor's withdrawable atoms are
+    /// physically backed.
+    pub async fn assert_vault_idle_invariant(&self, profile_id: u8) {
+        let p = self.read_risk_profile(profile_id).await;
+        let deployed_plus_encumbered: u128 = (p.deployed_principal_atoms as u128)
+            + (p.encumbered_in_orders_atoms as u128);
+        assert!(
+            (p.total_principal_atoms as u128) >= deployed_plus_encumbered,
+            "vault_idle invariant violated on profile {}: \
+             total_principal({}) < deployed({}) + encumbered({}) = {}",
+            profile_id,
+            p.total_principal_atoms,
+            p.deployed_principal_atoms,
+            p.encumbered_in_orders_atoms,
+            deployed_plus_encumbered,
+        );
+    }
 }
 
 /// Idempotent: ensure `<SBF_OUT_DIR>/marginfi.so` is in place so

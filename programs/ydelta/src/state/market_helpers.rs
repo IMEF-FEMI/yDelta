@@ -20,6 +20,27 @@ use crate::state::vault::{
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 
+/// Per-cross unmatchable buffer left on every vault profile to absorb
+/// marginfi v0.1.8's share-mint rounding tax.
+///
+/// Marginfi mints asset shares as `floor(amount × 2^48 / asset_share_value)`
+/// on deposit and converts back with floor on withdraw, so the round-trip
+/// `shares_to_amount(amount_to_asset_shares(N))` is bounded above by `N`
+/// — at asv > 1.0, depositing `N` atoms leaves the vault with `N − 1`
+/// atoms of marginfi share-equivalent value. If matching were allowed to
+/// deploy the full `profile.total_principal_atoms`, the crank's
+/// `marginfi.withdraw` of `principal_atoms` would under-fund the loan
+/// (marginfi can't deliver the missing atom that was never in shares to
+/// begin with), and `do_vault_settle`'s `actual_atoms >= principal_atoms`
+/// guard would hard-fail with `ProgramError::ArithmeticOverflow`.
+///
+/// Reserving 1 atom per profile from matching is the smallest fix that
+/// keeps the protocol composable with marginfi's known rounding mode.
+/// The reserved atom is NOT locked — depositors can still withdraw it
+/// via `global_vault_withdraw` (which uses the actual idle, not the
+/// matching idle).
+pub const MARGINFI_ROUNDING_RESERVE_ATOMS: u64 = 1;
+
 // ────────────────────── Free-list helpers ──────────────────────
 
 pub fn get_free_address_on_market_fixed(fixed: &mut MarketFixed, dynamic: &mut [u8]) -> DataIndex {
@@ -572,6 +593,7 @@ pub fn match_order(
                     p.total_principal_atoms
                         .saturating_sub(p.deployed_principal_atoms)
                         .saturating_sub(p.encumbered_in_orders_atoms)
+                        .saturating_sub(MARGINFI_ROUNDING_RESERVE_ATOMS)
                 }
             };
             if profile_idle == 0 {
@@ -1734,6 +1756,7 @@ pub fn match_p2pool_residual_against_asks(
                     p.total_principal_atoms
                         .saturating_sub(p.deployed_principal_atoms)
                         .saturating_sub(p.encumbered_in_orders_atoms)
+                        .saturating_sub(MARGINFI_ROUNDING_RESERVE_ATOMS)
                 }
             };
             if profile_idle == 0 {

@@ -316,15 +316,25 @@ pub fn process_global_vault_withdraw(
 
     let payout_atoms = actual_atoms.min(atoms_out);
     let surplus_atoms = actual_atoms.saturating_sub(payout_atoms);
-    let shortfall_atoms = atoms_out.saturating_sub(payout_atoms);
 
-    // Reconcile per-call drift instead of pushing it onto the
-    // withdrawing LP. If marginfi returned fewer atoms than planned, the
-    // shortfall remained inside the shared integration account and should
-    // stay attributed to the remaining profile shares. If marginfi
-    // returned more, that surplus is redeposited below rather than
-    // leaked cross-profile.
-    if shortfall_atoms > 0 || new_total_shares == 0 {
+    // We do NOT re-credit the shortfall (`atoms_out - actual_atoms`)
+    // back to `total_assets_atoms` / `total_principal_atoms`. Marginfi
+    // v0.1.8's `LendingAccountWithdraw` uses CEIL share-rounding while
+    // our local `amount_to_asset_shares` floors, so a 1-atom under-
+    // delivery means the shares were burned in marginfi without the
+    // matching atom leaving — the dust is gone, not "left behind."
+    // Booking it onto the per-profile totals creates phantom atoms that
+    // exceed the live marginfi balance and break the subsequent
+    // `mfi_atoms >= atoms_out` gate on the next withdrawal.
+    //
+    // Surplus (`actual_atoms > atoms_out`) IS redeposited below so it
+    // does not leak cross-profile.
+    if new_total_shares == 0 {
+        // Final burn: the last-share-burn guard already ensured
+        // `deployed == 0 && encumbered == 0`, so every atom the profile
+        // still books is idle. Zero the per-profile `total_*` so any
+        // residual drift is donation-like rather than becoming phantom
+        // assets the next genesis depositor could mint against.
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
@@ -335,26 +345,8 @@ pub fn process_global_vault_withdraw(
         };
         if profile_idx != NIL {
             let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
-            if shortfall_atoms > 0 && new_total_shares > 0 {
-                profile.total_assets_atoms = profile
-                    .total_assets_atoms
-                    .checked_add(shortfall_atoms)
-                    .ok_or(ProgramError::ArithmeticOverflow)?;
-                profile.total_principal_atoms = profile
-                    .total_principal_atoms
-                    .checked_add(shortfall_atoms)
-                    .ok_or(ProgramError::ArithmeticOverflow)?;
-            }
-            if new_total_shares == 0 {
-                // Final burn: the last-share-burn guard already ensured
-                // `deployed == 0 && encumbered == 0`, so every atom the
-                // profile still books is idle. Zero the per-profile
-                // `total_*` so any residual drift is donation-like rather
-                // than becoming phantom assets the next genesis depositor
-                // could mint against.
-                profile.total_assets_atoms = 0;
-                profile.total_principal_atoms = 0;
-            }
+            profile.total_assets_atoms = 0;
+            profile.total_principal_atoms = 0;
             profile_total_assets_after = profile.total_assets_atoms;
         }
     }

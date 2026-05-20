@@ -125,6 +125,22 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
     // Vault encumbrance bumped by exactly the matched principal.
     let profile = fixture.read_risk_profile(0).await;
     assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
+    // Borrower seat's encumbrance drained — a bid that fully fills
+    // against the vault releases all collateral encumbrance.
+    let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
+    assert_eq!(
+        borrower_seat.collateral_encumbered_shares, 0,
+        "fully-filled bid must leave zero borrower collateral encumbrance"
+    );
+    // Sum of MatchedLoan collateral equals the bid's posted collateral
+    // (dust-sweep invariant from the audit).
+    assert_eq!(
+        fixture.sum_matched_loan_collateral().await,
+        50_000_000,
+        "Σ MatchedLoan.collateral_atoms == bid collateral"
+    );
+    // Vault-idle invariant on the crossed profile.
+    fixture.assert_vault_idle_invariant(0).await;
 }
 
 /// Three profiles post asks at 500 / 600 / 700 bps. A small borrower
@@ -173,6 +189,17 @@ async fn match_picks_best_ask_first() {
     );
     assert_eq!(p0.encumbered_in_orders_atoms, 0, "700bps ask untouched");
     assert_eq!(p2.encumbered_in_orders_atoms, 0, "600bps ask untouched");
+    // Matched-collateral conservation: the single MatchedLoan must
+    // carry exactly the bid's posted collateral.
+    assert_eq!(
+        fixture.sum_matched_loan_collateral().await,
+        50_000_000,
+        "Σ MatchedLoan.collateral_atoms == bid collateral"
+    );
+    // Vault-idle invariant must hold on every profile.
+    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
+    fixture.assert_vault_idle_invariant(2).await;
 }
 
 /// The best ask has a term too short for the bid; a worse-rate ask
@@ -223,6 +250,9 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
         p1.encumbered_in_orders_atoms, 1_000_000,
         "compatible worse-rate ask must be crossed"
     );
+    // Vault-idle invariant on both profiles.
+    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
 }
 
 /// A bid larger than the best ask's idle-pool-capped depth sweeps
@@ -265,14 +295,33 @@ async fn match_sweeps_multiple_vault_asks() {
         "the bid swept both vault asks — one MatchedLoan each"
     );
 
-    // Total encumbrance across the two profiles equals the bid size.
+    // Total encumbrance across the two profiles equals the bid size
+    // minus the matching engine's per-profile marginfi-rounding
+    // reserve (`MARGINFI_ROUNDING_RESERVE_ATOMS = 1`). Profile 0 was
+    // idle-capped at its 50M − 1 reserve = 49_999_999; profile 1
+    // absorbs the remainder.
+    use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
     let p0 = fixture.read_risk_profile(0).await;
     let p1 = fixture.read_risk_profile(1).await;
+    let p0_expected: u64 = 50_000_000 - MARGINFI_ROUNDING_RESERVE_ATOMS;
+    let p1_expected: u64 = 70_000_000 - p0_expected;
     assert_eq!(
         p0.encumbered_in_orders_atoms + p1.encumbered_in_orders_atoms,
         70_000_000,
         "swept fills sum to the bid principal"
     );
+    assert_eq!(
+        p0.encumbered_in_orders_atoms, p0_expected,
+        "profile 0 idle-capped at 50M minus the marginfi-rounding reserve"
+    );
+    assert_eq!(
+        p1.encumbered_in_orders_atoms, p1_expected,
+        "profile 1 absorbs the residual after profile 0's reserved cap"
+    );
+    // Vault-idle invariant must hold on both profiles after the
+    // double-cross.
+    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
 }
 
 /// A fully-filled multi-cross bid must leave ZERO collateral frozen in

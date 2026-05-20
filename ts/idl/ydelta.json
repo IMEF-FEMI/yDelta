@@ -1,0 +1,779 @@
+{
+  "version": "0.1.0",
+  "name": "ydelta",
+  "programId": "A1fNwJV5C2BTKWcnHmaELNq2TLB11UP7mp9P7q4ahWnu",
+  "description": "Quote-only fixed-rate lending on Solana. 37 instructions, tags 0..=36. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` (Phase 3) and read raw byte offsets.",
+  "conventions": {
+    "instructionDataHeader": "1-byte u8 tag (see `tag` per instruction). Tail is borsh-encoded except for `SettleMaturedLoan` and `LiquidateLoan`, whose tail is a bare little-endian u64 (`repay_atoms_max`).",
+    "amounts": "All atoms are bigint at the wire level. All bps fields are u16. All term_seconds are u32. All u128 fields (shares, fp48 share-values) are LE 16 bytes.",
+    "computeBudget": "Heavy ixs (`PlaceOrder`, `ProcessMatchedLoan` with vaultSettle, `LiquidateLoan`, `SettleMaturedLoan`, `ClaimRepaymentForRiskProfile`) need `ComputeBudgetProgram.setComputeUnitLimit(600_000)` prepended."
+  },
+  "instructions": [
+    {
+      "name": "CreateMarket",
+      "tag": 0,
+      "accounts": [
+        { "name": "market_creator", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "system_program", "writable": false },
+        { "name": "debt_mint", "writable": false },
+        { "name": "collateral_mint", "writable": false },
+        { "name": "debt_vault", "writable": true, "pda": ["b\"vault\"", "market", "debt_mint"] },
+        { "name": "collateral_vault", "writable": true, "pda": ["b\"vault\"", "market", "collateral_mint"] },
+        { "name": "token_program", "writable": false },
+        { "name": "token_program_2022", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "debt_bank", "writable": false },
+        { "name": "collateral_bank", "writable": false },
+        { "name": "lender_marginfi_account", "writable": true, "pda": ["b\"marginfi_account\"", "market"] },
+        { "name": "borrower_marginfi_account", "writable": true, "pda": ["b\"borrower_marginfi_account\"", "market"] },
+        { "name": "market_signer", "writable": false, "pda": ["b\"market_signer\"", "market"] },
+        { "name": "marginfi_program", "writable": false }
+      ],
+      "args": []
+    },
+    {
+      "name": "ClaimSeat",
+      "tag": 1,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "system_program", "writable": false },
+        { "name": "user_account", "writable": true, "pda": ["b\"user\"", "payer"] }
+      ],
+      "args": []
+    },
+    {
+      "name": "Deposit",
+      "tag": 2,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "trader_token", "writable": true },
+        { "name": "vault", "writable": true, "pda": ["b\"vault\"", "market", "mint"] },
+        { "name": "token_program", "writable": false },
+        { "name": "mint", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "marginfi_account", "writable": true, "note": "lender_marginfi_account if mint == debt_mint else borrower_marginfi_account" },
+        { "name": "bank", "writable": true },
+        { "name": "liquidity_vault", "writable": true },
+        { "name": "market_signer", "writable": false, "pda": ["b\"market_signer\"", "market"] },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "user_account", "writable": true, "pda": ["b\"user\"", "payer"] },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "amount_atoms", "type": "u64" },
+        { "name": "trader_index_hint", "type": { "option": "u32" } }
+      ]
+    },
+    {
+      "name": "Withdraw",
+      "tag": 3,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "trader_token", "writable": true },
+        { "name": "vault", "writable": true, "pda": ["b\"vault\"", "market", "mint"] },
+        { "name": "token_program", "writable": false },
+        { "name": "mint", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "marginfi_account", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "collateral_bank", "writable": true },
+        { "name": "liquidity_vault", "writable": true },
+        { "name": "bank_liquidity_vault_authority", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
+        { "name": "market_signer", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "user_account", "writable": true, "pda": ["b\"user\"", "payer"] },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "amount_atoms", "type": "u64" },
+        { "name": "trader_index_hint", "type": { "option": "u32" } },
+        { "name": "withdraw_all", "type": "bool" }
+      ]
+    },
+    {
+      "name": "PlaceOrder",
+      "tag": 4,
+      "heavy": true,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "system_program", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "borrower_marginfi_account", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "collateral_bank", "writable": true },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
+        { "name": "market_signer", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "debt_liquidity_vault", "writable": true },
+        { "name": "debt_bank_liquidity_vault_authority", "writable": false },
+        { "name": "borrower_debt_token", "writable": true },
+        { "name": "token_program", "writable": false },
+        { "name": "user_account", "writable": true, "pda": ["b\"user\"", "payer"] },
+        { "name": "system_program (2)", "writable": false },
+        { "name": "lender_marginfi_account", "writable": true },
+        { "name": "market_debt_vault", "writable": true },
+        { "name": "global_vault", "writable": true, "pda": ["b\"vault\"", "debt_mint"], "optional": true, "note": "Slot must be present; loader downgrades to None if data_len != GLOBAL_VAULT_FIXED_SIZE." }
+      ],
+      "args": [
+        { "name": "seat_index_hint", "type": { "option": "u32" } },
+        { "name": "flags", "type": "u8" },
+        { "name": "rate_bps", "type": "u16" },
+        { "name": "term_seconds", "type": "u32" },
+        { "name": "principal_atoms", "type": "u64" },
+        { "name": "collateral_atoms", "type": "u64" }
+      ]
+    },
+    {
+      "name": "ProcessMatchedLoan",
+      "tag": 5,
+      "heavy": "when vault settlement block present",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "loan", "writable": true, "pda": ["b\"loan\"", "market", "sequence_le_bytes"] },
+        { "name": "debt_bank", "writable": true },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "system_program", "writable": false },
+        { "name": "global_vault", "writable": true, "optional": true },
+        { "name": "global_vault_signer", "writable": false, "optional": true },
+        { "name": "global_vault_staging", "writable": true, "optional": true },
+        { "name": "global_vault_integration_account", "writable": true, "optional": true },
+        { "name": "market_debt_vault", "writable": true, "optional": true },
+        { "name": "market_lender_integration_account", "writable": true, "optional": true },
+        { "name": "market_signer", "writable": false, "optional": true },
+        { "name": "debt_liquidity_vault", "writable": true, "optional": true },
+        { "name": "debt_bank_liquidity_vault_authority", "writable": false, "optional": true },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true, "optional": true },
+        { "name": "debt_mint", "writable": false, "optional": true },
+        { "name": "token_program", "writable": false, "optional": true },
+        { "name": "marginfi_group", "writable": false, "optional": true },
+        { "name": "marginfi_program (2)", "writable": false, "optional": true }
+      ],
+      "args": [
+        { "name": "matched_loan_sequence", "type": "u64" },
+        { "name": "matched_loan_index_hint", "type": { "option": "u32" } }
+      ]
+    },
+    {
+      "name": "Repay",
+      "tag": 6,
+      "accounts": [
+        { "name": "borrower", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "loan", "writable": true },
+        { "name": "borrower_token", "writable": true },
+        { "name": "vault", "writable": true, "pda": ["b\"vault\"", "market", "debt_mint"] },
+        { "name": "token_program", "writable": false },
+        { "name": "debt_mint", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "lender_marginfi_account", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "debt_liquidity_vault", "writable": true },
+        { "name": "collateral_bank", "writable": false },
+        { "name": "borrower_marginfi_account", "writable": true },
+        { "name": "market_signer", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "user_account", "writable": true },
+        { "name": "system_program", "writable": false },
+        { "name": "cranker_refund", "writable": true, "note": "Bound to Loan PDA's `created_by`" }
+      ],
+      "args": [
+        { "name": "repay_atoms", "type": "u64" },
+        { "name": "full_repay", "type": "bool" },
+        { "name": "borrower_seat_index_hint", "type": { "option": "u32" } }
+      ]
+    },
+    {
+      "name": "SyncMarketPosition",
+      "tag": 7,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "user_account", "writable": true, "pda": ["b\"user\"", "owner"] },
+        { "name": "market", "writable": false },
+        { "name": "owner", "writable": false }
+      ],
+      "args": []
+    },
+    {
+      "name": "CreateVault",
+      "tag": 8,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true, "pda": ["b\"vault\"", "mint"] },
+        { "name": "mint", "writable": false },
+        { "name": "global_vault_signer", "writable": false, "pda": ["b\"global_vault_signer\"", "vault"] },
+        { "name": "integration_account", "writable": true, "pda": ["b\"vault_integration\"", "vault"] },
+        { "name": "global_vault_staging", "writable": true, "pda": ["b\"global_vault_staging\"", "vault"] },
+        { "name": "token_program", "writable": false },
+        { "name": "token_program_2022", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "lending_pool", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": []
+    },
+    {
+      "name": "CreateRiskProfile",
+      "tag": 9,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "profile_id", "type": "u8" },
+        { "name": "curator", "type": "publicKey" },
+        { "name": "max_ltv_bps", "type": "u16" },
+        { "name": "max_term_seconds", "type": "u32" }
+      ]
+    },
+    {
+      "name": "GlobalVaultDeposit",
+      "tag": 10,
+      "accounts": [
+        { "name": "depositor", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "mint", "writable": false },
+        { "name": "global_vault_signer", "writable": false },
+        { "name": "global_vault_staging", "writable": true },
+        { "name": "depositor_token", "writable": true },
+        { "name": "token_program", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "integration_account", "writable": true },
+        { "name": "lending_pool", "writable": true },
+        { "name": "liquidity_vault", "writable": true },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "user_account", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "amount_atoms", "type": "u64" },
+        { "name": "profile_id", "type": "u8" }
+      ]
+    },
+    {
+      "name": "GlobalVaultWithdraw",
+      "tag": 11,
+      "accounts": [
+        { "name": "depositor", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "mint", "writable": false },
+        { "name": "global_vault_signer", "writable": false },
+        { "name": "global_vault_staging", "writable": true },
+        { "name": "depositor_token", "writable": true },
+        { "name": "token_program", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "integration_account", "writable": true },
+        { "name": "lending_pool", "writable": true },
+        { "name": "lending_pool_oracle", "writable": false },
+        { "name": "liquidity_vault", "writable": true },
+        { "name": "bank_liquidity_vault_authority", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "user_account", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "shares_to_burn", "type": "u128" },
+        { "name": "profile_id", "type": "u8" }
+      ]
+    },
+    {
+      "name": "PlaceOrderForRiskProfile",
+      "tag": 12,
+      "splitPayer": true,
+      "accounts": [
+        { "name": "fee_payer", "signer": true, "writable": true },
+        { "name": "curator", "signer": true, "writable": false },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "market", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "profile_id", "type": "u8" },
+        { "name": "rate_bps", "type": "u16" },
+        { "name": "term_seconds", "type": "u32" },
+        { "name": "flags", "type": "u8" }
+      ]
+    },
+    {
+      "name": "CancelOrderForRiskProfile",
+      "tag": 13,
+      "splitPayer": true,
+      "accounts": [
+        { "name": "fee_payer", "signer": true, "writable": true },
+        { "name": "curator", "signer": true, "writable": false },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "market", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [{ "name": "profile_id", "type": "u8" }]
+    },
+    {
+      "name": "UpdateOrderForRiskProfile",
+      "tag": 14,
+      "splitPayer": true,
+      "accounts": [
+        { "name": "fee_payer", "signer": true, "writable": true },
+        { "name": "curator", "signer": true, "writable": false },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "market", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "profile_id", "type": "u8" },
+        { "name": "new_rate_bps", "type": "u16" },
+        { "name": "new_term_seconds", "type": "u32" },
+        { "name": "new_flags", "type": "u8" }
+      ]
+    },
+    {
+      "name": "ClaimCuratorFee",
+      "tag": 15,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal profile.curator" },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "global_vault_signer", "writable": false },
+        { "name": "global_vault_staging", "writable": true },
+        { "name": "vault_integration", "writable": true },
+        { "name": "curator_token", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "liquidity_vault", "writable": true },
+        { "name": "bank_liquidity_vault_authority", "writable": false },
+        { "name": "bank_oracle", "writable": false },
+        { "name": "mint", "writable": false },
+        { "name": "token_program", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "marginfi_group", "writable": false }
+      ],
+      "args": [{ "name": "profile_id", "type": "u8" }]
+    },
+    {
+      "name": "SettleMaturedLoan",
+      "tag": 16,
+      "heavy": true,
+      "argsEncoding": "RAW: tag(u8) + repay_atoms_max(u64 LE) — NOT borsh",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "loan", "writable": true },
+        { "name": "liquidator_debt_token", "writable": true },
+        { "name": "liquidator_collateral_token", "writable": true },
+        { "name": "market_debt_vault", "writable": true },
+        { "name": "market_collateral_vault", "writable": true },
+        { "name": "market_signer", "writable": false },
+        { "name": "lender_marginfi_account", "writable": true },
+        { "name": "borrower_marginfi_account", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "collateral_bank", "writable": true },
+        { "name": "debt_liquidity_vault", "writable": true },
+        { "name": "collateral_liquidity_vault", "writable": true },
+        { "name": "collateral_bank_lva", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
+        { "name": "debt_mint", "writable": false },
+        { "name": "collateral_mint", "writable": false },
+        { "name": "token_program", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "cranker_refund", "writable": true }
+      ],
+      "args": [{ "name": "repay_atoms_max", "type": "u64" }]
+    },
+    {
+      "name": "LiquidateLoan",
+      "tag": 17,
+      "heavy": true,
+      "argsEncoding": "RAW: tag(u8) + repay_atoms_max(u64 LE) — NOT borsh",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "loan", "writable": true },
+        { "name": "liquidator_debt_token", "writable": true },
+        { "name": "liquidator_collateral_token", "writable": true },
+        { "name": "market_debt_vault", "writable": true },
+        { "name": "market_collateral_vault", "writable": true },
+        { "name": "market_signer", "writable": false },
+        { "name": "lender_marginfi_account", "writable": true },
+        { "name": "borrower_marginfi_account", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "collateral_bank", "writable": true },
+        { "name": "debt_liquidity_vault", "writable": true },
+        { "name": "collateral_liquidity_vault", "writable": true },
+        { "name": "collateral_bank_lva", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
+        { "name": "debt_mint", "writable": false },
+        { "name": "collateral_mint", "writable": false },
+        { "name": "token_program", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "cranker_refund", "writable": true }
+      ],
+      "args": [{ "name": "repay_atoms_max", "type": "u64" }]
+    },
+    {
+      "name": "SetFeeConfig",
+      "tag": 18,
+      "accounts": [
+        { "name": "admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "protocol_fee_bps_floor", "type": { "option": "u16" } },
+        { "name": "origination_bps", "type": { "option": "u16" } },
+        { "name": "curator_split_bps", "type": { "option": "u16" } },
+        { "name": "curator_fee_bps", "type": { "option": "u16" } },
+        { "name": "liquidation_keeper_bps", "type": { "option": "u16" } },
+        { "name": "liquidation_protocol_bps", "type": { "option": "u16" } },
+        { "name": "ltv_buffer_bps", "type": { "option": "u16" } },
+        { "name": "grace_period_seconds", "type": { "option": "u32" } }
+      ]
+    },
+    {
+      "name": "ProtocolFeeClaim",
+      "tag": 19,
+      "accounts": [
+        { "name": "admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "admin_debt_token", "writable": true },
+        { "name": "market_debt_vault", "writable": true },
+        { "name": "market_signer", "writable": false },
+        { "name": "lender_marginfi_account", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "debt_liquidity_vault", "writable": true },
+        { "name": "debt_bank_lva", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "debt_mint", "writable": false },
+        { "name": "token_program", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "marginfi_program", "writable": false }
+      ],
+      "args": []
+    },
+    {
+      "name": "ClaimRepaymentForRiskProfile",
+      "tag": 20,
+      "heavy": true,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "loan", "writable": true },
+        { "name": "global_vault", "writable": true },
+        { "name": "global_vault_signer", "writable": false },
+        { "name": "global_vault_staging", "writable": true },
+        { "name": "global_vault_integration_account", "writable": true },
+        { "name": "market_debt_vault", "writable": true },
+        { "name": "market_signer", "writable": false },
+        { "name": "lender_marginfi_account", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "debt_liquidity_vault", "writable": true },
+        { "name": "debt_bank_lva", "writable": false },
+        { "name": "bank_oracle", "writable": false, "note": "Single oracle — bank.config.primary_oracle()" },
+        { "name": "debt_mint", "writable": false },
+        { "name": "token_program", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "cranker_refund", "writable": true, "note": "REQUIRED — bound to loan.created_by" }
+      ],
+      "args": []
+    },
+    {
+      "name": "TransferMarketAdmin",
+      "tag": 21,
+      "accounts": [
+        { "name": "current_admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true }
+      ],
+      "args": [{ "name": "new_admin", "type": "publicKey" }]
+    },
+    {
+      "name": "AcceptMarketAdmin",
+      "tag": 22,
+      "accounts": [
+        { "name": "pending_admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true }
+      ],
+      "args": []
+    },
+    {
+      "name": "TransferGlobalVaultAdmin",
+      "tag": 23,
+      "accounts": [
+        { "name": "current_admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true }
+      ],
+      "args": [{ "name": "new_admin", "type": "publicKey" }]
+    },
+    {
+      "name": "AcceptGlobalVaultAdmin",
+      "tag": 24,
+      "accounts": [
+        { "name": "pending_admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true }
+      ],
+      "args": []
+    },
+    {
+      "name": "TransferCurator",
+      "tag": 25,
+      "accounts": [
+        { "name": "current_curator", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true }
+      ],
+      "args": [
+        { "name": "profile_id", "type": "u8" },
+        { "name": "new_curator", "type": "publicKey" }
+      ]
+    },
+    {
+      "name": "AcceptCurator",
+      "tag": 26,
+      "accounts": [
+        { "name": "pending_curator", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true }
+      ],
+      "args": [{ "name": "profile_id", "type": "u8" }]
+    },
+    {
+      "name": "SetMarketPause",
+      "tag": 27,
+      "accounts": [
+        { "name": "admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true }
+      ],
+      "args": [{ "name": "paused", "type": "u8" }]
+    },
+    {
+      "name": "CreateGlobalConfig",
+      "tag": 28,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": true, "pda": ["b\"global_config\""] },
+        { "name": "system_program", "writable": false },
+        { "name": "program_data", "writable": false, "note": "BpfLoaderUpgradeable ProgramData PDA" }
+      ],
+      "args": []
+    },
+    {
+      "name": "TransferProtocolAdmin",
+      "tag": 29,
+      "accounts": [
+        { "name": "current_admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": true }
+      ],
+      "args": [{ "name": "new_admin", "type": "publicKey" }]
+    },
+    {
+      "name": "AcceptProtocolAdmin",
+      "tag": 30,
+      "accounts": [
+        { "name": "pending_admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": true }
+      ],
+      "args": []
+    },
+    {
+      "name": "SetGlobalPause",
+      "tag": 31,
+      "accounts": [
+        { "name": "admin", "signer": true, "writable": true },
+        { "name": "global_config", "writable": true }
+      ],
+      "args": [{ "name": "paused", "type": "u8" }]
+    },
+    {
+      "name": "UpdateRiskProfile",
+      "tag": 32,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "profile_id", "type": "u8" },
+        { "name": "new_max_ltv_bps", "type": { "option": "u16" } },
+        { "name": "new_max_term_seconds", "type": { "option": "u32" } }
+      ]
+    },
+    {
+      "name": "ConvertP2PoolToFixed",
+      "tag": 33,
+      "heavy": true,
+      "accounts": [
+        { "name": "borrower", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "loan", "writable": true },
+        { "name": "system_program", "writable": false },
+        { "name": "borrower_marginfi_account", "writable": true },
+        { "name": "lender_marginfi_account", "writable": true },
+        { "name": "debt_bank", "writable": true },
+        { "name": "debt_liquidity_vault", "writable": true },
+        { "name": "debt_bank_lva", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_bank", "writable": false },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
+        { "name": "market_debt_vault", "writable": true },
+        { "name": "debt_mint", "writable": false },
+        { "name": "market_signer", "writable": false },
+        { "name": "token_program", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "marginfi_program", "writable": false },
+        { "name": "global_vault", "writable": true },
+        { "name": "cranker_refund", "writable": true, "note": "REQUIRED — bound to P2Pool loan PDA's created_by" }
+      ],
+      "args": [{ "name": "max_acceptable_rate_bps", "type": "u16" }]
+    },
+    {
+      "name": "CheckLtvLiquidatable",
+      "tag": 34,
+      "readOnlyGate": true,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "loan", "writable": true },
+        { "name": "borrower_marginfi", "writable": true },
+        { "name": "debt_bank", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_bank", "writable": false },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
+        { "name": "marginfi_program", "writable": false }
+      ],
+      "args": []
+    },
+    {
+      "name": "CheckMaturityLiquidatable",
+      "tag": 35,
+      "readOnlyGate": true,
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "loan", "writable": true },
+        { "name": "borrower_marginfi", "writable": true },
+        { "name": "debt_bank", "writable": false },
+        { "name": "marginfi_program", "writable": false }
+      ],
+      "args": []
+    },
+    {
+      "name": "SetVaultPause",
+      "tag": 36,
+      "accounts": [
+        { "name": "admin", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true }
+      ],
+      "args": [{ "name": "paused", "type": "u8" }]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "MarketFixed",
+      "size": 512,
+      "encoding": "bytemuck Pod (raw byte layout — NOT borsh)",
+      "discriminator": "u64 at offset 0 (MARKET_FIXED_DISCRIMINANT)",
+      "note": "Account is `MarketFixed` header + variable-length dynamic region holding the asks RB-tree, claimed-seats RB-tree, matched-loans RB-tree, and free list. See `programs/ydelta/src/state/market.rs` for byte-offset comments. Decoder lives at ts/src/accounts/market.ts (Phase 3)."
+    },
+    { "name": "GlobalConfig", "encoding": "bytemuck Pod", "note": "Holds `protocol_admin`, `pending_protocol_admin`, `is_paused`. See state/global_config.rs." },
+    { "name": "GlobalVaultFixed", "size": 320, "encoding": "bytemuck Pod", "note": "Per-mint vault header. Dynamic region holds the risk_profiles RB-tree (512-byte blocks) and claimed_seats + market_orders RB-trees backed by 160-byte node blocks carrying 144-byte payloads. See state/vault.rs." },
+    { "name": "RiskProfile", "size": 496, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by profile_id. See state/vault.rs." },
+    { "name": "RiskProfileDepositorSeat", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (owner, profile_id)." },
+    { "name": "RiskProfileOrderRef", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (market, profile_id). At most one live order per (profile, market)." },
+    { "name": "ClaimedSeat", "encoding": "bytemuck Pod tree-node payload", "note": "Per-trader bookkeeping in a market — debt/collateral × withdrawable/encumbered shares + matched-loan running aggregates." },
+    { "name": "RestingOrder", "encoding": "bytemuck Pod tree-node payload", "note": "Vault ask body — rate_bps, term_seconds, claim_seat_index, sequence." },
+    { "name": "MatchedLoan", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Transient queue node between match and promote." },
+    { "name": "LoanFixed", "encoding": "bytemuck Pod PDA", "note": "Per-loan PDA seeded by (b\"loan\", market, sequence_le)." },
+    { "name": "UserAccount", "encoding": "bytemuck Pod", "note": "Per-wallet market-position + vault-position mirrors. Authoritative balances live on the canonical ClaimedSeat / RiskProfileDepositorSeat trees." }
+  ],
+  "errors": [
+    { "code": 0, "name": "InvalidMarketParameters" },
+    { "code": 1, "name": "InvalidDepositAccounts" },
+    { "code": 2, "name": "InvalidWithdrawAccounts" },
+    { "code": 3, "name": "InvalidCancel" },
+    { "code": 4, "name": "InvalidFreeList" },
+    { "code": 5, "name": "AlreadyClaimedSeat" },
+    { "code": 6, "name": "PostOnlyWouldCross" },
+    { "code": 7, "name": "OrderAlreadyExpired" },
+    { "code": 8, "name": "WrongIndexHintParams" },
+    { "code": 9, "name": "Overflow" },
+    { "code": 10, "name": "IncorrectAccount" },
+    { "code": 11, "name": "InvalidMint" },
+    { "code": 12, "name": "NoSeatClaimed" },
+    { "code": 13, "name": "SeatHasOpenObligations" },
+    { "code": 14, "name": "InsufficientWithdrawableBalance" },
+    { "code": 15, "name": "RateBelowFloor" },
+    { "code": 16, "name": "TermNotCompatible" },
+    { "code": 17, "name": "CollateralInsufficient" },
+    { "code": 18, "name": "Token2022UnsupportedExtension" },
+    { "code": 19, "name": "OrderNotFound" },
+    { "code": 20, "name": "OrderNotOwnedBySigner" },
+    { "code": 21, "name": "InvalidArgument" },
+    { "code": 22, "name": "MatchedLoanNotFound" },
+    { "code": 23, "name": "SelfMatchForbidden" },
+    { "code": 24, "name": "CollateralBelowMatchLTV" },
+    { "code": 25, "name": "VaultWrongMint" },
+    { "code": 26, "name": "VaultProfileNotFound" },
+    { "code": 28, "name": "VaultOrderTermExceedsProfileMax" },
+    { "code": 29, "name": "VaultCuratorRequired" },
+    { "code": 30, "name": "VaultAdminRequired" },
+    { "code": 32, "name": "VaultProfileOrderExists" },
+    { "code": 33, "name": "VaultInsufficientIdleAtoms" },
+    { "code": 34, "name": "VaultProfileNotEmpty" },
+    { "code": 36, "name": "VaultProfileIdExists" },
+    { "code": 37, "name": "VaultProfileLtvOutOfRange" },
+    { "code": 38, "name": "VaultProfileTermInvalid" },
+    { "code": 39, "name": "LoanNotMatured" },
+    { "code": 40, "name": "LoanStillSolvent" },
+    { "code": 41, "name": "LiquidatorPaymentInsufficient" },
+    { "code": 42, "name": "LiquidationCollateralUnderflow" },
+    { "code": 43, "name": "MarketAdminRequired" },
+    { "code": 44, "name": "InvalidFeeConfig" },
+    { "code": 45, "name": "PendingAdminMismatch" },
+    { "code": 46, "name": "MarketPaused" },
+    { "code": 47, "name": "GlobalPaused" },
+    { "code": 48, "name": "ProtocolAdminRequired" },
+    { "code": 49, "name": "OracleDegenerate" },
+    { "code": 50, "name": "VaultPaused" }
+  ]
+}

@@ -338,21 +338,16 @@ async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
         LoanState::Active as u8,
         "loan must be Active before liquidation"
     );
+    // Conservation must hold at promotion.
+    fixture.assert_loan_conservation_holds(0).await;
 
     // (1) Solvent at mainnet price → liquidate_loan must reject with
-    // `LoanStillSolvent` (Custom 49). Anything else means we're hitting
+    // `LoanStillSolvent` (Custom 40). Anything else means we're hitting
     // a different bug path and the test isn't actually exercising LTV.
     let solvent_result = fixture
         .liquidate_loan(&keeper, 0, keeper_usdc, keeper_wsol, /*repay_max=*/ 0)
         .await;
-    let err = solvent_result
-        .expect_err("liquidate_loan must reject while loan is solvent at mainnet wSOL price");
-    let err_str = format!("{:?}", err);
-    assert!(
-        err_str.contains("Custom(40)"),
-        "expected LoanStillSolvent (Custom 40), got: {}",
-        err_str
-    );
+    crate::assert_custom_error!(solvent_result, ydelta::program::YdeltaError::LoanStillSolvent);
 
     // (2) Crash wSOL → $0.001. fp18 scale: 0.001 USD = 10^15.
     // Aggressive crash so the LTV breach is unambiguous regardless
@@ -400,6 +395,34 @@ async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
     assert_eq!(loan_after.state, LoanState::Repaid as u8);
     assert_eq!(loan_after.outstanding_debt_atoms, 0);
     assert_eq!(loan_after.collateral_atoms, 0);
+    // Conservation must hold post-full-liquidation.
+    fixture.assert_loan_conservation_holds(0).await;
+    // Protocol-fee accumulator must be physically backed by atoms in
+    // the lender_marginfi_account (this is the protocol-fee-backing
+    // invariant the audit calls out). Read live asset shares and
+    // convert to atoms.
+    use marginfi_mocks::state::{Bank, MarginfiAccount};
+    use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
+    let mfi_data = fixture
+        .account_data(fixture.lender_marginfi_account_pubkey())
+        .await;
+    let mfi = MarginfiAccount::try_from_account_data(&mfi_data).unwrap();
+    let lender_shares = mfi
+        .find_balance(&mainnet::usdc_bank())
+        .map(|b| wrapped_i80f48_to_u128(b.asset_shares))
+        .unwrap_or(0);
+    let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
+    let bank = Bank::try_from_account_data(&bank_data).unwrap();
+    let asv = wrapped_i80f48_to_u128(bank.asset_share_value);
+    let lender_atoms = ydelta::math::from_scaled_floor(
+        ydelta::math::mul_scale(lender_shares, asv).unwrap(),
+    );
+    assert!(
+        (loan_after.accumulated_protocol_fee_atoms as u128) <= lender_atoms,
+        "protocol_fee accumulator ({}) exceeds atoms physically in lender_marginfi_account ({})",
+        loan_after.accumulated_protocol_fee_atoms,
+        lender_atoms,
+    );
 }
 
 /// End-to-end matured-settlement: open a fixed-rate loan, advance the
@@ -460,6 +483,8 @@ async fn settle_matured_loan_after_grace_seizes_collateral() {
         loan_post.collateral_atoms, 0,
         "all collateral must be seized in settlement"
     );
+    // Conservation must hold post-settlement.
+    fixture.assert_loan_conservation_holds(0).await;
 }
 
 /// Partial liquidation: keeper passes a non-zero `repay_atoms_max` cap.
@@ -545,6 +570,8 @@ async fn partial_liquidation_leaves_loan_active_with_reduced_balances() {
         collateral_pre,
         loan_post.collateral_atoms
     );
+    // Conservation must hold across the partial liquidation event.
+    fixture.assert_loan_conservation_holds(0).await;
 
     // Keeper earns: their collateral-side token balance grew by the
     // bonus. (Their debt-side balance went DOWN to fund the repay.)
@@ -616,6 +643,13 @@ async fn liquidator_keeper_balance_grows_after_settlement() {
         keeper_wsol_pre,
         keeper_wsol_post
     );
+    // Loan must be Repaid post-settle with zero outstanding & zero collateral.
+    let loan_post = fixture.read_loan(0).await;
+    assert_eq!(loan_post.state, LoanState::Repaid as u8);
+    assert_eq!(loan_post.outstanding_debt_atoms, 0);
+    assert_eq!(loan_post.collateral_atoms, 0);
+    // Conservation must hold post-settle.
+    fixture.assert_loan_conservation_holds(0).await;
 }
 
 /// Protocol earns on liquidation (matches marginfi's insurance-fee
@@ -699,4 +733,9 @@ async fn protocol_accrues_fee_on_liquidate_loan() {
         lender_drop,
         expected_protocol_take
     );
+    // Conservation must hold across the full liquidation event.
+    fixture.assert_loan_conservation_holds(0).await;
+    // Loan flipped to Repaid (full liquidation drained outstanding).
+    assert_eq!(loan_post.state, LoanState::Repaid as u8);
+    assert_eq!(loan_post.outstanding_debt_atoms, 0);
 }

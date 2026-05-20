@@ -112,4 +112,7 @@ async fn borrower_bid_consumes_one_sequence() {
     assert_eq!(market.fixed.order_sequence_number, 1);
     assert_eq!(fixture.count_orders(Side::Bid).await, 0);
     assert_eq!(fixture.count_orders(Side::Ask).await, 0);
+    // No MatchedLoan was inserted — the bid had nothing to cross
+    // against (empty asks tree).
+    assert_eq!(market.fixed.matched_loan_sequence, 0);
 }

@@ -445,6 +445,26 @@ fn loan_fixed_grows_to_carry_vault_lender_fields() {
     assert_eq!(loan.lender_kind, 0); // wallet
     assert_eq!(loan.lender_profile_id, 0);
     assert_eq!(loan.lender_global_vault, Pubkey::default());
+    // Pin the rest of the constructor result so a future refactor
+    // can't silently break the field-from-MatchedLoan stamping.
+    assert_eq!(loan.principal_debt_atoms, 1_000);
+    assert_eq!(loan.outstanding_debt_atoms, 1_000);
+    assert_eq!(loan.lender_claimable_atoms, 1_000);
+    assert_eq!(loan.collateral_atoms, 500);
+    assert_eq!(loan.borrower_rate_bps, 1_000);
+    assert_eq!(loan.lender_rate_bps, 500);
+    assert_eq!(loan.loan_type, ydelta::state::loan::LoanType::Fixed as u8);
+    assert_eq!(loan.state, ydelta::state::loan::LoanState::Active as u8);
+    assert_eq!(loan.accumulated_protocol_fee_atoms, 0);
+    assert_eq!(loan.accumulated_curator_fee_atoms, 0);
+    assert_eq!(loan.principal_retired_atoms, 0);
+    // Conservation identity holds at construction.
+    assert_eq!(
+        loan.outstanding_debt_atoms as u128 + loan.principal_retired_atoms as u128,
+        loan.lender_claimable_atoms as u128
+            + loan.accumulated_protocol_fee_atoms as u128
+            + loan.accumulated_curator_fee_atoms as u128,
+    );
 }
 
 #[test]

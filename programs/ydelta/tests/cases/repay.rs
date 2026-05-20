@@ -117,6 +117,8 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     // defaults to 0 on a fresh market, so borrower_rate == 800.
     assert_eq!(loan_pre.lender_rate_bps, 600);
     assert_eq!(loan_pre.borrower_rate_bps, 800);
+    // Conservation holds at promotion.
+    fixture.assert_loan_conservation_holds(0).await;
 
     let bob_seat_pre = fixture.read_seat(&bob.pubkey()).await;
     let bob_coll_pre = bob_seat_pre.collateral_withdrawable_shares;
@@ -135,6 +137,15 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     assert_eq!(loan_post.outstanding_debt_atoms, 0);
     // Lender's claimable not zeroed yet — that's claim_repayment_for_risk_profile.
     assert!(loan_post.lender_claimable_atoms > 0);
+    // Conservation identity must still hold after the full repay event.
+    fixture.assert_loan_conservation_holds(0).await;
+    // Full repay retires at least the gross principal — `principal_retired_atoms`
+    // tracks cumulative atoms repaid (principal + accrued interest).
+    assert!(
+        loan_post.principal_retired_atoms >= loan_post.principal_debt_atoms,
+        "full repay must retire >= gross principal (got retired={}, principal={})",
+        loan_post.principal_retired_atoms, loan_post.principal_debt_atoms,
+    );
 
     // Bob's seat: collateral credited back at the loan's place-time
     // snapshot, not the live bank value (byte-symmetric with the
@@ -171,6 +182,14 @@ async fn partial_repay_leaves_loan_active_and_collateral_locked() {
     let loan_post = fixture.read_loan(0).await;
     assert_eq!(loan_post.state, LoanState::Active as u8);
     assert_eq!(loan_post.outstanding_debt_atoms, PRINCIPAL_ATOMS - half);
+    // Conservation identity must hold across the partial repay event.
+    fixture.assert_loan_conservation_holds(0).await;
+    // Partial repay retires exactly `half` atoms of principal.
+    assert_eq!(
+        loan_post.principal_retired_atoms, half,
+        "partial repay must retire exactly the repaid atoms (got retired={}, expected={})",
+        loan_post.principal_retired_atoms, half,
+    );
 
     // Borrower's collateral should NOT have been credited back yet —
     // partial repay does not release collateral.

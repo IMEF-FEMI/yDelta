@@ -5,7 +5,9 @@ use solana_sdk::signer::Signer;
 use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
 use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
 
+use crate::assert_custom_error;
 use crate::test_utils::MarketFixture;
+use ydelta::program::YdeltaError;
 
 #[tokio::test]
 async fn admin_can_update_liquidation_keeper_bps() {
@@ -37,10 +39,9 @@ async fn non_admin_set_fee_config_rejects() {
     let ix = set_fee_config_instruction(&fixture.market.pubkey(), &interloper.pubkey(), params);
     let kp = interloper.insecure_clone();
     let result = fixture.process(ix, &[&kp]).await;
-    assert!(
-        result.is_err(),
-        "non-admin must be rejected by set_fee_config gate"
-    );
+    // The gate is `signer == market_admin`; reject must be the exact
+    // `MarketAdminRequired` variant, not any error.
+    assert_custom_error!(result, YdeltaError::MarketAdminRequired);
 }
 
 #[tokio::test]
@@ -54,10 +55,8 @@ async fn out_of_range_bps_rejected() {
     let ix = set_fee_config_instruction(&fixture.market.pubkey(), &fixture.payer.pubkey(), params);
     let kp = fixture.payer.insecure_clone();
     let result = fixture.process(ix, &[&kp]).await;
-    assert!(
-        result.is_err(),
-        "out-of-range bps (>10_000) must be rejected"
-    );
+    // Out-of-range bps must surface the explicit InvalidFeeConfig variant.
+    assert_custom_error!(result, YdeltaError::InvalidFeeConfig);
 }
 
 /// End-to-end: protocol takes an origination fee on Fixed matches when

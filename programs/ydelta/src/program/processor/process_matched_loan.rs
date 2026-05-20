@@ -402,8 +402,6 @@ fn do_vault_settle<'a, 'info>(
     let withdraw_cover_atoms = principal_atoms
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    let expected_shares: u128 = MarginfiV18Adapter
-        .amount_to_asset_shares_ceil(&[debt_bank.info.clone()], withdraw_cover_atoms)?;
     let withdraw_accounts: Vec<AccountInfo> = vec![
         settle.marginfi_group.info.clone(),
         settle.global_vault_integration_account.info.clone(),
@@ -418,16 +416,43 @@ fn do_vault_settle<'a, 'info>(
         debt_bank.info.clone(),
         settle.bank_oracle.clone(),
     ];
-    // Withdraw with a 1-atom cushion so the post-CPI `actual_atoms`
-    // remains >= the nominal matched principal even if marginfi returns
-    // one atom short inside its drift band. Any extra atom is pushed
-    // back into the vault below; the market only receives the exact
-    // matched principal.
-    let actual_atoms = MarginfiV18Adapter.withdraw(
-        &withdraw_accounts,
-        expected_shares,
-        &[global_vault_signer_seeds],
+    // The cushion strategy: ask marginfi for `principal_atoms + 1` so
+    // the ±1 drift band still leaves us with `actual_atoms >=
+    // principal_atoms`. But when the vault's marginfi balance is small
+    // (a vault funded to back exactly an `ask_principal`-sized cross),
+    // ceil-rounding 41 atoms to shares overshoots the live share count
+    // and marginfi v0.1.8 hard-errors with `OperationWithdrawOnly`
+    // because the implicit drain didn't carry `withdraw_all=Some(true)`.
+    // Read the live mfi balance and switch to the `withdraw_atoms_full`
+    // path when the cushion would zero the position.
+    let mfi_asset_shares_pre: u128 = crate::protocol::marginfi::read_asset_shares_u128(
+        settle.global_vault_integration_account.info,
+        debt_bank.info.key,
     )?;
+    let mfi_atoms_pre: u64 =
+        MarginfiV18Adapter.shares_to_amount(&[debt_bank.info.clone()], mfi_asset_shares_pre)?;
+    let actual_atoms = if withdraw_cover_atoms >= mfi_atoms_pre {
+        // Drain path. Pass the live atom balance as the cap so marginfi
+        // closes the position cleanly. Any extra atom is pushed back
+        // into the vault below; the market only receives the exact
+        // matched principal.
+        MarginfiV18Adapter.withdraw_atoms_full(
+            &withdraw_accounts,
+            mfi_atoms_pre,
+            &[global_vault_signer_seeds],
+        )?
+    } else {
+        // Cushion path. Ceil-rounded shares + ±1 drift gate guarantees
+        // `actual_atoms >= principal_atoms`; the spare atom is
+        // redeposited below.
+        let expected_shares: u128 = MarginfiV18Adapter
+            .amount_to_asset_shares_ceil(&[debt_bank.info.clone()], withdraw_cover_atoms)?;
+        MarginfiV18Adapter.withdraw(
+            &withdraw_accounts,
+            expected_shares,
+            &[global_vault_signer_seeds],
+        )?
+    };
     require!(
         actual_atoms >= principal_atoms,
         ProgramError::ArithmeticOverflow,

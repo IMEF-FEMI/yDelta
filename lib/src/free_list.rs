@@ -1,6 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::{get_helper, get_mut_helper, DataIndex, Get, NIL};
+use crate::{get_mut_helper, DataIndex, Get, NIL};
+#[cfg(debug_assertions)]
+use crate::get_helper;
 
 // FreeList is a linked list that keeps track of all the available nodes that
 // can be filled with ClaimedSeats and RestingOrders.
@@ -11,6 +13,7 @@ const END: u32 = u32::MAX;
 /// longer than the number of blocks in the largest account (~10 MiB /
 /// smallest block), so this is comfortably above any real list length
 /// while still bounding the worst-case cost of the guard.
+#[cfg(debug_assertions)]
 const MAX_FREE_LIST_SCAN: usize = 1 << 20;
 pub struct FreeList<'a, T: Pod> {
     /// Index in data of the head of the free list.

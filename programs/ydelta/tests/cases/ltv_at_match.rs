@@ -150,17 +150,16 @@ async fn match_passes_with_overcollateralized_bid() {
             /*flags=*/ 0,
         )
         .await;
-    assert!(
-        result.is_ok(),
-        "well-collateralised match should pass LTV (required={}, posted={}): {:?}",
-        required,
-        collateral_atoms,
-        result
-    );
+    result.expect("well-collateralised match should pass LTV");
 
     // Match landed.
     let market = fixture.read_market_fixed().await;
     assert_eq!(market.matched_loan_sequence, 1);
+    // Vault profile encumbered for exactly the matched principal —
+    // the cross fully filled.
+    let profile = fixture.read_risk_profile(0).await;
+    assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
+    fixture.assert_vault_idle_invariant(0).await;
 }
 
 #[tokio::test]

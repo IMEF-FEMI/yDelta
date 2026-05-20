@@ -120,12 +120,13 @@ async fn global_vault_withdraw_rejects_overburn() {
         .await
         .unwrap();
 
-    // Try to burn more shares than the depositor holds — should error.
+    // Try to burn more shares than the depositor holds — must reject
+    // with the exact InvalidArgument variant from the shares-balance gate.
     fixture.refresh_blockhash().await;
     let result = fixture
         .global_vault_withdraw(&depositor, depositor_token, 0, 200_000_000_u128)
         .await;
-    assert!(result.is_err(), "over-burn must reject");
+    crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
 }
 
 /// First `place_order_for_risk_profile` on a market auto-creates the
@@ -167,6 +168,12 @@ async fn first_place_order_auto_creates_vault_seat() {
         hypertree::NIL,
         "place_order_for_risk_profile must rest an ask",
     );
+    // Vault-idle invariant: nothing in flight yet, profile is fully
+    // idle. Tightens this test to verify no spurious encumbrance.
+    fixture.assert_vault_idle_invariant(0).await;
+    let p = fixture.read_risk_profile(0).await;
+    assert_eq!(p.deployed_principal_atoms, 0);
+    assert_eq!(p.encumbered_in_orders_atoms, 0);
 }
 
 /// `create_risk_profile` rejects when signer is not global_vault_admin.
@@ -190,7 +197,8 @@ async fn create_risk_profile_rejects_non_admin() {
             30 * 86_400,
         )
         .await;
-    assert!(result.is_err(), "non-admin must reject");
+    // Loader's admin gate must surface the exact VaultAdminRequired variant.
+    crate::assert_custom_error!(result, ydelta::program::YdeltaError::VaultAdminRequired);
 }
 
 /// A paused vault rejects vault-scoped state-mutating ixs (deposit,
@@ -233,29 +241,26 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     fixture.refresh_blockhash().await;
     fixture.set_vault_pause(&admin, true).await.unwrap();
 
-    // Deposit must reject while paused.
+    // Deposit must reject while paused — exact VaultPaused variant.
     fixture.refresh_blockhash().await;
     let deposit_res = fixture
         .global_vault_deposit(&depositor, depositor_token, 0, 10_000_000)
         .await;
-    assert!(deposit_res.is_err(), "paused vault must reject deposit");
+    crate::assert_custom_error!(deposit_res, ydelta::program::YdeltaError::VaultPaused);
 
     // Withdraw must reject while paused.
     fixture.refresh_blockhash().await;
     let withdraw_res = fixture
         .global_vault_withdraw(&depositor, depositor_token, 0, 10_000_000_u128)
         .await;
-    assert!(withdraw_res.is_err(), "paused vault must reject withdraw");
+    crate::assert_custom_error!(withdraw_res, ydelta::program::YdeltaError::VaultPaused);
 
     // Curator place-order must reject while paused.
     fixture.refresh_blockhash().await;
     let place_res = fixture
         .place_order_for_risk_profile(&curator, 0, 500, 30 * 86_400, 0)
         .await;
-    assert!(
-        place_res.is_err(),
-        "paused vault must reject place_order_for_risk_profile"
-    );
+    crate::assert_custom_error!(place_res, ydelta::program::YdeltaError::VaultPaused);
 
     // The two-step vault-admin transfer must STILL work while paused
     // (recovery surface). Initiate + accept the transfer to new_admin.

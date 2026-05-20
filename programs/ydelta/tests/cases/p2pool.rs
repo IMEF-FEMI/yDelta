@@ -238,10 +238,14 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await; // borrower
 
-    // Lender side: a vault profile rests an unbounded ask, but funded
-    // with only `ask_principal` (40 atoms) idle so the cross can only
-    // fill 40 atoms — the residual must fall through to P2Pool.
-    let ask_principal: u64 = 40;
+    // Lender side: a vault profile rests an unbounded ask, funded with
+    // `deposit_atoms` (40 atoms) idle. The matching engine reserves
+    // `MARGINFI_ROUNDING_RESERVE_ATOMS = 1` per profile to absorb
+    // marginfi v0.1.8's deposit-share-mint rounding tax — see the
+    // doc-comment on that constant — so the cross caps at
+    // `deposit_atoms - 1` and the residual rolls to P2Pool.
+    let deposit_atoms: u64 = 40;
+    let expected_fixed_principal: u64 = deposit_atoms - 1;
     fixture
         .provide_vault_liquidity(
             &admin,
@@ -251,7 +255,7 @@ async fn bid_partial_match_residual_p2pool_borrows() {
             /*max_ltv_bps=*/ 8_000,
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
-            /*deposit_atoms=*/ ask_principal,
+            deposit_atoms,
         )
         .await;
 
@@ -268,9 +272,10 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     fixture.refresh_blockhash().await;
 
     // Bob bids for 100 atoms with flags=0 (P2Pool fallback enabled).
-    // Matching engine: 40 atoms cross the vault ask (idle-capped) →
-    // Fixed MatchedLoan; residual 60 atoms → P2Pool MatchedLoan +
-    // marginfi.borrow CPI.
+    // Matching engine: `expected_fixed_principal` atoms cross the vault
+    // ask (idle-capped by the marginfi-rounding reserve) → Fixed
+    // MatchedLoan; the remaining `bid - expected_fixed_principal` atoms
+    // → P2Pool MatchedLoan + marginfi.borrow CPI.
     let bid_principal: u64 = 100;
     let collateral_atoms: u64 = 5_000;
     fixture
@@ -311,7 +316,8 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     fixture.refresh_blockhash().await;
     fixture.crank_matched_loan(1).await.unwrap();
 
-    // Loan 0: Fixed, vault profile as lender, ask_principal in size.
+    // Loan 0: Fixed, vault profile as lender, sized to the vault's
+    // matchable idle (`deposit - MARGINFI_ROUNDING_RESERVE_ATOMS`).
     let loan_fixed = fixture.read_loan(0).await;
     assert_eq!(
         loan_fixed.loan_type,
@@ -319,8 +325,8 @@ async fn bid_partial_match_residual_p2pool_borrows() {
         "first crank promotes the Fixed cross"
     );
     assert_eq!(
-        loan_fixed.principal_debt_atoms, ask_principal,
-        "Fixed loan principal == ask amount"
+        loan_fixed.principal_debt_atoms, expected_fixed_principal,
+        "Fixed loan principal == vault idle minus marginfi rounding reserve"
     );
     assert_eq!(
         loan_fixed.lender_rate_bps, 600,
@@ -328,7 +334,7 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     );
 
     // Loan 1: P2Pool for the residual, marginfi-backed.
-    let residual = bid_principal - ask_principal;
+    let residual = bid_principal - expected_fixed_principal;
     let loan_p2p = fixture.read_loan(1).await;
     assert_eq!(
         loan_p2p.loan_type,
@@ -344,7 +350,7 @@ async fn bid_partial_match_residual_p2pool_borrows() {
         "P2Pool loan must carry marginfi liability shares"
     );
 
-    // Collateral split: Fixed loan got `ask_principal/bid_principal`
+    // Collateral split: Fixed loan got `expected_fixed_principal/bid_principal`
     // share of bob's posted collateral; P2Pool got the rest. The two
     // must sum to the original collateral_atoms (within rounding).
     let total_collateral = loan_fixed.collateral_atoms + loan_p2p.collateral_atoms;
@@ -515,6 +521,8 @@ async fn p2pool_partial_repay_leaves_loan_active() {
     );
     // `outstanding_debt_atoms` mirror tracks the post-CPI live residual.
     assert!(loan.outstanding_debt_atoms > 0);
+    // Loan conservation must hold across the partial P2Pool repay event.
+    fixture.assert_loan_conservation_holds(0).await;
 }
 
 /// P2Pool voluntary repay (full): `full_repay` drives the marginfi

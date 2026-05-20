@@ -478,6 +478,65 @@ impl MarginfiV18Adapter {
         )
     }
 
+    /// Withdraw with `withdraw_all = Some(true)` semantics — closes the
+    /// authority's entire asset-share balance on this bank in a single
+    /// CPI, returning whatever atoms marginfi delivers.
+    ///
+    /// Why this exists: the floor/ceil-rounding `withdraw` path can
+    /// over-request shares by 1 when caller code adds a small atom
+    /// cushion to absorb marginfi's ±1 drift. When the bank balance is
+    /// already tiny (e.g. a vault funded with N atoms quoting an ask of
+    /// up to N atoms — the test scenario `bid_partial_match_residual_
+    /// p2pool_borrows` exercises with N=40), that 1-share overshoot
+    /// drains the position, and marginfi v0.1.8 hard-errors with
+    /// `OperationWithdrawOnly` (6020) demanding `withdraw_all=Some(true)`
+    /// whenever a withdraw zeros a balance. This helper takes that
+    /// codepath: pass it the live atom balance (or `u64::MAX`) and it
+    /// returns the actual atoms transferred. No ±1 drift gate — the
+    /// caller is closing the position, so a smaller-than-expected
+    /// delivery is the bank's terminal state, not a drift error.
+    ///
+    /// Account layout matches the trait `withdraw`. `amount_cap` is the
+    /// transfer cap marginfi enforces on its SPL transfer out.
+    pub fn withdraw_atoms_full<'info>(
+        &self,
+        accounts: &[AccountInfo<'info>],
+        amount_cap: u64,
+        signer_seeds: &[&[&[u8]]],
+    ) -> Result<u64, ProgramError> {
+        if accounts.len() < WITHDRAW_EXPLICIT_ACCOUNTS + 1 {
+            return Err(AdapterError::InvalidIntegrationAccount.into());
+        }
+        let group = &accounts[0];
+        let marginfi_account = &accounts[1];
+        let authority = &accounts[2];
+        let bank = &accounts[3];
+        let destination_token_account = &accounts[4];
+        let bank_liquidity_vault_authority = &accounts[5];
+        let liquidity_vault = &accounts[6];
+        let token_program = &accounts[7];
+
+        let pre_destination = token_balance_of(destination_token_account)?;
+        let ix = withdraw_ix(
+            &WithdrawAccounts {
+                group: *group.key,
+                marginfi_account: *marginfi_account.key,
+                authority: *authority.key,
+                bank: *bank.key,
+                destination_token_account: *destination_token_account.key,
+                bank_liquidity_vault_authority: *bank_liquidity_vault_authority.key,
+                liquidity_vault: *liquidity_vault.key,
+                token_program: *token_program.key,
+            },
+            amount_cap,
+            Some(true),
+            &account_infos_to_metas(&accounts[WITHDRAW_EXPLICIT_ACCOUNTS + 1..]),
+        );
+        invoke_signed(&ix, accounts, signer_seeds)?;
+        let post_destination = token_balance_of(destination_token_account)?;
+        Ok(post_destination.saturating_sub(pre_destination))
+    }
+
     /// CEIL variant of `amount_to_asset_shares` — converts `amount_atoms`
     /// to asset shares rounding the share count UP whenever the division
     /// leaves a fractional remainder.

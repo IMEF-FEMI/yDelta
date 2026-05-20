@@ -775,22 +775,22 @@ where
                         if node.color == Color::Red {
                             // Cannot use with sbf. Enable when debugging
                             // locally without sbf.
-                            #[cfg(colored)]
+                            #[cfg(feature = "colored")]
                             {
                                 use colored::Colorize;
                                 row_str += &format!("{}", str.red());
                             }
-                            #[cfg(not(colored))]
+                            #[cfg(not(feature = "colored"))]
                             {
                                 row_str += str;
                             }
                         } else {
-                            #[cfg(colored)]
+                            #[cfg(feature = "colored")]
                             {
                                 use colored::Colorize;
                                 row_str += &format!("{}", str.black());
                             }
-                            #[cfg(not(colored))]
+                            #[cfg(not(feature = "colored"))]
                             {
                                 row_str += str;
                             }
@@ -833,12 +833,12 @@ where
             if node.color == Color::Red {
                 // Cannot use with sbf. Enable when debugging
                 // locally without sbf.
-                #[cfg(colored)]
+                #[cfg(feature = "colored")]
                 {
                     use colored::Colorize;
                     row_str += &format!("{}", str.red());
                 }
-                #[cfg(not(colored))]
+                #[cfg(not(feature = "colored"))]
                 {
                     row_str += str;
                 }

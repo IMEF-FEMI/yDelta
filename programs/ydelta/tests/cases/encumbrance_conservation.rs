@@ -121,6 +121,15 @@ async fn borrower_encumbrance_released_on_full_match() {
         profile.deployed_principal_atoms, 0,
         "deployed_principal_atoms only bumps when the cranker settles"
     );
+    // Matched-collateral conservation: Σ MatchedLoan.collateral_atoms
+    // must equal the bid's posted collateral exactly.
+    assert_eq!(
+        fixture.sum_matched_loan_collateral().await,
+        50_000_000,
+        "fully-matched bid's MatchedLoan.collateral_atoms must equal posted collateral"
+    );
+    // Vault-idle invariant.
+    fixture.assert_vault_idle_invariant(0).await;
 }
 
 /// A borrower bid whose residual drops (OB_ONLY, empty book) must

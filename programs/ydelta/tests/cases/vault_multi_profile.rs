@@ -207,7 +207,9 @@ async fn cross_curator_cannot_place_for_other_profile() {
             0,
         )
         .await;
-    assert!(result.is_err(), "curator_a must not place for profile 1");
+    // Cross-curator signing gate must surface the exact
+    // VaultCuratorRequired variant.
+    crate::assert_custom_error!(result, ydelta::program::YdeltaError::VaultCuratorRequired);
 
     // A curator must never be able to sign for a profile they don't
     // own — that's the security property this test guards. We don't
@@ -286,6 +288,16 @@ async fn profile_aggregates_dont_alias() {
     assert_eq!(p0_shares, 0);
     assert_eq!(p1_shares, 50_000_000_u128);
     assert_eq!(p2_shares, 0);
+    // Per-profile principal must follow per-profile shares (not alias).
+    assert_eq!(p0.total_principal_atoms, 0);
+    assert_eq!(p1.total_principal_atoms, 50_000_000);
+    assert_eq!(p2.total_principal_atoms, 0);
+    // total_assets_atoms == total_principal_atoms (no yield, no loans).
+    assert_eq!(p1.total_assets_atoms, 50_000_000);
+    // Vault-idle invariant on every profile.
+    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
+    fixture.assert_vault_idle_invariant(2).await;
 }
 
 /// Per-profile `total_shares` / `total_assets_atoms` /

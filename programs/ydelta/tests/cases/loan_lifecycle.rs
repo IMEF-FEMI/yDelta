@@ -74,12 +74,18 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
+    // Conservation must hold at promote-time.
+    fixture.assert_loan_conservation_holds(0).await;
+    // Vault-idle invariant must hold post-promote.
+    fixture.assert_vault_idle_invariant(0).await;
 
     // Borrower repays full.
     fixture
         .repay(&bob, 0, bob_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
+    // Conservation must hold post-repay.
+    fixture.assert_loan_conservation_holds(0).await;
     fixture.refresh_blockhash().await;
     // Advance to maturity for the fixed-term lock-up gate.
     let loan_pre_claim = fixture.read_loan(0).await;
@@ -121,6 +127,12 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
         profile_post.deployed_principal_atoms, 0,
         "all loans repaid → deployed_principal must be 0",
     );
+    assert_eq!(
+        profile_post.encumbered_in_orders_atoms, 0,
+        "encumbered_in_orders must zero out after the loan is claimed",
+    );
+    // Vault-idle invariant post-claim.
+    fixture.assert_vault_idle_invariant(0).await;
 
     // Loan PDA is gone.
     let (loan_addr, _) = ydelta::state::loan::loan_pda(&fixture.market.pubkey(), 0);
@@ -249,6 +261,19 @@ async fn two_independent_loans_remain_disjoint() {
         loan0.borrower_seat_index, loan1.borrower_seat_index,
         "borrower seat indices must differ between independent loans"
     );
+    // Conservation must hold on both independent loans.
+    fixture.assert_loan_conservation_holds(0).await;
+    fixture.assert_loan_conservation_holds(1).await;
+    // Both loans share the same lender (vault profile 0); their
+    // principals must sum to the profile's deployed_principal_atoms.
+    let profile_mid = fixture.read_risk_profile(0).await;
+    assert_eq!(
+        profile_mid.deployed_principal_atoms,
+        loan0.principal_debt_atoms + loan1.principal_debt_atoms,
+        "deployed_principal_atoms must equal Σ active loans' principals"
+    );
+    // Vault-idle invariant must hold mid-lifecycle.
+    fixture.assert_vault_idle_invariant(0).await;
 
     // Bob repays only loan 0, claims loan 0 → loan 1 untouched.
     fixture
