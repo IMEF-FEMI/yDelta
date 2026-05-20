@@ -17,8 +17,12 @@ use std::cell::{RefCell, RefMut};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use hypertree::{
+    HyperTreeReadOperations, HyperTreeValueIteratorTrait, RedBlackTreeReadOnly, NIL,
+};
 use solana_program::pubkey::Pubkey;
 use solana_program_test::{ProgramTest, ProgramTestContext};
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::{
     account::Account,
     instruction::Instruction,
@@ -28,27 +32,35 @@ use solana_sdk::{
 
 use ydelta::program::instruction_builders::{
     claim_curator_fee_instruction::claim_curator_fee_instruction,
-    claim_repayment_instruction::claim_repayment_instruction,
-    claim_seat_for_risk_profile_instruction::claim_seat_for_risk_profile_instruction,
+    claim_repayment_for_risk_profile_instruction::claim_repayment_for_risk_profile_instruction,
     claim_seat_instruction::claim_seat_instruction,
     create_market_instructions::create_market_instructions,
     create_risk_profile_instruction::create_risk_profile_instruction,
-    create_vault_instruction::create_vault_instruction,
-    deposit_instruction::deposit_instruction,
+    create_vault_instruction::create_vault_instruction, deposit_instruction::deposit_instruction,
     global_vault_deposit_instruction::global_vault_deposit_instruction,
     global_vault_withdraw_instruction::global_vault_withdraw_instruction,
     liquidate_loan_instruction::liquidate_loan_instruction,
     place_order_for_risk_profile_instruction::place_order_for_risk_profile_instruction,
-    place_order_instruction::{place_order_instruction, secondary_place_order_instruction},
-    process_matched_loan_instruction::{
-        process_matched_loan_instruction, process_secondary_matched_loan_instruction,
-        process_secondary_split_matched_loan_instruction,
-    },
+    place_order_instruction::place_order_instruction,
+    process_matched_loan_instruction::{process_matched_loan_instruction, VaultSettleAddrs},
     repay_instruction::repay_instruction,
-    update_order_instruction::update_secondary_order_instruction,
+    settle_matured_loan_instruction::settle_matured_loan_instruction,
+    update_risk_profile_instruction::update_risk_profile_instruction,
     withdraw_instruction::withdraw_instruction,
 };
-use ydelta::state::{OrderType, Side};
+use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
+use ydelta::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
+use ydelta::state::market::{
+    get_helper_seat, get_mut_helper_seat, MarketFixed, MatchedLoan, MatchedLoanTreeReadOnly,
+};
+use ydelta::state::vault::{
+    global_vault_integration_account_pda, global_vault_pda, global_vault_signer_pda,
+    global_vault_staging_pda,
+};
+use ydelta::state::{ClaimedSeat, OrderType, Side};
+use ydelta::validation::{
+    get_lender_integration_account_address, get_market_signer_address, get_vault_address,
+};
 
 use super::marginfi_fixture::{load_account_from_fixture, mainnet};
 
@@ -141,6 +153,17 @@ impl MarketFixture {
         .unwrap();
         let m2_kp = market2.insecure_clone();
         self.process_ixs(&ixs, &[&m2_kp]).await.unwrap();
+        // `set_market_pause(false)` is gated on fee config having been
+        // explicitly set. Call `set_fee_config` first (buffer 0 to
+        // preserve existing LTV-math expectations across the suite).
+        {
+            let mut params = SetFeeConfigParams::default();
+            params.ltv_buffer_bps = Some(0);
+            let set_fee = ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction(
+                &market2.pubkey(), &payer.pubkey(), params,
+            );
+            self.process(set_fee, &[]).await.unwrap();
+        }
         // New markets ship paused; unpause for test ergonomics.
         let unpause = ydelta::program::instruction_builders::set_market_pause_instruction::set_market_pause_instruction(
             &market2.pubkey(), &payer.pubkey(), false,
@@ -190,6 +213,17 @@ impl MarketFixture {
         .unwrap();
         let market_kp = self.market.insecure_clone();
         self.process_ixs(&ixs, &[&market_kp]).await.unwrap();
+        // `set_market_pause(false)` is gated on fee config having been
+        // explicitly set. Call `set_fee_config` first (buffer 0 to
+        // preserve existing LTV-math expectations across the suite).
+        {
+            let mut params = SetFeeConfigParams::default();
+            params.ltv_buffer_bps = Some(0);
+            let set_fee = ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction(
+                &self.market.pubkey(), &payer.pubkey(), params,
+            );
+            self.process(set_fee, &[]).await.unwrap();
+        }
         // New markets ship paused; unpause so the rest of the fixture
         // (loan lifecycle, order placement, etc.) can mutate market state.
         let unpause = ydelta::program::instruction_builders::set_market_pause_instruction::set_market_pause_instruction(
@@ -199,9 +233,8 @@ impl MarketFixture {
     }
 
     /// Returns the lender-side marginfi-account PDA at
-    /// `[b"marginfi_account", market.key]`. Phase-3 callers used
-    /// `marginfi_account_pubkey` for the same address; the alias is kept
-    /// for backwards compat during the Phase-4 migration.
+    /// `[b"marginfi_account", market.key]`. `marginfi_account_pubkey` is
+    /// kept as an alias for the same address.
     pub fn lender_marginfi_account_pubkey(&self) -> Pubkey {
         ydelta::validation::get_lender_integration_account_address(&self.market.pubkey()).0
     }
@@ -213,14 +246,14 @@ impl MarketFixture {
         ydelta::validation::get_borrower_integration_account_address(&self.market.pubkey()).0
     }
 
-    /// **Deprecated** — Phase-3 alias for `lender_marginfi_account_pubkey`.
+    /// Alias for `lender_marginfi_account_pubkey`.
     pub fn marginfi_account_pubkey(&self) -> Pubkey {
         self.lender_marginfi_account_pubkey()
     }
 
     /// Return the synthetic debt-mint token account address for `signer`,
-    /// creating it on first call. Used by Phase-4 `place_order` so the
-    /// loader's owner/mint validation on `borrower_debt_token` passes.
+    /// creating it on first call. Used by `place_order` so the loader's
+    /// owner/mint validation on `borrower_debt_token` passes.
     /// Atoms borrowed via `marginfi.borrow` (P2Pool fallback) accumulate
     /// here.
     pub fn signer_debt_token(&self, signer: &Pubkey) -> Pubkey {
@@ -258,7 +291,14 @@ impl MarketFixture {
         ix: Instruction,
         extra_signers: &[&Keypair],
     ) -> Result<(), solana_program_test::BanksClientError> {
-        self.process_ixs(&[ix], extra_signers).await
+        // Several yDelta instructions are CPI-heavy (marginfi withdraw +
+        // deposit + token transfers) and legitimately run at 90-100%+ of
+        // the default 200k per-instruction CU budget. Prepend a raised
+        // limit so test transactions have deterministic headroom — the
+        // same `set_compute_unit_limit` a real client attaches for these
+        // instructions.
+        let cu = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
+        self.process_ixs(&[cu, ix], extra_signers).await
     }
 
     /// Refresh both mainnet oracle fixtures so marginfi's staleness
@@ -502,6 +542,30 @@ impl MarketFixture {
         is_debt: bool,
         amount_atoms: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
+        self.withdraw_inner(signer, trader_token, is_debt, amount_atoms, false)
+            .await
+    }
+
+    /// Build + send a ydelta `Withdraw` ix with `withdraw_all = true`,
+    /// draining the seat's entire withdrawable balance on the side.
+    pub async fn withdraw_all(
+        &self,
+        signer: &Keypair,
+        trader_token: Pubkey,
+        is_debt: bool,
+    ) -> Result<(), solana_program_test::BanksClientError> {
+        self.withdraw_inner(signer, trader_token, is_debt, 0, true)
+            .await
+    }
+
+    async fn withdraw_inner(
+        &self,
+        signer: &Keypair,
+        trader_token: Pubkey,
+        is_debt: bool,
+        amount_atoms: u64,
+        withdraw_all: bool,
+    ) -> Result<(), solana_program_test::BanksClientError> {
         let (mint, bank, liquidity_vault) = if is_debt {
             (
                 mainnet::usdc_mint(),
@@ -534,6 +598,7 @@ impl MarketFixture {
             &marginfi_mocks::ID,
             amount_atoms,
             None,
+            withdraw_all,
         );
         let kp = signer.insecure_clone();
         self.process(ix, &[&kp]).await
@@ -565,53 +630,6 @@ impl MarketFixture {
             ydelta::state::market_helpers::FLAG_OB_ONLY,
         )
         .await
-    }
-
-    /// Place-order variant exposing the borrower-LTV cap. `Some(bps)`
-    /// declares an explicit cap; `None` falls through to the
-    /// processor's default (marginfi-init).
-    #[allow(clippy::too_many_arguments)]
-    pub async fn place_order_with_borrower_ltv(
-        &self,
-        signer: &Keypair,
-        side: Side,
-        order_type: OrderType,
-        rate_bps: u16,
-        term_seconds: u32,
-        principal_atoms: u64,
-        collateral_atoms: u64,
-        borrower_ltv_bps: Option<u16>,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        self.refresh_oracle_freshness().await;
-        let debt_bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
-        let borrower_debt_token = self.signer_debt_token(&signer.pubkey());
-        let ix = place_order_instruction(
-            &self.market.pubkey(),
-            &signer.pubkey(),
-            &mainnet::marginfi_group(),
-            &mainnet::usdc_bank(),
-            &mainnet::sol_bank(),
-            &[mainnet::usdc_oracle()],
-            &[mainnet::sol_oracle()],
-            &mainnet::usdc_liquidity_vault(),
-            &debt_bank_lva,
-            &borrower_debt_token,
-            &mainnet::usdc_mint(),
-            &spl_token::id(),
-            &marginfi_mocks::ID,
-            side,
-            order_type,
-            rate_bps,
-            term_seconds,
-            principal_atoms,
-            collateral_atoms,
-            0,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
-            None,
-            borrower_ltv_bps,
-        );
-        let kp = signer.insecure_clone();
-        self.process(ix, &[&kp]).await
     }
 
     /// Place-order variant that exposes the `flags` byte. Used by
@@ -649,17 +667,14 @@ impl MarketFixture {
             &mainnet::usdc_mint(),
             &spl_token::id(),
             &marginfi_mocks::ID,
-            side,
-            order_type,
             rate_bps,
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            0,
             flags,
             None,
-            None, // borrower_ltv_bps default — marginfi-init
         );
+        let _ = (side, order_type);
         let kp = signer.insecure_clone();
         self.process(ix, &[&kp]).await
     }
@@ -695,17 +710,14 @@ impl MarketFixture {
             &mainnet::usdc_mint(),
             &spl_token::id(),
             &marginfi_mocks::ID,
-            side,
-            order_type,
             rate_bps,
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            0,
             flags,
             None,
-            None,
         );
+        let _ = (side, order_type);
         let kp = signer.insecure_clone();
         self.process(ix, &[&kp]).await
     }
@@ -720,6 +732,7 @@ impl MarketFixture {
         repay_atoms: u64,
         full_repay: bool,
     ) -> Result<(), solana_program_test::BanksClientError> {
+        let cranker_refund = self.read_loan_in(market_pk, sequence).await.created_by;
         let ix = repay_instruction(
             &market_pk,
             &borrower.pubkey(),
@@ -735,6 +748,7 @@ impl MarketFixture {
             repay_atoms,
             full_repay,
             None,
+            &cranker_refund,
         );
         let kp = borrower.insecure_clone();
         self.process(ix, &[&kp]).await
@@ -753,164 +767,6 @@ impl MarketFixture {
         *header
     }
 
-    /// Place a `SecondaryLoanSale` bid. `seller` is the loan's
-    /// current lender; `loan_pda` derived via
-    /// `ydelta::state::loan::loan_pda(market, sequence)`. Engine
-    /// reads the loan PDA and snapshots rate/term/principal. Pricing
-    /// is fixed at par; the seller's only exit cost is the
-    /// accrued-interest seizure under Option A.
-    pub async fn place_secondary_order(
-        &self,
-        seller: &Keypair,
-        loan_sequence: u64,
-        last_valid_unix_ts: i64,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        self.refresh_oracle_freshness().await;
-        let (loan_pda, _) = ydelta::state::loan::loan_pda(&self.market.pubkey(), loan_sequence);
-        let debt_bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
-        let borrower_debt_token = self.signer_debt_token(&seller.pubkey());
-        let ix = secondary_place_order_instruction(
-            &self.market.pubkey(),
-            &seller.pubkey(),
-            &mainnet::marginfi_group(),
-            &mainnet::usdc_bank(),
-            &mainnet::sol_bank(),
-            &[mainnet::usdc_oracle()],
-            &[mainnet::sol_oracle()],
-            &mainnet::usdc_liquidity_vault(),
-            &debt_bank_lva,
-            &borrower_debt_token,
-            &mainnet::usdc_mint(),
-            &spl_token::id(),
-            &marginfi_mocks::ID,
-            &loan_pda,
-            last_valid_unix_ts,
-            /*flags=*/ 0,
-            None,
-        );
-        let kp = seller.insecure_clone();
-        self.process(ix, &[&kp]).await
-    }
-
-    /// Update a `SecondaryLoanSale` bid's mutable fields.
-    /// Only `last_valid_unix_ts` (expiry touch) is mutable; rate /
-    /// term / principal / collateral / asking_price are all fixed at
-    /// placement and any mutation attempt is rejected by the processor
-    /// with `SecondaryFieldImmutable`.
-    pub async fn update_secondary_order(
-        &self,
-        seller: &Keypair,
-        order_sequence_number: u64,
-        new_last_valid_unix_ts: Option<i64>,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = update_secondary_order_instruction(
-            &self.market.pubkey(),
-            &seller.pubkey(),
-            order_sequence_number,
-            None,
-            None,
-            new_last_valid_unix_ts,
-            None,
-        );
-        let kp = seller.insecure_clone();
-        self.process(ix, &[&kp]).await
-    }
-
-    /// Test-only — try to update a SecondaryLoanSale bid with
-    /// `new_rate_bps` set. Used to verify the SecondaryFieldImmutable
-    /// guard rejects the call. Bypasses the secondary-only builder and
-    /// goes through the primary `update_order_instruction`.
-    pub async fn try_update_secondary_with_rate(
-        &self,
-        seller: &Keypair,
-        order_sequence_number: u64,
-        new_rate_bps: u16,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = ydelta::program::instruction_builders::update_order_instruction::update_order_instruction(
-            &self.market.pubkey(),
-            &seller.pubkey(),
-            order_sequence_number,
-            None,
-            None,
-            Some(new_rate_bps),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        let kp = seller.insecure_clone();
-        self.process(ix, &[&kp]).await
-    }
-
-    /// Cancel a resting order by its sequence number. Mirrors the
-    /// primary cancel path; works for SecondaryLoanSale bids too
-    /// (`cancel_order_by_index` skips the unencumber step for them).
-    pub async fn cancel_order(
-        &self,
-        signer: &Keypair,
-        order_sequence_number: u64,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        self.cancel_order_with_optional_loan(signer, order_sequence_number, None)
-            .await
-    }
-
-    /// Explicit form for canceling a `SecondaryLoanSale` bid. The
-    /// loan PDA is required so the processor can clear
-    /// `has_resting_secondary_bid`.
-    pub async fn cancel_secondary_order(
-        &self,
-        signer: &Keypair,
-        order_sequence_number: u64,
-        loan_pda: solana_program::pubkey::Pubkey,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        self.cancel_order_with_optional_loan(signer, order_sequence_number, Some(loan_pda))
-            .await
-    }
-
-    async fn cancel_order_with_optional_loan(
-        &self,
-        signer: &Keypair,
-        order_sequence_number: u64,
-        loan_pda: Option<solana_program::pubkey::Pubkey>,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        use ydelta::program::instruction_builders::cancel_order_instruction::cancel_order_instruction;
-        let ix = cancel_order_instruction(
-            &self.market.pubkey(),
-            &signer.pubkey(),
-            order_sequence_number,
-            None,
-            None,
-            loan_pda,
-        );
-        let kp = signer.insecure_clone();
-        self.process(ix, &[&kp]).await
-    }
-
-    /// Walk the bids tree to find any resting `SecondaryLoanSale` for
-    /// the given loan sequence; return its `sequence_number` field.
-    /// `None` if no match.
-    pub async fn read_first_bid_sequence_for_loan(&self, loan_sequence: u64) -> Option<u64> {
-        use hypertree::HyperTreeValueIteratorTrait;
-        use ydelta::state::market::BooksideReadOnly;
-        use ydelta::state::resting_order::{OrderKind, RestingOrder};
-
-        let (loan_pda, _) = ydelta::state::loan::loan_pda(&self.market.pubkey(), loan_sequence);
-        let data = self.account_data(self.market.pubkey()).await;
-        let fixed_size = std::mem::size_of::<ydelta::state::MarketFixed>();
-        let header: &ydelta::state::MarketFixed = bytemuck::from_bytes(&data[..fixed_size]);
-        let bids_root = header.bids_root_index;
-        let bids_best = header.bids_best_index;
-        let dynamic = &data[fixed_size..];
-        let tree = BooksideReadOnly::new(dynamic, bids_root, bids_best);
-        for (_idx, order) in tree.iter::<RestingOrder>() {
-            if order.kind == OrderKind::SecondaryLoanSale && order.loan_pda == loan_pda {
-                return Some(order.sequence_number);
-            }
-        }
-        None
-    }
-
     /// Read the on-disk `ClaimedSeat` body at the given index.
     pub async fn read_seat_data(&self, index: hypertree::DataIndex) -> ydelta::state::ClaimedSeat {
         let data = self.account_data(self.market.pubkey()).await;
@@ -921,7 +777,6 @@ impl MarketFixture {
 
     /// Look up a trader's seat index. Returns `NIL` if not claimed.
     pub async fn read_seat_index(&self, owner: &Pubkey) -> hypertree::DataIndex {
-        use hypertree::{HyperTreeReadOperations, NIL};
         let data = self.account_data(self.market.pubkey()).await;
         let fixed_size = std::mem::size_of::<ydelta::state::MarketFixed>();
         let header: &ydelta::state::MarketFixed = bytemuck::from_bytes(&data[..fixed_size]);
@@ -959,14 +814,6 @@ impl MarketFixture {
         &self,
         sequence: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        use ydelta::program::instruction_builders::process_matched_loan_instruction::VaultSettleAddrs;
-        use ydelta::state::vault::{
-            global_vault_integration_account_pda, global_vault_pda, global_vault_signer_pda,
-            global_vault_staging_pda,
-        };
-        use ydelta::validation::{
-            get_lender_integration_account_address, get_market_signer_address, get_vault_address,
-        };
         self.refresh_oracle_freshness().await;
         let market_pk = self.market.pubkey();
         let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
@@ -1018,10 +865,6 @@ impl MarketFixture {
         sequence: u64,
         cranker_refund: Option<Pubkey>,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        use solana_sdk::compute_budget::ComputeBudgetInstruction;
-        use ydelta::program::instruction_builders::claim_repayment_for_risk_profile_instruction::claim_repayment_for_risk_profile_instruction;
-        use ydelta::state::vault::global_vault_pda;
-        use ydelta::validation::get_lender_integration_account_address;
         self.refresh_oracle_freshness().await;
         let market_pk = self.market.pubkey();
         let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
@@ -1046,9 +889,10 @@ impl MarketFixture {
             &marginfi_mocks::ID,
             cranker_refund.as_ref(),
         );
-        // Three marginfi CPIs (withdraw, deposit) + SPL transfer push
-        // the ix above the 200k default; bump to 400k for headroom.
-        let cu = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+        // Three marginfi CPIs (withdraw, deposit) + SPL transfer, plus
+        // the group-binding decodes in the loader, push the ix above
+        // the 200k default; bump to 600k for headroom.
+        let cu = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
         let kp = cranker.insecure_clone();
         self.process_ixs(&[cu, ix], &[&kp]).await
     }
@@ -1060,14 +904,6 @@ impl MarketFixture {
         market_pk: Pubkey,
         sequence: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        use ydelta::program::instruction_builders::process_matched_loan_instruction::VaultSettleAddrs;
-        use ydelta::state::vault::{
-            global_vault_integration_account_pda, global_vault_pda, global_vault_signer_pda,
-            global_vault_staging_pda,
-        };
-        use ydelta::validation::{
-            get_lender_integration_account_address, get_market_signer_address, get_vault_address,
-        };
         self.refresh_oracle_freshness().await;
         let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
         let (gv_signer, _) = global_vault_signer_pda(&gv);
@@ -1116,10 +952,6 @@ impl MarketFixture {
         sequence: u64,
         cranker_refund: Option<Pubkey>,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        use solana_sdk::compute_budget::ComputeBudgetInstruction;
-        use ydelta::program::instruction_builders::claim_repayment_for_risk_profile_instruction::claim_repayment_for_risk_profile_instruction;
-        use ydelta::state::vault::global_vault_pda;
-        use ydelta::validation::get_lender_integration_account_address;
         self.refresh_oracle_freshness().await;
         let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
         let (lender_mfi, _) = get_lender_integration_account_address(&market_pk);
@@ -1143,128 +975,11 @@ impl MarketFixture {
             &marginfi_mocks::ID,
             cranker_refund.as_ref(),
         );
-        let cu = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+        // 600k for headroom (group-binding adds loader compute).
+        let cu = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
         let kp = cranker.insecure_clone();
         self.process_ixs(&[cu, ix], &[&kp]).await
     }
-
-    /// Crank a SECONDARY (full transfer) queue node where the new
-    /// lender is a wallet seat. `referenced_loan_sequence` is the
-    /// existing loan being transferred.
-    pub async fn crank_secondary_matched_loan(
-        &self,
-        queue_sequence: u64,
-        referenced_loan_sequence: u64,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        self.refresh_oracle_freshness().await;
-        let ix = process_secondary_matched_loan_instruction(
-            &self.market.pubkey(),
-            &self.payer.pubkey(),
-            queue_sequence,
-            referenced_loan_sequence,
-            &mainnet::usdc_bank(),
-            &mainnet::sol_bank(),
-            &[mainnet::usdc_oracle()],
-            &[mainnet::sol_oracle()],
-            &marginfi_mocks::ID,
-            None,
-            None,
-        );
-        self.process(ix, &[]).await
-    }
-
-    /// Crank a SECONDARY (full transfer) queue node where the new
-    /// lender is a risk-profile seat. Threads the trailing vault-settle
-    /// accounts so the cranker can migrate the buyer's cash atoms from
-    /// `vault.integration` into `market.lender_integration_account` for
-    /// the seller's payout.
-    pub async fn crank_secondary_matched_loan_for_risk_profile_buyer(
-        &self,
-        queue_sequence: u64,
-        referenced_loan_sequence: u64,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        use solana_sdk::compute_budget::ComputeBudgetInstruction;
-        use ydelta::program::instruction_builders::process_matched_loan_instruction::VaultSettleAddrs;
-        use ydelta::state::vault::{
-            global_vault_integration_account_pda, global_vault_pda, global_vault_signer_pda,
-            global_vault_staging_pda,
-        };
-        use ydelta::validation::{
-            get_lender_integration_account_address, get_market_signer_address, get_vault_address,
-        };
-        self.refresh_oracle_freshness().await;
-        let market_pk = self.market.pubkey();
-        let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
-        let (gv_signer, _) = global_vault_signer_pda(&gv);
-        let (gv_staging, _) = global_vault_staging_pda(&gv);
-        let (gv_integration, _) = global_vault_integration_account_pda(&gv);
-        let (market_debt_vault, _) = get_vault_address(&market_pk, &mainnet::usdc_mint());
-        let (market_signer, _) = get_market_signer_address(&market_pk);
-        let (market_lender_mfi, _) = get_lender_integration_account_address(&market_pk);
-        let (debt_bank_lva, _) = solana_program::pubkey::Pubkey::find_program_address(
-            &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
-            &marginfi_mocks::ID,
-        );
-        let ix = process_secondary_matched_loan_instruction(
-            &market_pk,
-            &self.payer.pubkey(),
-            queue_sequence,
-            referenced_loan_sequence,
-            &mainnet::usdc_bank(),
-            &mainnet::sol_bank(),
-            &[mainnet::usdc_oracle()],
-            &[mainnet::sol_oracle()],
-            &marginfi_mocks::ID,
-            None,
-            Some(VaultSettleAddrs {
-                global_vault: gv,
-                global_vault_signer: gv_signer,
-                global_vault_staging: gv_staging,
-                global_vault_integration_account: gv_integration,
-                market_debt_vault,
-                market_lender_integration_account: market_lender_mfi,
-                market_signer,
-                debt_liquidity_vault: mainnet::usdc_liquidity_vault(),
-                debt_bank_liquidity_vault_authority: debt_bank_lva,
-                debt_oracles: vec![mainnet::usdc_oracle()],
-                debt_mint: mainnet::usdc_mint(),
-                token_program: spl_token::id(),
-                marginfi_group: mainnet::marginfi_group(),
-                marginfi_program: marginfi_mocks::ID,
-            }),
-        );
-        let cu = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
-        self.process_ixs(&[cu, ix], &[]).await
-    }
-
-    /// Crank a SECONDARY|SPLIT queue node.
-    /// `next_market_sequence` is the live `market.matched_loan_sequence`
-    /// at submission time; the cranker validates the passed split PDA
-    /// matches that derivation.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn crank_secondary_split_matched_loan(
-        &self,
-        queue_sequence: u64,
-        referenced_loan_sequence: u64,
-        next_market_sequence: u64,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        self.refresh_oracle_freshness().await;
-        let ix = process_secondary_split_matched_loan_instruction(
-            &self.market.pubkey(),
-            &self.payer.pubkey(),
-            queue_sequence,
-            referenced_loan_sequence,
-            next_market_sequence,
-            &mainnet::usdc_bank(),
-            &mainnet::sol_bank(),
-            &[mainnet::usdc_oracle()],
-            &[mainnet::sol_oracle()],
-            &marginfi_mocks::ID,
-            None,
-        );
-        self.process(ix, &[]).await
-    }
-
     /// Fast-forward the test ledger's `Clock` so loans can move past
     /// their `matures_at_unix` boundary. Sets the sysvar directly via
     /// `set_sysvar`. Subsequent ixs see `now = new_unix_ts` until
@@ -1287,6 +1002,7 @@ impl MarketFixture {
         repay_atoms: u64,
         full_repay: bool,
     ) -> Result<(), solana_program_test::BanksClientError> {
+        let cranker_refund = self.read_loan(sequence).await.created_by;
         let ix = repay_instruction(
             &self.market.pubkey(),
             &borrower.pubkey(),
@@ -1302,28 +1018,9 @@ impl MarketFixture {
             repay_atoms,
             full_repay,
             None,
+            &cranker_refund,
         );
         let kp = borrower.insecure_clone();
-        self.process(ix, &[&kp]).await
-    }
-
-    /// Lender claims their accrued atoms from a repaid loan.
-    pub async fn claim_repayment(
-        &self,
-        lender: &Keypair,
-        sequence: u64,
-        cranker_refund: Option<Pubkey>,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = claim_repayment_instruction(
-            &self.market.pubkey(),
-            &lender.pubkey(),
-            sequence,
-            &mainnet::usdc_bank(),
-            &marginfi_mocks::ID,
-            cranker_refund.as_ref(),
-            None,
-        );
-        let kp = lender.insecure_clone();
         self.process(ix, &[&kp]).await
     }
 
@@ -1338,6 +1035,7 @@ impl MarketFixture {
         liquidator_collateral_token: Pubkey,
         repay_atoms_max: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
+        let cranker_refund = self.read_loan(sequence).await.created_by;
         let (debt_bank_lva, _) = solana_program::pubkey::Pubkey::find_program_address(
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
             &marginfi_mocks::ID,
@@ -1366,12 +1064,13 @@ impl MarketFixture {
             &mainnet::marginfi_group(),
             &marginfi_mocks::ID,
             repay_atoms_max,
+            &cranker_refund,
         );
         let kp = liquidator.insecure_clone();
         self.process(ix, &[&kp]).await
     }
 
-    /// Run `SettleMaturedLoan` (tag 20). Permissionless cranker action
+    /// Run `SettleMaturedLoan`. Permissionless cranker action
     /// that retires a Fixed loan past `matures_at + grace_period_seconds`:
     /// withdraws collateral atoms, swaps via marginfi, applies a
     /// liquidator bonus, and credits the lender. Pass `repay_atoms_max=0`
@@ -1385,8 +1084,7 @@ impl MarketFixture {
         liquidator_collateral_token: Pubkey,
         repay_atoms_max: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        use solana_sdk::compute_budget::ComputeBudgetInstruction;
-        use ydelta::program::instruction_builders::settle_matured_loan_instruction::settle_matured_loan_instruction;
+        let cranker_refund = self.read_loan(sequence).await.created_by;
         let (_debt_bank_lva, _) = solana_program::pubkey::Pubkey::find_program_address(
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
             &marginfi_mocks::ID,
@@ -1414,33 +1112,35 @@ impl MarketFixture {
             &mainnet::marginfi_group(),
             &marginfi_mocks::ID,
             repay_atoms_max,
+            &cranker_refund,
         );
         // Settle does marginfi.withdraw (collateral) + deposit (debt
-        // for repay) + repay + transfers + seat updates — pushes well
-        // above the 200k default ix budget.
-        let cu = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+        // for repay) + repay + transfers + seat updates, plus the
+        // group-binding decodes in the loader — pushes well above the
+        // 200k default ix budget.
+        let cu = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
         let kp = liquidator.insecure_clone();
         self.process_ixs(&[cu, ix], &[&kp]).await
     }
 
-    /// Run `ConvertP2PoolToFixed` (tag 39). `loan_sequence` identifies
+    /// Run `ConvertP2PoolToFixed`. `loan_sequence` identifies
     /// the P2Pool loan PDA. The ix walks the asks tree and crosses every
-    /// compatible wallet ask whose `rate_bps <= max_acceptable_rate_bps`
+    /// compatible ask whose `rate_bps <= max_acceptable_rate_bps`
     /// AND `term_seconds >= (loan.matures_at - now)`; each cross emits
-    /// a Fixed MatchedLoan (cranker promotes). Pass
-    /// `Some(loan.created_by)` to recover P2Pool PDA rent on full
-    /// conversion; `None` skips the refund.
+    /// a Fixed MatchedLoan (cranker promotes). The rent-refund target
+    /// is the loan's `created_by` (required by the loader); the helper
+    /// resolves it from the loan account automatically.
     pub async fn convert_p2pool_to_fixed(
         &self,
         borrower: &Keypair,
         loan_sequence: u64,
         max_acceptable_rate_bps: u16,
-        cranker_refund: Option<Pubkey>,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let (debt_bank_lva, _) = solana_program::pubkey::Pubkey::find_program_address(
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
             &marginfi_mocks::ID,
         );
+        let cranker_refund = self.read_loan(loan_sequence).await.created_by;
         let ix = ydelta::program::instruction_builders::convert_p2pool_to_fixed_instruction::convert_p2pool_to_fixed_instruction(
             &self.market.pubkey(),
             &borrower.pubkey(),
@@ -1456,7 +1156,7 @@ impl MarketFixture {
             &mainnet::marginfi_group(),
             &marginfi_mocks::ID,
             max_acceptable_rate_bps,
-            cranker_refund.as_ref(),
+            &cranker_refund,
         );
         let kp = borrower.insecure_clone();
         self.process(ix, &[&kp]).await
@@ -1495,23 +1195,28 @@ impl MarketFixture {
         *bytemuck::from_bytes::<ydelta::state::MarketFixed>(&data[..fixed_size])
     }
 
+    /// Sum `collateral_atoms` over every `MatchedLoan` resting in the
+    /// market's matched-loan tree. Used to verify a multi-cross bid
+    /// leaves zero collateral dust frozen — the sum of per-loan
+    /// collateral must equal the bid's posted collateral.
+    pub async fn sum_matched_loan_collateral(&self) -> u64 {
+        let data = self.account_data(self.market.pubkey()).await;
+        let fixed_size = std::mem::size_of::<MarketFixed>();
+        let root =
+            bytemuck::from_bytes::<MarketFixed>(&data[..fixed_size]).matched_loans_root_index;
+        let dynamic = &data[fixed_size..];
+        let tree = MatchedLoanTreeReadOnly::new(dynamic, root, NIL);
+        let mut total: u64 = 0;
+        for (_idx, node) in tree.iter::<MatchedLoan>() {
+            total = total.checked_add(node.collateral_atoms).unwrap();
+        }
+        total
+    }
+
     /// Read the on-disk LoanFixed at the per-(market, sequence) PDA.
     pub async fn read_loan(&self, sequence: u64) -> ydelta::state::loan::LoanFixed {
         let (loan_addr, _) = ydelta::state::loan::loan_pda(&self.market.pubkey(), sequence);
         let data = self.account_data(loan_addr).await;
-        *bytemuck::from_bytes::<ydelta::state::loan::LoanFixed>(
-            &data[..std::mem::size_of::<ydelta::state::loan::LoanFixed>()],
-        )
-    }
-
-    /// Read a split sub-loan by its STABLE queue-node sequence. Splits
-    /// derive their PDA from `[SPLIT_LOAN_SEED, market, queue_seq]`
-    /// instead of `[LOAN_SEED, market, matched_loan_sequence]` (per
-    /// race-resistance against concurrent place_orders).
-    pub async fn read_split_loan(&self, queue_sequence: u64) -> ydelta::state::loan::LoanFixed {
-        let (split_addr, _) =
-            ydelta::state::loan::split_loan_pda(&self.market.pubkey(), queue_sequence);
-        let data = self.account_data(split_addr).await;
         *bytemuck::from_bytes::<ydelta::state::loan::LoanFixed>(
             &data[..std::mem::size_of::<ydelta::state::loan::LoanFixed>()],
         )
@@ -1523,10 +1228,6 @@ impl MarketFixture {
     /// to push the actual atoms through marginfi (e.g. for sides where
     /// the bank's interest math overflows on synthetic test deposits).
     pub async fn seed_seat_shares(&self, owner: &Pubkey, shares: u128, is_debt: bool) {
-        use hypertree::{HyperTreeReadOperations, RedBlackTreeReadOnly, NIL};
-        use ydelta::state::market::get_mut_helper_seat;
-        use ydelta::state::{ClaimedSeat, MarketFixed};
-
         let mut data = {
             let client: RefMut<ProgramTestContext> = self.context.borrow_mut();
             client
@@ -1632,6 +1333,23 @@ impl MarketFixture {
         self.process(accept_ix, &[&admin_kp]).await
     }
 
+    /// Vault-admin toggles `GlobalVaultFixed.is_paused`.
+    pub async fn set_vault_pause(
+        &self,
+        admin: &Keypair,
+        paused: bool,
+    ) -> Result<(), solana_program_test::BanksClientError> {
+        let (vault_pk, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
+        let ix =
+            ydelta::program::instruction_builders::set_vault_pause_instruction::set_vault_pause_instruction(
+                &vault_pk,
+                &admin.pubkey(),
+                paused,
+            );
+        let kp = admin.insecure_clone();
+        self.process(ix, &[&kp]).await
+    }
+
     /// Admin creates a risk profile on the USDC vault.
     pub async fn create_risk_profile(
         &self,
@@ -1640,7 +1358,6 @@ impl MarketFixture {
         curator: Pubkey,
         max_ltv_bps: u16,
         max_term_seconds: u32,
-        allowed_market_max: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = create_risk_profile_instruction(
             &mainnet::usdc_mint(),
@@ -1649,7 +1366,6 @@ impl MarketFixture {
             &curator,
             max_ltv_bps,
             max_term_seconds,
-            allowed_market_max,
         );
         let kp = admin.insecure_clone();
         self.process(ix, &[&kp]).await
@@ -1706,29 +1422,6 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Curator-gated `claim_seat_for_risk_profile` on the USDC vault,
-    /// this market. Signer must equal `profile.curator` set at
-    /// `create_risk_profile` time. The fixture's funded `self.payer`
-    /// is used as the fee_payer slot in the ix (covers tx fee + any
-    /// rent expansion); the curator only signs.
-    pub async fn claim_seat_for_risk_profile(
-        &self,
-        curator: &Keypair,
-        profile_id: u8,
-        max_exposure_atoms: u64,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = claim_seat_for_risk_profile_instruction(
-            &mainnet::usdc_mint(),
-            &self.market.pubkey(),
-            &self.payer.pubkey(),
-            &curator.pubkey(),
-            profile_id,
-            max_exposure_atoms,
-        );
-        let kp = curator.insecure_clone();
-        self.process(ix, &[&kp]).await
-    }
-
     /// Vault-admin updates a risk_profile's mutable policy fields.
     pub async fn update_risk_profile(
         &self,
@@ -1736,42 +1429,15 @@ impl MarketFixture {
         profile_id: u8,
         new_max_ltv_bps: Option<u16>,
         new_max_term_seconds: Option<u32>,
-        new_allowed_market_max: Option<u8>,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        use ydelta::program::instruction_builders::update_risk_profile_instruction::update_risk_profile_instruction;
         let ix = update_risk_profile_instruction(
             &mainnet::usdc_mint(),
             &admin.pubkey(),
             profile_id,
             new_max_ltv_bps,
             new_max_term_seconds,
-            new_allowed_market_max,
         );
         let kp = admin.insecure_clone();
-        self.process(ix, &[&kp]).await
-    }
-
-    /// Variant of `claim_seat_for_risk_profile` that targets an
-    /// arbitrary market (e.g. the secondary market created by
-    /// `create_second_market`). Used by the multi-market test.
-    /// Curator-gated — signer must equal `profile.curator`.
-    /// `self.payer` is the fee_payer / rent funder.
-    pub async fn claim_seat_for_risk_profile_in_market(
-        &self,
-        curator: &Keypair,
-        profile_id: u8,
-        market_pk: Pubkey,
-        max_exposure_atoms: u64,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = claim_seat_for_risk_profile_instruction(
-            &mainnet::usdc_mint(),
-            &market_pk,
-            &self.payer.pubkey(),
-            &curator.pubkey(),
-            profile_id,
-            max_exposure_atoms,
-        );
-        let kp = curator.insecure_clone();
         self.process(ix, &[&kp]).await
     }
 
@@ -1800,25 +1466,6 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Permissionless cranker — re-stamps every passed market's
-    /// `risk_profile_max_ltv_bps` cache from the live risk_profile.
-    pub async fn sync_market_seats_for_risk_profile(
-        &self,
-        payer: &Keypair,
-        profile_id: u8,
-        markets: &[Pubkey],
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        use ydelta::program::instruction_builders::sync_market_seats_for_risk_profile_instruction::sync_market_seats_for_risk_profile_instruction;
-        let ix = sync_market_seats_for_risk_profile_instruction(
-            &payer.pubkey(),
-            &mainnet::usdc_mint(),
-            profile_id,
-            markets,
-        );
-        let kp = payer.insecure_clone();
-        self.process(ix, &[&kp]).await
-    }
-
     /// Curator place_order_for_risk_profile. Risk-profile orders are non-expiring
     /// — only the curator can remove them via cancel_order_for_risk_profile.
     /// `self.payer` is used as the ix's fee_payer (covers tx fee + any
@@ -1843,6 +1490,61 @@ impl MarketFixture {
         );
         let kp = curator.insecure_clone();
         self.process(ix, &[&kp]).await
+    }
+
+    /// Convenience helper for the quote-only lender flow. Sets up a
+    /// vault risk-profile that rests an unbounded ask on the market:
+    ///   1. `create_vault` (idempotent — skipped if already created)
+    ///   2. `create_risk_profile`
+    ///   3. `global_vault_deposit` (funds the profile's idle pool)
+    ///   4. `place_order_for_risk_profile` (unbounded ask at rate/term)
+    ///
+    /// The depositor's debt-token account is created/funded with the
+    /// deposit amount automatically. Returns the depositor's token
+    /// account pubkey for any post-flow assertions.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn provide_vault_liquidity(
+        &self,
+        admin: &Keypair,
+        depositor: &Keypair,
+        curator: &Keypair,
+        profile_id: u8,
+        max_ltv_bps: u16,
+        rate_bps: u16,
+        term_seconds: u32,
+        deposit_atoms: u64,
+    ) -> Pubkey {
+        let depositor_token = self.signer_debt_token(&depositor.pubkey());
+        self.put_token_account(
+            depositor_token,
+            mainnet::usdc_mint(),
+            depositor.pubkey(),
+            deposit_atoms.saturating_mul(2).max(deposit_atoms),
+        );
+        self.refresh_blockhash().await;
+        // create_vault is once-per-mint; subsequent calls fail because
+        // the PDA already exists — tolerate that so this helper is
+        // safe to call after an explicit create_vault.
+        let _ = self.create_vault(admin).await;
+        self.refresh_blockhash().await;
+        self.create_risk_profile(
+            admin,
+            profile_id,
+            curator.pubkey(),
+            max_ltv_bps,
+            term_seconds,
+        )
+        .await
+        .expect("create_risk_profile");
+        self.refresh_blockhash().await;
+        self.global_vault_deposit(depositor, depositor_token, profile_id, deposit_atoms)
+            .await
+            .expect("global_vault_deposit");
+        self.refresh_blockhash().await;
+        self.place_order_for_risk_profile(curator, profile_id, rate_bps, term_seconds, 0)
+            .await
+            .expect("place_order_for_risk_profile");
+        depositor_token
     }
 
     /// Curator-gated `claim_curator_fee`.
@@ -1880,7 +1582,6 @@ impl MarketFixture {
 
     /// Read the vault's `RiskProfile` for the given profile_id.
     pub async fn read_risk_profile(&self, profile_id: u8) -> ydelta::state::vault::RiskProfile {
-        use hypertree::{HyperTreeReadOperations, NIL};
         let (global_vault_pda, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
         let data = self.account_data(global_vault_pda).await;
         let size = std::mem::size_of::<ydelta::state::vault::GlobalVaultFixed>();
@@ -1892,7 +1593,7 @@ impl MarketFixture {
             NIL,
         );
         let probe =
-            ydelta::state::vault::RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1, 0);
+            ydelta::state::vault::RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
         let idx = tree.lookup_index(&probe);
         assert_ne!(idx, NIL, "no risk profile {}", profile_id);
         *ydelta::state::vault::get_helper_risk_profile(dynamic, idx).get_value()
@@ -1900,10 +1601,6 @@ impl MarketFixture {
 
     /// Read the trader's seat from the market account.
     pub async fn read_seat(&self, owner: &Pubkey) -> ydelta::state::ClaimedSeat {
-        use hypertree::{HyperTreeReadOperations, RedBlackTreeReadOnly, NIL};
-        use ydelta::state::market::get_helper_seat;
-        use ydelta::state::{ClaimedSeat, MarketFixed};
-
         let data = self.account_data(self.market.pubkey()).await;
         let fixed_size = std::mem::size_of::<MarketFixed>();
         let header: &MarketFixed = bytemuck::from_bytes(&data[..fixed_size]);
@@ -1922,11 +1619,6 @@ impl MarketFixture {
         vault: &Pubkey,
         profile_id: u8,
     ) -> ydelta::state::ClaimedSeat {
-        use hypertree::{HyperTreeReadOperations, RedBlackTreeReadOnly, NIL};
-        use ydelta::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
-        use ydelta::state::market::get_helper_seat;
-        use ydelta::state::{ClaimedSeat, MarketFixed};
-
         let data = self.account_data(self.market.pubkey()).await;
         let fixed_size = std::mem::size_of::<MarketFixed>();
         let header: &MarketFixed = bytemuck::from_bytes(&data[..fixed_size]);

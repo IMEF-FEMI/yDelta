@@ -1,6 +1,6 @@
-//! Permissionless LTV-gated liquidation.
-//!   `debt_value_in_collateral + bonus`, the liquidator takes all
-//!   collateral and a `BadDebtLog` is emitted with the gap.
+//! Permissionless LTV-gated liquidation. When the available collateral
+//! cannot cover `debt_value_in_collateral + bonus`, the liquidator takes
+//! all collateral and a `BadDebtLog` is emitted with the gap.
 
 use std::cell::RefMut;
 
@@ -14,13 +14,17 @@ use solana_program::{
     sysvar::Sysvar,
 };
 
-use crate::logs::{emit_stack, BadDebtLog, LoanLiquidatedLog, SecondaryStaleBidDroppedLog};
+use crate::logs::{emit_stack, BadDebtLog, LoanLiquidatedLog};
 use crate::program::YdeltaError;
 use crate::protocol::{marginfi::MarginfiV18Adapter, LendingProtocol};
 use crate::require;
-use crate::state::loan::{accrue_loan, LoanFixed, LoanState, LoanType, LOAN_FIXED_SIZE};
+use crate::state::loan::{
+    accrue_loan, apply_partial_resolution, assert_loan_conservation, LoanFixed, LoanState,
+    LoanType, LOAN_FIXED_SIZE,
+};
 use crate::state::ltv::get_required_quote_collateral_to_back_debt;
 use crate::state::market::{get_mut_helper_seat, MarketFixed};
+use crate::state::market_helpers::atoms_to_shares_at_snapshot;
 use crate::validation::loaders::SettleMaturedLoanContext;
 use crate::validation::MARKET_SIGNER_SEED;
 
@@ -65,23 +69,32 @@ pub fn process_liquidate_loan(
         token_program,
         marginfi_group,
         marginfi_program,
+        cranker_refund,
     } = SettleMaturedLoanContext::load(accounts)?;
 
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
-    let (grace_period_seconds, bonus_bps, liquidation_protocol_bps) = {
+    let (
+        grace_period_seconds,
+        bonus_bps,
+        liquidation_protocol_bps,
+        debt_mint_decimals,
+        collateral_mint_decimals,
+    ) = {
         let m = market.get_fixed()?;
         (
             m.fee_config.grace_period_seconds,
             m.fee_config.liquidation_keeper_bps,
             m.fee_config.liquidation_protocol_bps,
+            m.debt_mint_decimals,
+            m.collateral_mint_decimals,
         )
     };
 
     // Accrue (no-op for P2Pool) and read settlement parameters from the
     // loan body. Live outstanding for P2Pool comes from marginfi below
     // — `outstanding_debt_atoms` on the body is decorative there.
-    let (body_outstanding_atoms, collateral_atoms, borrower_seat_index, loan_type) = {
+    let (_, collateral_atoms, borrower_seat_index, loan_type) = {
         let loan_data: &mut RefMut<&mut [u8]> = &mut loan.info.try_borrow_mut_data()?;
         let header: &mut LoanFixed = bytemuck::from_bytes_mut(&mut loan_data[..LOAN_FIXED_SIZE]);
         require!(
@@ -112,12 +125,34 @@ pub fn process_liquidate_loan(
             debt_bank.info,
         )?
     };
-    let _ = body_outstanding_atoms;
 
     // Oracle-priced LTV gate. The position is liquidatable iff its
     // collateral would fail marginfi's maintenance solvency check at
     // current prices. Shared helper so the simulation ix
     // (`CheckLtvLiquidatable`) runs the identical gate.
+    //
+    // Partial liquidations are bounded by design. Every
+    // `liquidate_loan` call is its own transaction that re-loads the
+    // loan from chain and re-runs THIS gate against the post-partial
+    // `outstanding_live_atoms` / `collateral_atoms` — so a keeper can
+    // only take a further bonus-bearing slice while the loan is STILL in
+    // LTV breach.
+    //
+    // Keeper-bonus bound. The bonus is a fixed
+    // bps of debt-value-seized, but the summed bonus across a sequence
+    // of partials is NOT exactly equal to a single full liquidation's
+    // bonus: it is path-dependent. Interest accrues between partials
+    // (each slice re-reads `outstanding_live_atoms`), and each slice
+    // re-reads the debt/collateral oracles, so the per-slice
+    // debt-value-in-collateral is computed at a different price and a
+    // slightly larger outstanding than a one-shot full liquidation
+    // would see. The summed bonus can therefore slightly EXCEED a
+    // single-full-liquidation bonus. It remains bounded — the
+    // min-partial-repay floor below caps the number of bonus events,
+    // and each event's bonus is a fixed bps of that slice's
+    // debt-value — so there is no unbounded-extraction path; the bound
+    // is "≈ one full liquidation, up to the cross-partial accrual and
+    // oracle-drift residual," not an exact equality.
     let debt_oracle_args = crate::validation::oracle_price_args(debt_bank.info, &debt_oracle_ais);
     let collateral_oracle_args =
         crate::validation::oracle_price_args(collateral_bank.info, &collateral_oracle_ais);
@@ -128,6 +163,8 @@ pub fn process_liquidate_loan(
         &debt_oracle_args,
         collateral_bank.info,
         &collateral_oracle_args,
+        debt_mint_decimals,
+        collateral_mint_decimals,
     )?;
     // Re-read for the bonus / collateral-split computation below — the
     // gate consumed the slices but we need the prices again. Cheap
@@ -186,6 +223,21 @@ pub fn process_liquidate_loan(
     // `actual_repay_atoms`. The liquidator seizes that value plus a
     // keeper bonus in collateral atoms; bad-debt arises iff total
     // available collateral can't cover even this slice.
+    //
+    // This is intended liquidation economics. The
+    // collateral is valued at the bare oracle price (unit asset
+    // weights, `ltv_buffer_bps = 0`) — i.e. oracle-par — because the
+    // liquidator is repaying real debt 1:1 and seizing real collateral;
+    // the keeper bonus is their incentive. Maintenance/init weights and
+    // the LTV buffer belong to the *solvency gate* (`assert_ltv_breach`
+    // above), which decides WHEN a loan may be liquidated — not to the
+    // seizure valuation, which decides HOW MUCH collateral the repaid
+    // debt buys. Applying a maintenance haircut here would let the
+    // liquidator seize MORE collateral per atom repaid (a haircut < 1×
+    // raises `required` collateral), accelerating bad debt rather than
+    // preventing it. The bad-debt accounting below (`bad_debt_gap_atoms`
+    // = `total_seize_target − collateral_atoms`) is therefore correct:
+    // it measures the shortfall in oracle-par terms.
     const FP48_ONE: u128 = 1u128 << 48;
     let repay_value_in_collateral_atoms = get_required_quote_collateral_to_back_debt(
         actual_repay_atoms,
@@ -194,6 +246,8 @@ pub fn process_liquidate_loan(
         FP48_ONE,
         FP48_ONE,
         /*ltv_buffer_bps=*/ 0,
+        debt_mint_decimals,
+        collateral_mint_decimals,
     )?;
     let CollateralSplit {
         liquidator_seizes_atoms,
@@ -235,8 +289,8 @@ pub fn process_liquidate_loan(
     //
     // Fixed: liquidator's atoms top up the lender side. `marginfi.deposit
     // market_debt_vault → lender_marginfi_account` accrues asset shares
-    // the human lender then drains via `claim_repayment` (wallet) or
-    // `claim_repayment_for_risk_profile` (vault).
+    // the lender (a vault risk profile) drains via
+    // `claim_repayment_for_risk_profile`.
     //
     // P2Pool: there is no human lender. The canonical debt is the
     // borrower's marginfi liability_shares; the liquidator's atoms must
@@ -280,17 +334,41 @@ pub fn process_liquidate_loan(
                 token_program.info.clone(),
                 marginfi_program.info.clone(),
             ];
-            let _shares_burned: u128 = MarginfiV18Adapter.repay_atoms(
-                &repay_accounts,
-                actual_repay_atoms,
-                &[market_signer_seeds],
-            )?;
-            // `lender_marginfi_account` is unused on the P2Pool path —
-            // suppress the unused-binding lint without renaming the
-            // loader field (other ixs still use it).
-            let _ = &lender_marginfi_account;
+            let _shares_burned: u128 = if is_full_repay {
+                MarginfiV18Adapter.repay_atoms_full(
+                    &repay_accounts,
+                    actual_repay_atoms,
+                    &[market_signer_seeds],
+                )?
+            } else {
+                MarginfiV18Adapter.repay_atoms(
+                    &repay_accounts,
+                    actual_repay_atoms,
+                    &[market_signer_seeds],
+                )?
+            };
         }
     }
+    let post_repay_liability_shares: Option<u128> = if loan_type == LoanType::P2Pool {
+        Some(crate::state::ltv::read_borrower_liability_shares(
+            borrower_marginfi_account.info,
+            debt_bank.info.key,
+        )?)
+    } else {
+        None
+    };
+    let did_full_repay: bool = match post_repay_liability_shares {
+        Some(shares) => shares == 0,
+        None => is_full_repay,
+    };
+    let post_repay_outstanding_atoms: Option<u64> = match post_repay_liability_shares {
+        Some(0) => Some(0),
+        Some(shares) => Some(crate::state::ltv::liability_shares_to_atoms_ceil(
+            debt_bank.info,
+            shares,
+        )?),
+        None => None,
+    };
 
     // Withdraw `liquidator_seizes_atoms` collateral
     //     → staging → liquidator. (Surplus stays on borrower marginfi.)
@@ -352,7 +430,6 @@ pub fn process_liquidate_loan(
     // pre-CPI inputs — marginfi can return ±1 atom drift, and using
     // the CPI return value keeps the seat ledger in sync with
     // marginfi's authoritative book.
-    use crate::state::market_helpers::atoms_to_shares_at_snapshot;
     let collateral_snapshot_fp48: u128 = {
         let loan_data = loan.info.try_borrow_data()?;
         let header: &LoanFixed = bytemuck::from_bytes(&loan_data[..LOAN_FIXED_SIZE]);
@@ -363,7 +440,7 @@ pub fn process_liquidate_loan(
     // liquidator_seizes_atoms) keeps the borrower's withdrawable
     // credit consistent with what physically stayed on borrower's
     // marginfi after the CPI.
-    let surplus_atoms_actual: u64 = if is_full_repay {
+    let surplus_atoms_actual: u64 = if did_full_repay {
         collateral_atoms.saturating_sub(withdrawn_atoms)
     } else {
         0
@@ -381,7 +458,7 @@ pub fn process_liquidate_loan(
         // (computed from the original `collateral_atoms` at snapshot,
         // matching place-time encumber atom-for-atom). Partial:
         // release only what marginfi physically withdrew.
-        let release_shares: u128 = if is_full_repay {
+        let release_shares: u128 = if did_full_repay {
             atoms_to_shares_at_snapshot(collateral_atoms, collateral_snapshot_fp48)
         } else {
             atoms_to_shares_at_snapshot(withdrawn_atoms, collateral_snapshot_fp48)
@@ -395,85 +472,102 @@ pub fn process_liquidate_loan(
                 .checked_add(surplus_shares)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
         }
-        if is_full_repay {
+        if did_full_repay {
             seat.open_borrow_count = seat.open_borrow_count.saturating_sub(1);
         }
     }
 
     // Liquidation protocol fee (debt-mint, accrued onto the loan
     // body). Marginfi-style: a configurable fraction of every
-    // liquidation event is owed to the protocol. We charge it against
-    // the LP's recovery — the liquidator's atoms now sitting in
-    // `lender_marginfi` would otherwise all be available to the lender
-    // via `claim_repayment[_for_risk_profile]`. By reducing
-    // `lender_claimable_atoms` and bumping
-    // `accumulated_protocol_fee_atoms` (which the same claim ix sweeps
-    // onto `market.accumulated_protocol_fee_shares`), the protocol's
-    // cut is collected through the existing fee-claim plumbing without
-    // needing a parallel collateral-mint accumulator.
-    let liquidation_protocol_atoms: u64 = if liquidation_protocol_bps > 0 {
-        ((actual_repay_atoms as u128)
-            .checked_mul(liquidation_protocol_bps as u128)
-            .ok_or(ProgramError::ArithmeticOverflow)?
-            / 10_000u128)
-            .min(u64::MAX as u128) as u64
-    } else {
-        0
-    };
+    // liquidation event is owed to the protocol.
+    let liquidation_protocol_atoms: u64 =
+        if loan_type == LoanType::Fixed && liquidation_protocol_bps > 0 {
+            ((actual_repay_atoms as u128)
+                .checked_mul(liquidation_protocol_bps as u128)
+                .ok_or(ProgramError::ArithmeticOverflow)?
+                / 10_000u128)
+                .min(u64::MAX as u128) as u64
+        } else {
+            0
+        };
 
     // Update the loan body.
-    // `accrue_loan` already grew lender_claimable_atoms from net_principal
-    // to net_principal + accrued interest. The claim ix reads it as-is —
-    // adding actual_repay_atoms here would double-count and let the
-    // lender drain ~2× principal from the integration account.
+    //
+    // The liquidator's FULL `actual_repay_atoms` were deposited into
+    // `lender_marginfi_account` by the Fixed-branch CPI above (P2Pool
+    // retires the borrower liability instead — no protocol fee there).
+    //
+    // For Fixed loans `apply_partial_resolution` retires the
+    // `actual_repay_atoms` slice and shrinks the three conservation
+    // fields proportionally, preserving the identity `outstanding ==
+    // lender_claimable + protocol_fee + curator_fee`.
+    //
+    // The liquidation protocol fee is then a HAIRCUT on the lender's
+    // recovery — there is no genuine unattributed surplus on a
+    // liquidation (`actual_repay` exactly retires accrued debt). It is
+    // taken strictly from `lender_claimable_atoms` (capped at it) and
+    // moved onto `accumulated_protocol_fee_atoms`. That is a pure
+    // transfer between two terms of the conservation sum, so the
+    // identity is preserved and the accumulator stays backed: every
+    // atom is physically present in `lender_marginfi_account` (the
+    // claim ix sweeps `protocol_fee_atoms` onto
+    // `market.accumulated_protocol_fee_shares`, drained by
+    // `protocol_fee_claim` out of that SAME account).
+    //
+    // On a bad-debt close (`bad_debt_gap_atoms > 0`) the curator —
+    // a fee-taker, not a senior creditor — must not collect a
+    // management fee accrued on interest the lender never received. Its
+    // accumulated curator fee is clawed back into `lender_claimable`
+    // before close so the LP recovers ahead of the curator.
     {
         let loan_data: &mut RefMut<&mut [u8]> = &mut loan.info.try_borrow_mut_data()?;
         let header: &mut LoanFixed = bytemuck::from_bytes_mut(&mut loan_data[..LOAN_FIXED_SIZE]);
-        // Reroute liquidation protocol fee from lender → protocol.
-        // Saturating to avoid underflow when the lender claim is
-        // smaller than the configured fee (extreme bps + small loan).
-        if liquidation_protocol_atoms > 0 {
-            let take = liquidation_protocol_atoms.min(header.lender_claimable_atoms);
-            header.lender_claimable_atoms = header.lender_claimable_atoms.saturating_sub(take);
-            header.accumulated_protocol_fee_atoms = header
-                .accumulated_protocol_fee_atoms
-                .checked_add(take)
-                .ok_or(ProgramError::ArithmeticOverflow)?;
-        }
-        if is_full_repay {
-            header.outstanding_debt_atoms = 0;
-            header.collateral_atoms = 0;
-            header.state = LoanState::Repaid as u8;
+        if loan_type == LoanType::P2Pool {
+            header.borrower_marginfi_borrow_shares = post_repay_liability_shares.unwrap_or(0);
+            if did_full_repay {
+                header.outstanding_debt_atoms = 0;
+                header.collateral_atoms = 0;
+                header.state = LoanState::Repaid as u8;
+            } else {
+                header.outstanding_debt_atoms =
+                    post_repay_outstanding_atoms.ok_or(ProgramError::ArithmeticOverflow)?;
+                header.collateral_atoms = collateral_atoms.saturating_sub(withdrawn_atoms);
+            }
         } else {
-            header.outstanding_debt_atoms = outstanding_live_atoms
-                .checked_sub(actual_repay_atoms)
-                .ok_or(ProgramError::ArithmeticOverflow)?;
-            header.collateral_atoms = collateral_atoms
-                .checked_sub(liquidator_seizes_atoms)
-                .ok_or(ProgramError::ArithmeticOverflow)?;
-        }
-    }
-
-    // Post-full-repay sweep: stale `SecondaryLoanSale` bids for this loan
-    // must drop the moment outstanding_debt hits 0.
-    if is_full_repay {
-        let loan_pda_key = *loan.info.key;
-        let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
-        let da = get_mut_dynamic_account::<MarketFixed>(market_data);
-        let swept = crate::state::market_helpers::sweep_stale_secondary_bids_for_loan(
-            da.fixed,
-            da.dynamic,
-            &loan_pda_key,
-        )?;
-        if swept > 0 {
-            emit_stack(SecondaryStaleBidDroppedLog {
-                market: market_key,
-                loan_pda: loan_pda_key,
-                bid_sequence: 0,
-                seller_seat_index: hypertree::NIL,
-                swept_by: 2, // 2 = liquidate_loan sweep
-                _padding: [0; 3],
-            })?;
+            // Fixed: retire the debt slice across all four fields.
+            apply_partial_resolution(header, actual_repay_atoms)?;
+            // Liquidation protocol fee — haircut on lender recovery.
+            if liquidation_protocol_atoms > 0 {
+                let fee: u64 = liquidation_protocol_atoms.min(header.lender_claimable_atoms);
+                header.lender_claimable_atoms = header
+                    .lender_claimable_atoms
+                    .checked_sub(fee)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+                header.accumulated_protocol_fee_atoms = header
+                    .accumulated_protocol_fee_atoms
+                    .checked_add(fee)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            }
+            // Curator clawback on bad debt.
+            if bad_debt_gap_atoms > 0 && header.accumulated_curator_fee_atoms > 0 {
+                let clawback: u64 = header.accumulated_curator_fee_atoms;
+                header.accumulated_curator_fee_atoms = 0;
+                header.lender_claimable_atoms = header
+                    .lender_claimable_atoms
+                    .checked_add(clawback)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            }
+            // Decrement collateral by the ACTUAL `withdrawn_atoms`
+            // returned by the marginfi withdraw CPI (±1 atom drift vs
+            // the planned `liquidator_seizes_atoms`).
+            if did_full_repay {
+                header.collateral_atoms = 0;
+                header.state = LoanState::Repaid as u8;
+            } else {
+                header.collateral_atoms = collateral_atoms.saturating_sub(withdrawn_atoms);
+            }
+            // Conservation identity must hold after every resolution.
+            assert_loan_conservation(header)?;
         }
     }
 
@@ -484,7 +578,7 @@ pub fn process_liquidate_loan(
         debt_paid_atoms: actual_repay_atoms,
         collateral_seized_atoms: liquidator_seizes_atoms,
         liquidation_kind: 1, // LTV-breach
-        is_partial: if is_full_repay { 0 } else { 1 },
+        is_partial: if did_full_repay { 0 } else { 1 },
         _padding: [0; 14],
     })?;
     if bad_debt_gap_atoms > 0 {
@@ -492,10 +586,11 @@ pub fn process_liquidate_loan(
         // `actual_repay_atoms` of debt but the loan's collateral
         // couldn't fully cover the corresponding swap + bonus. Residual
         // debt (if partial) stays on the loan — see `outstanding_debt_atoms`.
-        let debt_atoms_remaining: u64 = if is_full_repay {
+        let debt_atoms_remaining: u64 = if did_full_repay {
             0
         } else {
-            outstanding_live_atoms.saturating_sub(actual_repay_atoms)
+            post_repay_outstanding_atoms
+                .unwrap_or_else(|| outstanding_live_atoms.saturating_sub(actual_repay_atoms))
         };
         emit_stack(BadDebtLog {
             market: market_key,
@@ -504,6 +599,10 @@ pub fn process_liquidate_loan(
             debt_atoms_remaining,
             _padding: [0; 16],
         })?;
+    }
+
+    if loan_type == LoanType::P2Pool && did_full_repay {
+        super::shared::close_account_and_refund(loan.info, cranker_refund)?;
     }
 
     Ok(())

@@ -3,22 +3,25 @@
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use hypertree::{HyperTreeReadOperations, NIL};
 use solana_program::{
     account_info::AccountInfo, clock::Clock, entrypoint::ProgramResult,
     program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
 };
 
-use crate::logs::{emit_stack, P2PoolConvertedToFixedLog, SecondaryStaleBidDroppedLog};
+use crate::logs::{emit_stack, P2PoolConvertedToFixedLog};
 use crate::program::YdeltaError;
 use crate::protocol::{marginfi::MarginfiV18Adapter, LendingProtocol};
 use crate::require;
 use crate::state::loan::{LoanFixed, LoanState, LoanType, LOAN_FIXED_SIZE};
 use crate::state::ltv::get_required_quote_collateral_to_back_debt;
 use crate::state::market::{get_helper_seat, get_mut_helper_seat, MarketFixed};
-use crate::state::market_helpers::{
-    match_p2pool_residual_against_asks, sweep_stale_secondary_bids_for_loan,
-    MatchP2PoolRefinanceArgs,
+use crate::state::market_helpers::{match_p2pool_residual_against_asks, MatchP2PoolRefinanceArgs};
+use crate::state::vault::{
+    accrue_risk_profile, get_mut_helper_risk_profile, read_bank_asset_share_value_fp48,
+    GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
 };
+use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::ConvertP2PoolToFixedContext;
 use crate::validation::MARKET_SIGNER_SEED;
 
@@ -45,6 +48,10 @@ pub fn process_convert_p2pool_to_fixed(
         payer,
         market,
         loan,
+        // Consumed by the loader for the market-expansion rent top-up
+        // CPI; the processor calls `expand_market_to_free_blocks` which
+        // signs the transfer with the payer directly.
+        system_program: _,
         borrower_marginfi_account,
         lender_marginfi_account,
         debt_bank,
@@ -60,6 +67,7 @@ pub fn process_convert_p2pool_to_fixed(
         token_program,
         marginfi_group,
         marginfi_program,
+        global_vault,
         cranker_refund,
     } = ctx;
 
@@ -72,7 +80,7 @@ pub fn process_convert_p2pool_to_fixed(
         loan_collateral_atoms,
         loan_matures_at_unix,
         loan_borrower_collateral_snapshot,
-        loan_borrower_marginfi_borrow_shares,
+        _,
     ) = {
         let l = loan.get_fixed()?;
         (
@@ -148,7 +156,14 @@ pub fn process_convert_p2pool_to_fixed(
         MarginfiV18Adapter.init_weight(&[debt_bank.info.clone()])?;
     let (collateral_asset_weight_init_fp48, _coll_liab_init) =
         MarginfiV18Adapter.init_weight(&[collateral_bank.info.clone()])?;
-    let ltv_buffer_bps: u16 = market.get_fixed()?.fee_config.ltv_buffer_bps;
+    let (ltv_buffer_bps, debt_mint_decimals, collateral_mint_decimals): (u16, u8, u8) = {
+        let m = market.get_fixed()?;
+        (
+            m.fee_config.ltv_buffer_bps,
+            m.debt_mint_decimals,
+            m.collateral_mint_decimals,
+        )
+    };
     let required_collateral = get_required_quote_collateral_to_back_debt(
         live_outstanding_atoms,
         debt_oracle_price_fp48,
@@ -156,6 +171,8 @@ pub fn process_convert_p2pool_to_fixed(
         debt_liability_weight_init_fp48,
         collateral_asset_weight_init_fp48,
         ltv_buffer_bps,
+        debt_mint_decimals,
+        collateral_mint_decimals,
     )?;
     require!(
         loan_collateral_atoms >= required_collateral,
@@ -166,6 +183,22 @@ pub fn process_convert_p2pool_to_fixed(
         required_collateral,
         live_outstanding_atoms
     )?;
+
+    // ─── Reserve MatchedLoan blocks for the matching pass ───
+    //
+    // Each cross against a vault ask allocates one `MatchedLoan` block
+    // from the market free list and frees nothing (vault asks are
+    // unbounded standing quotes — never removed by matching). The
+    // refinance can cross each resting ask at most once, so reserve one
+    // block per resting ask (the `+ 1` is slack, mirroring the
+    // `place_order` pre-expansion). Without this, a convert crossing
+    // 2+ asks fails with `AccountDataTooSmall`.
+    {
+        let ask_count = super::shared::count_resting_asks(&market)?;
+        super::shared::expand_market_to_free_blocks(payer.info, &market, ask_count + 1)?;
+    }
+
+    let fee_floor_bps: u16 = market.get_fixed()?.fee_config.protocol_fee_bps_floor;
 
     let match_result = {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
@@ -181,8 +214,20 @@ pub fn process_convert_p2pool_to_fixed(
                 borrower_collateral_share_price_snapshot_fp48: loan_borrower_collateral_snapshot,
                 term_remaining_seconds,
                 max_acceptable_rate_bps: params.max_acceptable_rate_bps,
+                fee_floor_bps,
                 now_unix_ts,
+                // Per-cross LTV-gate inputs — the same oracle
+                // prices / init weights / decimals already snapshotted
+                // for the aggregate market-level check above.
+                debt_oracle_price_fp48,
+                collateral_oracle_price_fp48,
+                debt_liability_weight_init_fp48,
+                collateral_asset_weight_init_fp48,
+                ltv_buffer_bps,
+                debt_mint_decimals,
+                collateral_mint_decimals,
             },
+            Some(global_vault),
         )?
     };
     require!(
@@ -195,14 +240,6 @@ pub fn process_convert_p2pool_to_fixed(
     let total_filled_principal = match_result.total_filled_principal_atoms;
     let total_filled_collateral = match_result.total_filled_collateral_atoms;
     let num_fills = match_result.num_fills;
-
-    // Full conversion = matched the entire live marginfi liability.
-    // Decided up-front (before the CPIs) so we can pick the right
-    // marginfi.repay variant: `repay_atoms_full` retires every
-    // remaining share and ignores rounding-residual dust, vs
-    // `repay_atoms` which can leave sub-1-atom shares parked on the
-    // borrower's marginfi-account from atoms→shares floor rounding.
-    let did_full_conversion = total_filled_principal == live_outstanding_atoms;
 
     let market_signer_seeds: &[&[u8]] = &[
         MARKET_SIGNER_SEED,
@@ -227,10 +264,56 @@ pub fn process_convert_p2pool_to_fixed(
     for ai in &debt_oracle_ais.ais {
         withdraw_accounts.push((*ai).clone());
     }
+    // The borrower's NEW fixed debt is sized from
+    // `total_filled_principal` (the converted `MatchedLoan` nodes),
+    // while the OLD variable debt destroyed is whatever liability the
+    // repay CPI below actually retires off the borrower's marginfi
+    // account. The borrower must never end up owing more fixed debt
+    // than the variable debt that was retired.
+    //
+    // The matcher fills up to `principal_cap_atoms == live_outstanding_atoms`.
+    // Two cases:
+    //
+    //   * FULL refinance (`total_filled == live_outstanding`) — the
+    //     whole P2Pool liability is being converted. A `repay_all` CPI
+    //     retires the borrower's entire liability cleanly; the retired
+    //     debt is then trivially `>= total_filled_principal`. An
+    //     atom-capped over-repay can't be used here: marginfi rejects a
+    //     repay that exceeds the live liability (`OperationRepayOnly`),
+    //     and the liability-share floor of an exact-amount repay would
+    //     under-retire by ~1 atom.
+    //
+    //   * PARTIAL refinance (`total_filled < live_outstanding`) — only
+    //     part of the liability is converted. The repay amount is
+    //     `total_filled_principal` rounded UP to a whole number of
+    //     liability shares plus a small cushion (`repay_target_atoms`),
+    //     so the floored repay still retires `>= total_filled_principal`.
+    //     The cushion stays strictly below the live liability, so
+    //     marginfi never sees an over-repay.
+    //
+    // In both cases the withdraw shares are rounded UP so the staging
+    // vault holds enough atoms to fund the repay.
+    let is_full_refinance: bool = total_filled_principal == live_outstanding_atoms;
+    let repay_target_atoms: u64 = MarginfiV18Adapter
+        .liability_atoms_to_fully_cover(&[debt_bank.info.clone()], total_filled_principal)?;
     let withdraw_shares: u128 = MarginfiV18Adapter
-        .amount_to_asset_shares(&[debt_bank.info.clone()], total_filled_principal)?;
+        .amount_to_asset_shares_ceil(&[debt_bank.info.clone()], repay_target_atoms)?;
     let withdrawn_atoms: u64 =
         MarginfiV18Adapter.withdraw(&withdraw_accounts, withdraw_shares, &[market_signer_seeds])?;
+    // The withdraw must yield enough atoms to fund a repay that retires
+    // `>= total_filled_principal` of the borrower's liability.
+    // `repay_target_atoms` carries a cushion over `total_filled_principal`
+    // (see `liability_atoms_to_fully_cover`); the marginfi `withdraw` may
+    // return one atom under the share-derived expectation, so the bound
+    // is `total_filled_principal` (the cushion absorbs the drift).
+    require!(
+        withdrawn_atoms >= total_filled_principal,
+        YdeltaError::InvalidArgument,
+        "convert_p2pool_to_fixed: withdrawn atoms {} < new fixed debt {} — \
+         insufficient to retire the converted liability",
+        withdrawn_atoms,
+        total_filled_principal
+    )?;
 
     let repay_accounts: Vec<AccountInfo> = vec![
         marginfi_group.info.clone(),
@@ -242,15 +325,74 @@ pub fn process_convert_p2pool_to_fixed(
         token_program.info.clone(),
         marginfi_program.info.clone(),
     ];
-    // Always atom-capped repay (no `repay_all = true`). Mid-tx
-    // marginfi-bank accrual between our `live_outstanding_atoms` read
-    // and this CPI bumps `liability_share_value` upward, so a true
-    // `repay_all` would ask for more atoms than the staging vault
-    // holds and the internal SPL transfer fails. The atom cap leaves
-    // a sub-atom residual share count that's economically irrelevant
-    // (worst case ≤ 1 atom of liability per refinance) but not 0.
-    let borrow_shares_burned: u128 =
-        MarginfiV18Adapter.repay_atoms(&repay_accounts, withdrawn_atoms, &[market_signer_seeds])?;
+    let borrow_shares_burned: u128 = if is_full_refinance {
+        // Full refinance: `repay_all = true` retires the entire
+        // liability. The atom cap (`withdrawn_atoms`) still bounds the
+        // internal SPL transfer; mid-tx accrual bumps the liability a
+        // sub-atom amount, covered by the `repay_target_atoms` cushion.
+        MarginfiV18Adapter.repay_atoms_full(
+            &repay_accounts,
+            withdrawn_atoms,
+            &[market_signer_seeds],
+        )?
+    } else {
+        // Partial refinance: atom-capped repay of the cushioned target,
+        // clamped to the (stale) live liability so it can never exceed
+        // the borrower's actual liability — which has only accrued
+        // UPWARD since the pre-CPI read — and trip marginfi's
+        // over-repay guard. The clamp still retires `>= total_filled`
+        // because `total_filled < live_outstanding_atoms` on this
+        // branch.
+        let partial_repay_atoms = repay_target_atoms.min(live_outstanding_atoms);
+        MarginfiV18Adapter.repay_atoms(
+            &repay_accounts,
+            partial_repay_atoms,
+            &[market_signer_seeds],
+        )?
+    };
+
+    // Gate the PDA close on the POST-CPI live liability.
+    //
+    // marginfi's `liability_share_value` accrues between the
+    // `live_outstanding_atoms` read and the `repay_atoms` CPI, so a
+    // pre-CPI `total_filled_principal == live_outstanding_atoms` equality
+    // can hold while a sub-atom residual liability still sits on the
+    // borrower's marginfi account. Closing the P2Pool PDA on that stale
+    // comparison would orphan the residual: an untracked debt with no
+    // PDA, un-repayable and un-liquidatable through yDelta, silently
+    // encumbering the borrower's collateral on marginfi.
+    //
+    // So re-read `liability_shares` AFTER the repay CPI and only treat
+    // the conversion as "full" (→ close the PDA) when the live
+    // liability is exactly zero. Any residual leaves the loan Active.
+    let post_repay_liability_shares: u128 = crate::state::ltv::read_borrower_liability_shares(
+        borrower_marginfi_account.info,
+        debt_bank.info.key,
+    )?;
+    let did_full_conversion: bool = post_repay_liability_shares == 0;
+
+    // Invariant — the variable debt actually retired must cover the
+    // NEW fixed debt minted against the borrower. `borrow_shares_burned`
+    // is the liability-share count the repay CPI retired; its atom value
+    // (floored at the live liability-share value) is the variable debt
+    // destroyed, and the new fixed debt is `total_filled_principal`. The
+    // repay-target up-rounding above guarantees `retired >=
+    // total_filled_principal`; the check turns any residual
+    // marginfi-side rounding drift into a hard fault rather than silent
+    // phantom debt on the borrower. (A full conversion — zero residual
+    // liability — trivially retired the whole live debt.)
+    if !did_full_conversion {
+        let retired_liability_atoms: u64 = MarginfiV18Adapter
+            .liability_shares_to_atoms_floor(&[debt_bank.info.clone()], borrow_shares_burned)?;
+        require!(
+            retired_liability_atoms >= total_filled_principal,
+            YdeltaError::InvalidArgument,
+            "convert_p2pool_to_fixed: retired variable debt {} < new fixed \
+             debt {} — borrower would owe phantom debt",
+            retired_liability_atoms,
+            total_filled_principal
+        )?;
+    }
 
     {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
@@ -262,40 +404,22 @@ pub fn process_convert_p2pool_to_fixed(
             .ok_or(ProgramError::ArithmeticOverflow)?;
     }
 
-    let new_borrower_marginfi_borrow_shares: u128 = loan_borrower_marginfi_borrow_shares
-        .checked_sub(borrow_shares_burned)
-        .unwrap_or(0);
+    // Post-CPI live shares — the canonical residual. `borrow_shares_burned`
+    // tracks what this CPI retired; the loan-body field is kept in sync
+    // with the live marginfi value rather than the (potentially stale)
+    // pre-CPI `borrower_marginfi_borrow_shares - burned` arithmetic.
+    let new_borrower_marginfi_borrow_shares: u128 = post_repay_liability_shares;
 
     if did_full_conversion {
         // Full conversion: close the P2Pool PDA. Decrement
         // open_borrow_count by 1 to retire the original P2Pool slot
         // (the `+= num_fills` above already covers the new Fixed
-        // loans). Sweep stale secondary bids — though P2Pool loans
-        // shouldn't have rested secondary bids per the secondary-loan
-        // type gate, the sweep is cheap defense in depth and matches
-        // the close pattern in `liquidate_loan` / `settle_matured_loan`.
+        // loans).
         {
             let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
             let da = get_mut_dynamic_account::<MarketFixed>(market_data);
             let seat = get_mut_helper_seat(da.dynamic, borrower_seat_index).get_mut_value();
             seat.open_borrow_count = seat.open_borrow_count.saturating_sub(1);
-        }
-
-        let loan_pda_key = *loan.info.key;
-        {
-            let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
-            let da = get_mut_dynamic_account::<MarketFixed>(market_data);
-            let swept = sweep_stale_secondary_bids_for_loan(da.fixed, da.dynamic, &loan_pda_key)?;
-            if swept > 0 {
-                emit_stack(SecondaryStaleBidDroppedLog {
-                    market: market_key,
-                    loan_pda: loan_pda_key,
-                    bid_sequence: 0,
-                    seller_seat_index: hypertree::NIL,
-                    swept_by: 3, // 3 = convert_p2pool_to_fixed sweep
-                    _padding: [0; 3],
-                })?;
-            }
         }
 
         close_p2pool_loan_pda(&loan, cranker_refund)?;
@@ -309,19 +433,22 @@ pub fn process_convert_p2pool_to_fixed(
         // Body fields under partial conversion:
         //   - `principal_debt_atoms`: snapshot of the BID amount, kept
         //     decremented by what was refinanced. Display-only.
-        //   - `outstanding_debt_atoms`: tracks `live_outstanding -
-        //     total_filled` so off-chain readers see the post-repay
-        //     residual without doing the live math.
-        //   - `borrower_marginfi_borrow_shares`: live shares minus
-        //     what marginfi.repay_atoms burned.
+        //   - `outstanding_debt_atoms`: decorative for P2Pool — set to
+        //     the live post-CPI liability so off-chain readers see the
+        //     true residual. `loan_live_outstanding_atoms` re-derives it
+        //     authoritatively from `liability_shares` on every ix.
+        //   - `borrower_marginfi_borrow_shares`: the post-CPI live
+        //     liability shares (re-read after the repay CPI).
         //   - `collateral_atoms`: shrunk by the pro-rata split that
         //     went to the new Fixed loans.
+        let post_repay_outstanding_atoms: u64 = crate::state::ltv::liability_shares_to_atoms_ceil(
+            debt_bank.info,
+            post_repay_liability_shares,
+        )?;
         let loan_data: &mut RefMut<&mut [u8]> = &mut loan.info.try_borrow_mut_data()?;
         let header: &mut LoanFixed = bytemuck::from_bytes_mut(&mut loan_data[..LOAN_FIXED_SIZE]);
         header.principal_debt_atoms = loan_principal_atoms.saturating_sub(total_filled_principal);
-        header.outstanding_debt_atoms = live_outstanding_atoms
-            .checked_sub(total_filled_principal)
-            .ok_or(ProgramError::ArithmeticOverflow)?;
+        header.outstanding_debt_atoms = post_repay_outstanding_atoms;
         header.collateral_atoms = loan_collateral_atoms
             .checked_sub(total_filled_collateral)
             .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -329,6 +456,71 @@ pub fn process_convert_p2pool_to_fixed(
         header.last_accrued_unix = now_unix_ts;
         header.state = LoanState::Active as u8;
         debug_assert_eq!(header.loan_type, LoanType::P2Pool as u8);
+    }
+
+    // ─── Per-profile vault bookkeeping for the crossed asks ───
+    //
+    // `match_p2pool_residual_against_asks` bumped each crossed profile's
+    // `encumbered_in_orders_atoms` at accept time. The emitted nodes are
+    // stamped `VAULT_PRESETTLED`, so the cranker (`process_matched_loan`)
+    // SKIPS `do_vault_settle`. The convert processor must therefore run
+    // the `encumbered_in_orders → deployed_principal` transition and the
+    // weighted-rate folds itself — exactly as `do_vault_settle` would —
+    // otherwise `encumbered_in_orders_atoms` stays permanently inflated
+    // and the crossed profile's idle pool is frozen for good.
+    {
+        let curator_fee_bps: u16 = market.get_fixed()?.fee_config.curator_fee_bps;
+        let share_value_fp48 = read_bank_asset_share_value_fp48(debt_bank.info);
+
+        let data: &mut RefMut<&mut [u8]> = &mut global_vault.try_borrow_mut_data()?;
+        let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
+        let root = {
+            let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
+            header.risk_profiles_root_index
+        };
+
+        for cross in &match_result.crosses {
+            let probe = RiskProfile::new_empty(cross.lender_profile_id, Pubkey::default(), 1, 1);
+            let profile_idx = {
+                let tree = RiskProfileTreeReadOnly::new(dynamic, root, NIL);
+                tree.lookup_index(&probe)
+            };
+            require!(
+                profile_idx != NIL,
+                YdeltaError::VaultProfileNotFound,
+                "convert_p2pool_to_fixed: crossed profile {} not found on global_vault",
+                cross.lender_profile_id
+            )?;
+            let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+            // Crystallise yield at the OLD weighted rate before folding
+            // in the new loan's contribution.
+            accrue_risk_profile(profile, now_unix_ts, share_value_fp48)?;
+            let principal = cross.filled_principal_atoms;
+            profile.deployed_principal_atoms = profile
+                .deployed_principal_atoms
+                .checked_add(principal)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            let weighted_delta: u128 = (principal as u128)
+                .checked_mul(cross.lender_rate_bps as u128)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            profile.total_weighted_rate_bps = profile
+                .total_weighted_rate_bps
+                .checked_add(weighted_delta)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            let net_weighted_delta: u128 = weighted_delta
+                .checked_mul((crate::state::loan::BPS_PER_UNIT as u128) - curator_fee_bps as u128)
+                .and_then(|x| x.checked_div(crate::state::loan::BPS_PER_UNIT as u128))
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            profile.total_weighted_net_rate_bps = profile
+                .total_weighted_net_rate_bps
+                .checked_add(net_weighted_delta)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            // `saturating_sub` mirrors `do_vault_settle`: the matching
+            // accept bumped `encumbered_in_orders_atoms` by exactly this
+            // `principal`.
+            profile.encumbered_in_orders_atoms =
+                profile.encumbered_in_orders_atoms.saturating_sub(principal);
+        }
     }
 
     emit_stack(P2PoolConvertedToFixedLog {
@@ -347,18 +539,15 @@ pub fn process_convert_p2pool_to_fixed(
     Ok(())
 }
 
-/// Close a P2Pool `LoanFixed` PDA on full conversion. Mirror of the
-/// close path in `claim_repayment::close_loan_pda` — zero the
-/// discriminator, optionally refund lamports to the cranker who paid
-/// the original PDA rent. If `cranker_refund` is missing or doesn't
-/// match `loan.created_by`, lamports stay stranded on the (now-zeroed)
-/// account; a future sweeper ix can recover them.
+/// Close a P2Pool `LoanFixed` PDA on full conversion: zero the data and
+/// refund the rent lamports to the keeper who paid the PDA rent.
+/// `cranker_refund` is bound by the loader to `loan.created_by`, so the
+/// refund is unconditional — the keeper is always reimbursed.
 fn close_p2pool_loan_pda<'a, 'info>(
     loan: &crate::validation::YdeltaAccountInfo<'a, 'info, LoanFixed>,
-    cranker_refund: Option<&'a AccountInfo<'info>>,
+    cranker_refund: &'a AccountInfo<'info>,
 ) -> ProgramResult {
     let loan_info = loan.info;
-    let created_by: Pubkey = loan.get_fixed()?.created_by;
 
     {
         let mut data: RefMut<&mut [u8]> = loan_info.try_borrow_mut_data()?;
@@ -367,18 +556,12 @@ fn close_p2pool_loan_pda<'a, 'info>(
         }
     }
 
-    if let Some(refund_ai) = cranker_refund {
-        if *refund_ai.key == created_by {
-            let lamports = loan_info.lamports();
-            **loan_info.try_borrow_mut_lamports()? = 0;
-            **refund_ai.try_borrow_mut_lamports()? = refund_ai
-                .lamports()
-                .checked_add(lamports)
-                .ok_or(ProgramError::ArithmeticOverflow)?;
-        }
-        // Mismatched `created_by`: silently skip the refund. Loan
-        // still closes (data zeroed); lamports stay stranded.
-    }
+    let lamports = loan_info.lamports();
+    **loan_info.try_borrow_mut_lamports()? = 0;
+    **cranker_refund.try_borrow_mut_lamports()? = cranker_refund
+        .lamports()
+        .checked_add(lamports)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     Ok(())
 }

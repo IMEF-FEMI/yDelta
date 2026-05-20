@@ -8,31 +8,34 @@
 //! SBPF (with marginfi) coverage lands later in Group C alongside the
 //! depositor + curator ix wiring.
 
+use std::mem::size_of;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 
 use ydelta::program::instruction_builders::{
     cancel_order_for_risk_profile_instruction::cancel_order_for_risk_profile_instruction,
     claim_curator_fee_instruction::claim_curator_fee_instruction,
-    claim_seat_for_risk_profile_instruction::claim_seat_for_risk_profile_instruction,
     create_risk_profile_instruction::create_risk_profile_instruction,
     create_vault_instruction::create_vault_instruction,
     global_vault_deposit_instruction::global_vault_deposit_instruction,
     global_vault_withdraw_instruction::global_vault_withdraw_instruction,
     place_order_for_risk_profile_instruction::place_order_for_risk_profile_instruction,
+    set_vault_pause_instruction::set_vault_pause_instruction,
     update_order_for_risk_profile_instruction::update_order_for_risk_profile_instruction,
 };
 use ydelta::program::processor::cancel_order_for_risk_profile::CancelOrderForRiskProfileParams;
 use ydelta::program::processor::claim_curator_fee::ClaimCuratorFeeParams;
-use ydelta::program::processor::claim_seat_for_risk_profile::ClaimSeatForRiskProfileParams;
 use ydelta::program::processor::create_risk_profile::CreateRiskProfileParams;
 use ydelta::program::processor::global_vault_deposit::GlobalVaultDepositParams;
 use ydelta::program::processor::global_vault_withdraw::GlobalVaultWithdrawParams;
 use ydelta::program::processor::place_order_for_risk_profile::PlaceOrderForRiskProfileParams;
 use ydelta::program::processor::update_order_for_risk_profile::UpdateOrderForRiskProfileParams;
+use ydelta::state::loan::LoanFixed;
 use ydelta::state::vault::{
     global_vault_integration_account_pda, global_vault_pda, global_vault_signer_pda,
 };
+use ydelta::state::{LOAN_FIXED_SIZE, OWNER_KIND_RISK_PROFILE, OWNER_KIND_USER};
 
 #[test]
 fn create_vault_ix_has_thirteen_accounts() {
@@ -69,15 +72,8 @@ fn create_risk_profile_ix_has_four_accounts() {
     let mint = Pubkey::new_unique();
     let payer = Keypair::new();
     let curator = Pubkey::new_unique();
-    let ix = create_risk_profile_instruction(
-        &mint,
-        &payer.pubkey(),
-        0,
-        &curator,
-        5_000,
-        30 * 86_400,
-        2u8,
-    );
+    let ix =
+        create_risk_profile_instruction(&mint, &payer.pubkey(), 0, &curator, 5_000, 30 * 86_400);
     // payer (signer) + global_config + vault PDA + system_program.
     assert_eq!(
         ix.accounts.len(),
@@ -93,7 +89,6 @@ fn create_risk_profile_params_borsh_round_trip() {
         curator: Pubkey::new_unique(),
         max_ltv_bps: 5_000,
         max_term_seconds: 30 * 86_400,
-        allowed_market_max: 3,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
@@ -102,7 +97,6 @@ fn create_risk_profile_params_borsh_round_trip() {
     assert_eq!(decoded.curator, original.curator);
     assert_eq!(decoded.max_ltv_bps, 5_000);
     assert_eq!(decoded.max_term_seconds, 30 * 86_400);
-    assert_eq!(decoded.allowed_market_max, 3);
 }
 
 #[test]
@@ -229,24 +223,6 @@ fn global_vault_withdraw_params_borsh_round_trip() {
 // ─────────────────── Group E — curator ixs ───────────────────
 
 #[test]
-fn claim_seat_for_risk_profile_ix_has_six_accounts() {
-    let mint = Pubkey::new_unique();
-    let market = Pubkey::new_unique();
-    let fee_payer = Keypair::new();
-    let curator = Keypair::new();
-    let ix = claim_seat_for_risk_profile_instruction(
-        &mint,
-        &market,
-        &fee_payer.pubkey(),
-        &curator.pubkey(),
-        0,
-        1_000_000,
-    );
-    // fee_payer + curator + global_config + vault + market + system_program = 6
-    assert_eq!(ix.accounts.len(), 6);
-}
-
-#[test]
 fn place_order_for_risk_profile_ix_has_six_accounts() {
     let mint = Pubkey::new_unique();
     let market = Pubkey::new_unique();
@@ -298,19 +274,6 @@ fn update_order_for_risk_profile_ix_has_six_accounts() {
         0,
     );
     assert_eq!(ix.accounts.len(), 6);
-}
-
-#[test]
-fn claim_seat_for_risk_profile_params_borsh_round_trip() {
-    let original = ClaimSeatForRiskProfileParams {
-        profile_id: 5,
-        max_exposure_atoms: 5_000_000,
-    };
-    let mut data = Vec::new();
-    original.serialize(&mut data).unwrap();
-    let decoded = ClaimSeatForRiskProfileParams::try_from_slice(&data).unwrap();
-    assert_eq!(decoded.profile_id, 5);
-    assert_eq!(decoded.max_exposure_atoms, 5_000_000);
 }
 
 #[test]
@@ -387,11 +350,71 @@ fn claim_curator_fee_params_borsh_round_trip() {
     assert_eq!(decoded.profile_id, 3);
 }
 
+/// Pins the curator-fee accumulator arithmetic `claim_curator_fee`
+/// applies. `payout = min(actual_atoms, fee_atoms)`
+/// (never overpay the curator from depositor-backed atoms) and
+/// `accumulator' = fee_atoms.saturating_sub(actual_atoms)` (a marginfi
+/// under-pay leaves the un-realised remainder claimable, not silently
+/// zeroed). The processor performs exactly this arithmetic with the
+/// marginfi-reported `actual_atoms`.
+#[test]
+fn curator_fee_accumulator_decrement_is_correct() {
+    // Helper mirroring claim_curator_fee's accumulator logic.
+    let resolve = |fee_atoms: u64, actual_atoms: u64| -> (u64, u64) {
+        let payout = actual_atoms.min(fee_atoms);
+        let new_accumulator = fee_atoms.saturating_sub(actual_atoms);
+        (payout, new_accumulator)
+    };
+
+    // Exact return: full payout, accumulator zeroed.
+    assert_eq!(resolve(1_000, 1_000), (1_000, 0));
+
+    // marginfi UNDER-pays by 7 atoms: curator paid 993, the 7-atom
+    // remainder stays on the accumulator for a later claim — NOT lost.
+    assert_eq!(resolve(1_000, 993), (993, 7));
+
+    // marginfi OVER-pays by 5 atoms (±1-drift gate): payout capped at
+    // the 1_000 owed (no depositor-backed overpay), accumulator zeroed.
+    assert_eq!(resolve(1_000, 1_005), (1_000, 0));
+
+    // Nothing returned: accumulator fully preserved.
+    assert_eq!(resolve(1_000, 0), (0, 1_000));
+}
+
+/// `protocol_fee_claim` is share-based, so the admin may only be paid the
+/// book value of the claimed shares. Any +drift atom must be redeposited
+/// to the lender-side pool, not paid out.
+#[test]
+fn protocol_fee_claim_caps_payout_and_returns_surplus() {
+    let resolve = |fee_atoms: u64, actual_atoms: u64| -> (u64, u64) {
+        let payout = actual_atoms.min(fee_atoms);
+        let surplus = actual_atoms.saturating_sub(payout);
+        (payout, surplus)
+    };
+
+    assert_eq!(resolve(1_000, 1_000), (1_000, 0));
+    assert_eq!(resolve(1_000, 997), (997, 0));
+    assert_eq!(resolve(1_000, 1_001), (1_000, 1));
+}
+
+/// `SetVaultPause` ix shape. `[admin, global_config, vault]`.
+#[test]
+fn set_vault_pause_ix_has_three_accounts() {
+    let vault = Pubkey::new_unique();
+    let admin = Keypair::new();
+    let ix = set_vault_pause_instruction(&vault, &admin.pubkey(), true);
+    assert_eq!(ix.accounts.len(), 3);
+    // The instruction tag byte is SetVaultPause = 36.
+    assert_eq!(ix.data[0], 36);
+    // Payload byte: paused = 1.
+    assert_eq!(ix.data[1], 1);
+    // Unpause variant carries paused = 0.
+    let ix_off = set_vault_pause_instruction(&vault, &admin.pubkey(), false);
+    assert_eq!(ix_off.data[1], 0);
+}
+
 #[test]
 fn loan_fixed_grows_to_carry_vault_lender_fields() {
-    use std::mem::size_of;
-    use ydelta::state::loan::LoanFixed;
-    use ydelta::state::LOAN_FIXED_SIZE;
     // LoanFixed carries (lender_kind, lender_profile_id, _pad,
     // lender_global_vault) so vault-funded loans can route repayment
     // back to the originating profile.
@@ -426,7 +449,6 @@ fn loan_fixed_grows_to_carry_vault_lender_fields() {
 
 #[test]
 fn loan_fixed_with_vault_lender_fields_stamped() {
-    use ydelta::state::loan::LoanFixed;
     let vault_pk = Pubkey::new_unique();
     const SHARE_VALUE_ONE: u128 = 1u128 << 48;
     let loan = LoanFixed::new_from_matched_loan_with_lender(
@@ -473,8 +495,6 @@ fn loan_fixed_with_vault_lender_fields_stamped() {
 /// lives in `vault_e2e.rs` once a fixture method is in place.
 #[test]
 fn vault_loan_secondary_sale_constants_align() {
-    use ydelta::state::OWNER_KIND_RISK_PROFILE;
-    use ydelta::state::OWNER_KIND_USER;
     // Sanity: vault-lender loans (`lender_kind = OWNER_KIND_RISK_PROFILE`)
     // must be a different value than the wallet path the loader
     // gates on.

@@ -57,81 +57,59 @@ pub enum YdeltaError {
     SelfMatchForbidden = 23,
     #[error("Matched collateral below required LTV at current oracle prices")]
     CollateralBelowMatchLTV = 24,
-    // ─── Secondary loan sale (lender OB exit) ───
-    #[error("SecondaryLoanSale: signer's seat is not the loan's current lender")]
-    SecondaryNotCurrentLender = 25,
-    #[error("SecondaryLoanSale: a resting secondary bid already exists for this loan")]
-    SecondaryDuplicate = 26,
-    #[error("SecondaryLoanSale: only Limit order_type is permitted for secondary bids")]
-    SecondaryOrderTypeInvalid = 27,
-    #[error("SecondaryLoanSale: target loan must be Fixed (P2Pool loans are not resellable)")]
-    SecondaryLoanWrongType = 28,
-    #[error("SecondaryLoanSale: target loan has no outstanding debt")]
-    SecondaryLoanSettled = 29,
-    #[error("SecondaryLoanSale split: post-split LTV check failed on at least one sub-loan")]
-    SecondarySplitLtvFailed = 30,
-    #[error("SecondaryLoanSale: rate / term / principal / collateral are loan-snapshots and cannot be updated")]
-    SecondaryFieldImmutable = 31,
-    #[error("SecondaryLoanSale: target loan has matured; reject at placement")]
-    SecondaryLoanMatured = 32,
     // ─── GlobalVault ───
     #[error("vault: passed mint does not match GlobalVaultFixed.mint")]
-    VaultWrongMint = 33,
+    VaultWrongMint = 25,
     #[error("vault: profile_id not found in vault.risk_profiles tree")]
-    VaultProfileNotFound = 34,
-    #[error(
-        "create_risk_profile: allowed_market_max exceeds RISK_PROFILE_ALLOWED_MARKETS_CAP (8)"
-    )]
-    VaultProfileAllowedMarketsExceeded = 35,
+    VaultProfileNotFound = 26,
+    // Discriminant 27 is intentionally unused.
     #[error("vault order: term_seconds exceeds RiskProfile.max_term_seconds")]
-    VaultOrderTermExceedsProfileMax = 36,
+    VaultOrderTermExceedsProfileMax = 28,
     #[error("vault: signer is not RiskProfile.curator")]
-    VaultCuratorRequired = 37,
+    VaultCuratorRequired = 29,
     #[error("vault: signer is not GlobalVaultFixed.global_vault_admin")]
-    VaultAdminRequired = 38,
-    #[error("claim_seat_for_risk_profile: a vault-owned ClaimedSeat already exists for (vault, profile_id) in this market")]
-    VaultProfileSeatExists = 39,
+    VaultAdminRequired = 30,
+    // Discriminant 31 is intentionally unused.
     #[error("place_order_for_risk_profile: a RiskProfileOrderRef already exists for (market, profile_id)")]
-    VaultProfileOrderExists = 40,
+    VaultProfileOrderExists = 32,
     #[error("global_vault_withdraw: idle_principal_atoms < requested atoms (deployed liquidity cannot be withdrawn until repaid)")]
-    VaultInsufficientIdleAtoms = 41,
+    VaultInsufficientIdleAtoms = 33,
     #[error("vault: profile has nonzero seats / orders / loans / shares; cannot remove")]
-    VaultProfileNotEmpty = 42,
-    #[error("vault order: filled atoms would exceed market-side seat's max_exposure_atoms (per-market cap)")]
-    VaultMarketExposureCapExceeded = 43,
+    VaultProfileNotEmpty = 34,
+    // Discriminant 35 is intentionally unused.
     #[error("create_risk_profile: profile_id already exists in vault")]
-    VaultProfileIdExists = 44,
+    VaultProfileIdExists = 36,
     #[error("create_risk_profile: max_ltv_bps must be between 1 and 9_999")]
-    VaultProfileLtvOutOfRange = 45,
+    VaultProfileLtvOutOfRange = 37,
     #[error("create_risk_profile: max_term_seconds must be > 0")]
-    VaultProfileTermInvalid = 46,
+    VaultProfileTermInvalid = 38,
     // ─── Liquidation ───
     #[error(
         "settle_matured_loan: now <= matures_at_unix + grace_period_seconds (loan not yet matured)"
     )]
-    LoanNotMatured = 47,
+    LoanNotMatured = 39,
     #[error("liquidate_loan: current LTV is below maintenance_ltv (loan still solvent)")]
-    LoanStillSolvent = 48,
+    LoanStillSolvent = 40,
     #[error("liquidation: liquidator's debt_token has insufficient atoms to cover outstanding")]
-    LiquidatorPaymentInsufficient = 49,
+    LiquidatorPaymentInsufficient = 41,
     #[error("liquidation: collateral_atoms < required debt-equivalent + bonus (bad debt logged via BadDebtLog; insurance fund coverage is post-mainnet)")]
-    LiquidationCollateralUnderflow = 50,
+    LiquidationCollateralUnderflow = 42,
     #[error("market admin signer required (signer != MarketFixed.admin)")]
-    MarketAdminRequired = 51,
+    MarketAdminRequired = 43,
     #[error("invalid fee config: bps field exceeds 10_000 or other constraint")]
-    InvalidFeeConfig = 52,
+    InvalidFeeConfig = 44,
     #[error("admin transfer accept: signer != pending_admin")]
-    PendingAdminMismatch = 53,
+    PendingAdminMismatch = 45,
     #[error("market is paused — state-mutating ix rejected")]
-    MarketPaused = 54,
+    MarketPaused = 46,
     #[error("global pause active — state-mutating ix rejected")]
-    GlobalPaused = 55,
+    GlobalPaused = 47,
     #[error("protocol admin signer required (signer != GlobalConfig.protocol_admin)")]
-    ProtocolAdminRequired = 56,
-    #[error("borrower_ltv: actual loan LTV at oracle prices exceeds borrower's declared cap")]
-    BorrowerLtvExceeded = 57,
-    #[error("borrower_ltv: declared value exceeds marginfi's init LTV ceiling")]
-    BorrowerLtvOverInit = 58,
+    ProtocolAdminRequired = 48,
+    #[error("degenerate oracle reading (zero price or zero weight) — liquidation gate cannot prove a breach")]
+    OracleDegenerate = 49,
+    #[error("vault is paused — state-mutating ix rejected")]
+    VaultPaused = 50,
 }
 
 impl From<YdeltaError> for ProgramError {

@@ -16,6 +16,10 @@ use crate::validation::{
 };
 
 /// Build a `Withdraw` instruction.
+///
+/// When `withdraw_all` is true the instruction drains the seat's entire
+/// withdrawable balance on the side selected by `mint`, and `amount_atoms`
+/// is ignored. When false it withdraws exactly `amount_atoms`.
 #[allow(clippy::too_many_arguments)]
 pub fn withdraw_instruction(
     market: &Pubkey,
@@ -27,7 +31,12 @@ pub fn withdraw_instruction(
     marginfi_group: &Pubkey,
     debt_bank: &Pubkey,
     collateral_bank: &Pubkey,
-    bank_being_withdrawn: &Pubkey,
+    // `bank_being_withdrawn` is part of the builder's documented call
+    // surface but is not encoded into the instruction: the side is
+    // disambiguated from trader_token's mint. Debt withdrawals come
+    // from the lender-side account; collateral withdrawals from the
+    // borrower-side account.
+    _bank_being_withdrawn: &Pubkey,
     liquidity_vault: &Pubkey,
     bank_liquidity_vault_authority: &Pubkey,
     debt_oracles: &[Pubkey],
@@ -35,11 +44,8 @@ pub fn withdraw_instruction(
     marginfi_program: &Pubkey,
     amount_atoms: u64,
     trader_index_hint: Option<DataIndex>,
+    withdraw_all: bool,
 ) -> Instruction {
-    let _ = bank_being_withdrawn; // documented for callers; the side is
-                                  // disambiguated from trader_token's mint.
-                                  // Debt withdrawals come from the lender-side account; collateral
-                                  // withdrawals from the borrower-side account.
     let marginfi_account = if mint == debt_mint {
         get_lender_integration_account_address(market).0
     } else {
@@ -51,6 +57,7 @@ pub fn withdraw_instruction(
     WithdrawParams {
         amount_atoms,
         trader_index_hint,
+        withdraw_all,
     }
     .serialize(&mut data)
     .unwrap();

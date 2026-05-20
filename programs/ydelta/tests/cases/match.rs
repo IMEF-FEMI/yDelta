@@ -1,362 +1,352 @@
+//! Matching-engine mechanics for the quote-only book.
+//!
+//! The only resting orders are vault risk-profile asks; the taker is
+//! always a borrower IOC bid. These
+//! tests pin the cross mechanics — best-ask-first ordering, the
+//! term-incompatible walk-past, partial fills, and the vault-side
+//! match-time encumbrance bump — using one ask per (profile, market).
+//!
+//! Setup mirrors `vault_match.rs`: a vault is funded, one or more risk
+//! profiles each post an open-ended ask, and a borrower bids to cross
+//! them.
+
 use solana_sdk::signer::Signer;
 
-use ydelta::state::{OrderType, Side};
+use crate::test_utils::{mainnet, MarketFixture};
 
-use crate::test_utils::TestFixture;
-
-async fn fund_trader(
-    fixture: &mut TestFixture,
-    debt_amt: u64,
-    coll_amt: u64,
+/// Spin up a vault with `n` risk profiles, each funded and resting one
+/// open-ended ask at the supplied `(rate_bps, term_seconds, idle_atoms)`.
+/// Returns the borrower keypair after seeding its wSOL collateral seat.
+///
+/// Vault asks are unbounded in the quote-only model — each cross is
+/// capped only by the profile's live idle balance (`idle_atoms` here).
+async fn vault_with_asks(
+    fixture: &MarketFixture,
+    profile_specs: &[(u16, u32, u64)],
 ) -> solana_sdk::signature::Keypair {
-    let trader = fixture.create_trader(0, 0).await;
-    fixture.claim_seat(&trader).await.unwrap();
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
 
-    let debt_ata = fixture
-        .create_token_account_and_mint(&trader.pubkey(), &fixture.debt_mint_key(), debt_amt)
-        .await;
-    let coll_ata = fixture
-        .create_token_account_and_mint(&trader.pubkey(), &fixture.collateral_mint_key(), coll_amt)
-        .await;
+    let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
+    fixture.put_token_account(
+        depositor_token,
+        mainnet::usdc_mint(),
+        depositor.pubkey(),
+        100_000_000_000,
+    );
     fixture.refresh_blockhash().await;
-    let _ = (debt_ata, coll_ata);
-    if debt_amt > 0 {
-        fixture
-            .seed_seat_shares(&trader.pubkey(), debt_amt as u128, true)
-            .await;
-    }
-    if coll_amt > 0 {
-        fixture
-            .seed_seat_shares(&trader.pubkey(), coll_amt as u128, false)
-            .await;
-    }
-    trader
-}
+    fixture.create_vault(&admin).await.unwrap();
 
-#[tokio::test]
-async fn match_full_fill_drains_both_encumbrances() {
-    let mut fixture = TestFixture::new().await;
-    let alice = fund_trader(&mut fixture, 1_000, 0).await;
-    let bob = fund_trader(&mut fixture, 0, 5_000).await;
-
-    // alice asks 700 @ 600 / 30d
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            700,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    // bob bids 700 @ 800 / 30d, collateral 1000
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            700,
-            1_000,
-        )
-        .await
-        .unwrap();
-
-    let alice_seat = fixture.read_seat(&alice.pubkey()).await;
-    let bob_seat = fixture.read_seat(&bob.pubkey()).await;
-    let market = fixture.read_market().await;
-
-    // Matched atoms leave `*_encumbered` without an immediate re-credit
-    // on the seats. Encumbered drops to zero on both sides; the
-    // pending-loan amount is parked in `matched_loan_sequence` for the
-    // cranker to promote.
-    assert_eq!(alice_seat.debt_encumbered_shares, 0);
-    assert_eq!(alice_seat.debt_withdrawable_shares, 300); // 1000 - 700
-    assert_eq!(bob_seat.collateral_encumbered_shares, 0);
-    assert_eq!(bob_seat.collateral_withdrawable_shares, 4_000); // 5000 - 1000
-    assert_eq!(market.fixed.matched_loan_sequence, 1);
-    assert_eq!(fixture.count_orders(Side::Ask).await, 0);
-    assert_eq!(fixture.count_orders(Side::Bid).await, 0);
-}
-
-#[tokio::test]
-async fn match_partial_fill_resting_maker() {
-    let mut fixture = TestFixture::new().await;
-    let alice = fund_trader(&mut fixture, 1_000, 0).await;
-    let bob = fund_trader(&mut fixture, 0, 5_000).await;
-
-    // alice asks 1000 @ 600 / 30d
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            1_000,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    // bob bids 600 @ 800 / 30d, collateral 900
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            600,
-            900,
-        )
-        .await
-        .unwrap();
-
-    let alice_seat = fixture.read_seat(&alice.pubkey()).await;
-    let bob_seat = fixture.read_seat(&bob.pubkey()).await;
-    let market = fixture.read_market().await;
-
-    assert_eq!(alice_seat.debt_encumbered_shares, 400); // 600 matched, 400 still encumbered
-    assert_eq!(bob_seat.collateral_encumbered_shares, 0);
-    assert_eq!(market.fixed.matched_loan_sequence, 1);
-    assert_eq!(fixture.count_orders(Side::Ask).await, 1);
-    assert_eq!(fixture.count_orders(Side::Bid).await, 0);
-}
-
-#[tokio::test]
-async fn match_account_count_constant_in_n() {
-    use solana_program_test::ProgramTestContext;
-    use std::cell::RefMut;
-
-    let mut fixture = TestFixture::new().await;
-
-    // Five distinct asks — five distinct makers — for a single bid to sweep.
-    let mut askers = Vec::new();
-    for i in 0..5u16 {
-        let asker = fund_trader(&mut fixture, 100, 0).await;
+    for (i, (rate_bps, term_seconds, idle_atoms)) in profile_specs.iter().enumerate() {
+        let profile_id = i as u8;
+        let curator = fixture.create_trader().await;
         fixture.refresh_blockhash().await;
         fixture
-            .place_order(
-                &asker,
-                Side::Ask,
-                OrderType::Limit,
-                500 + i * 50, // 500, 550, 600, 650, 700
-                30 * 86_400,
-                100,
-                0,
+            .create_risk_profile(
+                &admin,
+                profile_id,
+                curator.pubkey(),
+                /*max_ltv_bps=*/ 8_000,
+                /*max_term_seconds=*/ 90 * 86_400,
             )
             .await
             .unwrap();
         fixture.refresh_blockhash().await;
-        askers.push(asker);
-    }
-
-    let bob = fund_trader(&mut fixture, 0, 1_000).await;
-    fixture.refresh_blockhash().await;
-
-    // Build the bid ix manually so we can inspect its `account_keys.len()`.
-    let debt_bank_lva = fixture.derive_marginfi_lva(fixture.debt_bank);
-    let borrower_debt_token = fixture.signer_debt_token(&bob.pubkey()).await;
-    let bid_ix =
-        ydelta::program::instruction_builders::place_order_instruction::place_order_instruction(
-            &fixture.market_key(),
-            &bob.pubkey(),
-            &fixture.marginfi_group,
-            &fixture.debt_bank,
-            &fixture.collateral_bank,
-            &[fixture.debt_oracle],
-            &[fixture.collateral_oracle],
-            &fixture.debt_liquidity_vault,
-            &debt_bank_lva,
-            &borrower_debt_token,
-            &fixture.debt_mint.pubkey(),
-            &spl_token::id(),
-            &marginfi_mocks::ID,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            500,
-            750,
-            0,
-            // OB_ONLY — synth-bank native fixture can't satisfy
-            // marginfi.borrow's LVA seed check, so the residual must go to
-            // Drop rather than P2PoolBorrow. Tests that exercise P2Pool
-            // live under MarketFixture (real marginfi banks).
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
-            None,
-            None, // borrower_ltv_bps default
-        );
-    // Matching tx carries marginfi/oracle accounts for LTV-at-match
-    // + P2Pool + the P2Pool deposit-back accounts + the GlobalVault
-    // PDA for match-time vault encumbrance. Constant in N (resting
-    // orders crossed).
-    // 21 = 3 (payer/market/system) + 10 (marginfi/oracle) + 2
-    //   (borrower debt ATA + token program for the P2Pool borrow
-    //   CPI destination)
-    //   + 2 (signer's UserAccount PDA + system_program for
-    //   auto-create) + 2 (lender_marginfi_account +
-    //   market_debt_vault for P2Pool deposit-back)
-    //   + 1 (vault PDA for match-time vault state updates when
-    //   crossing vault-owned makers)
-    //   + 1 (global_config).
-    assert_eq!(bid_ix.accounts.len(), 21);
-
-    let blockhash = fixture.context.borrow().last_blockhash;
-    let payer = fixture.payer_keypair();
-    let bob_kp = bob.insecure_clone();
-    let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
-        &[bid_ix],
-        Some(&payer.pubkey()),
-        &[&payer, &bob_kp],
-        blockhash,
-    );
-    {
-        let client: RefMut<ProgramTestContext> = fixture.context.borrow_mut();
-        client.banks_client.process_transaction(tx).await.unwrap();
-    }
-
-    let market = fixture.read_market().await;
-    // All five asks crossed (5 × 100 = 500 principal exhausted).
-    assert_eq!(market.fixed.matched_loan_sequence, 5);
-    assert_eq!(fixture.count_orders(Side::Ask).await, 0);
-}
-
-#[tokio::test]
-async fn match_picks_best_ask_first_when_taker_partial() {
-    // Three asks at 500, 600, 700 (each 100 atoms). A 100-atom bid at
-    // 800 should match exactly the 500-rate ask (best price for the
-    // borrower) and leave the 600/700 asks resting. This catches the
-    // case where the matching engine walks the wrong end of the rate
-    // tree first.
-    let mut fixture = TestFixture::new().await;
-
-    let mut askers = Vec::new();
-    for (i, rate) in [500u16, 600, 700].iter().enumerate() {
-        let asker = fund_trader(&mut fixture, 100, 0).await;
-        fixture.refresh_blockhash().await;
         fixture
-            .place_order(
-                &asker,
-                Side::Ask,
-                OrderType::Limit,
-                *rate,
-                30 * 86_400,
-                100,
-                0,
-            )
+            .global_vault_deposit(&depositor, depositor_token, profile_id, *idle_atoms)
             .await
-            .unwrap_or_else(|_| panic!("ask #{i} at {rate}bps should rest"));
+            .unwrap();
         fixture.refresh_blockhash().await;
-        askers.push(asker);
+        // No claim-seat step — the vault market-seat is auto-created on
+        // the curator's first place_order_for_risk_profile.
+        fixture
+            .place_order_for_risk_profile(&curator, profile_id, *rate_bps, *term_seconds, 0)
+            .await
+            .unwrap();
     }
 
-    let bob = fund_trader(&mut fixture, 0, 1_000).await;
+    let borrower = fixture.create_trader().await;
+    fixture.claim_seat(&borrower).await;
+    let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
+    // The required collateral is denominated in wSOL lamports — backing
+    // tens of dollars of USDC debt against ~$100-200 SOL needs billions
+    // of lamports. Fund/deposit generously so any bid in these tests can
+    // encumber its collateral.
+    fixture.put_wsol_token_account(borrower_wsol, borrower.pubkey(), 6_000_000_000);
     fixture.refresh_blockhash().await;
     fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
+        .deposit(
+            &borrower,
+            borrower_wsol,
+            /*is_debt=*/ false,
+            5_000_000_000,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    borrower
+}
+
+/// A borrower bid smaller than the vault ask leaves the ask resting and
+/// only encumbers the matched principal. The resting risk-profile ask
+/// is never removed by the matching engine.
+#[tokio::test]
+async fn match_partial_fill_leaves_vault_ask_resting() {
+    let fixture = MarketFixture::new().await;
+    // Single profile, ask at 500bps / 30d.
+    let borrower = vault_with_asks(&fixture, &[(500, 30 * 86_400, 100_000_000)]).await;
+
+    // Bid for 1M atoms (vault ask is open-ended; only the bid size and
+    // the idle pool cap the cross).
+    let principal_atoms: u64 = 1_000_000;
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            /*rate_bps=*/ 800,
             30 * 86_400,
-            100,
-            200,
+            principal_atoms,
+            /*collateral_atoms=*/ 50_000_000,
+            /*flags=*/ 0,
         )
         .await
         .unwrap();
 
-    // Exactly one match landed.
-    let market = fixture.read_market().await;
-    assert_eq!(market.fixed.matched_loan_sequence, 1);
-    // Two asks still resting — the matched ask was the 500-rate one.
-    assert_eq!(fixture.count_orders(Side::Ask).await, 2);
-
-    // Confirm by checking the 500-rate asker's seat: their debt
-    // encumbrance fully drained (matched), the others' didn't.
-    let alice_seat = fixture.read_seat(&askers[0].pubkey()).await;
-    let bob_seat_for_600 = fixture.read_seat(&askers[1].pubkey()).await;
-    let bob_seat_for_700 = fixture.read_seat(&askers[2].pubkey()).await;
-    assert_eq!(
-        alice_seat.debt_encumbered_shares, 0,
-        "best-priced ask (500bps) should have been picked first"
+    // Exactly one fill; the vault ask is still on book.
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(market.matched_loan_sequence, 1, "one MatchedLoan inserted");
+    assert_ne!(
+        market.asks_best_index,
+        hypertree::NIL,
+        "risk-profile ask must persist (only the curator removes it)"
     );
-    assert_eq!(bob_seat_for_600.debt_encumbered_shares, 100);
-    assert_eq!(bob_seat_for_700.debt_encumbered_shares, 100);
+
+    // Vault encumbrance bumped by exactly the matched principal.
+    let profile = fixture.read_risk_profile(0).await;
+    assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
 }
 
+/// Three profiles post asks at 500 / 600 / 700 bps. A small borrower
+/// bid must cross the *best* (lowest-rate) ask first — the matching
+/// engine walks the asks tree from `asks_best_index`, which under the
+/// `RestingOrder` Ord direction is the cheapest ask.
 #[tokio::test]
-async fn match_skips_term_incompatible_best_and_walks_to_compatible() {
-    // Best ask has too-short term for the bid, but a worse-rate ask
-    // accepts longer terms. Matching should walk past the term-
-    // incompatible best maker rather than bailing out.
-    let mut fixture = TestFixture::new().await;
+async fn match_picks_best_ask_first() {
+    let fixture = MarketFixture::new().await;
+    let borrower = vault_with_asks(
+        &fixture,
+        &[
+            (700, 30 * 86_400, 100_000_000), // profile 0 — worst rate
+            (500, 30 * 86_400, 100_000_000), // profile 1 — best rate
+            (600, 30 * 86_400, 100_000_000), // profile 2
+        ],
+    )
+    .await;
 
-    // ask A: 500bps / 7-day term (best rate, but too short)
-    let alice = fund_trader(&mut fixture, 100, 0).await;
-    fixture.refresh_blockhash().await;
+    // Bid 1M atoms at 800bps — crosses exactly one ask. The engine
+    // should hit profile 1 (500bps), the cheapest.
     fixture
-        .place_order(&alice, Side::Ask, OrderType::Limit, 500, 7 * 86_400, 100, 0)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    // ask B: 700bps / 60-day term (worse rate but compatible term)
-    let charlie = fund_trader(&mut fixture, 100, 0).await;
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &charlie,
-            Side::Ask,
-            OrderType::Limit,
-            700,
-            60 * 86_400,
-            100,
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            30 * 86_400,
+            1_000_000,
+            50_000_000,
             0,
         )
         .await
         .unwrap();
-    fixture.refresh_blockhash().await;
 
-    // bid: 800bps / 30-day term. bid_term=30d > ask A's 7d → skip A.
-    // bid_term=30d <= ask B's 60d → match B.
-    let bob = fund_trader(&mut fixture, 0, 1_000).await;
-    fixture.refresh_blockhash().await;
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(market.matched_loan_sequence, 1, "one fill");
+
+    // Only profile 1 (the 500bps ask) was encumbered.
+    let p0 = fixture.read_risk_profile(0).await;
+    let p1 = fixture.read_risk_profile(1).await;
+    let p2 = fixture.read_risk_profile(2).await;
+    assert_eq!(
+        p1.encumbered_in_orders_atoms, 1_000_000,
+        "best-priced (500bps) ask must be crossed first"
+    );
+    assert_eq!(p0.encumbered_in_orders_atoms, 0, "700bps ask untouched");
+    assert_eq!(p2.encumbered_in_orders_atoms, 0, "600bps ask untouched");
+}
+
+/// The best ask has a term too short for the bid; a worse-rate ask
+/// accepts a long enough term. The matching engine must walk past the
+/// term-incompatible best maker rather than bailing out.
+#[tokio::test]
+async fn match_skips_term_incompatible_best_and_walks_on() {
+    let fixture = MarketFixture::new().await;
+    let borrower = vault_with_asks(
+        &fixture,
+        &[
+            (500, 7 * 86_400, 100_000_000), // profile 0 — best rate, term too short
+            (700, 60 * 86_400, 100_000_000), // profile 1 — worse rate, long term
+        ],
+    )
+    .await;
+
+    // Bid term = 30d. Profile 0's 7d ask is term-incompatible
+    // (bid_term 30d > ask_term 7d) → skipped. Profile 1's 60d ask
+    // accepts it.
     fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
             800,
             30 * 86_400,
-            100,
-            200,
+            1_000_000,
+            50_000_000,
+            0,
         )
         .await
         .unwrap();
 
-    // Exactly one match landed (against ask B).
-    let market = fixture.read_market().await;
-    assert_eq!(market.fixed.matched_loan_sequence, 1);
-    // ask A still rests (term-incompatible).
-    let alice_seat = fixture.read_seat(&alice.pubkey()).await;
+    let market = fixture.read_market_fixed().await;
     assert_eq!(
-        alice_seat.debt_encumbered_shares, 100,
-        "term-incompatible best ask should be untouched"
+        market.matched_loan_sequence, 1,
+        "exactly one fill (profile 1)"
     );
-    // ask B was matched.
-    let charlie_seat = fixture.read_seat(&charlie.pubkey()).await;
+
+    let p0 = fixture.read_risk_profile(0).await;
+    let p1 = fixture.read_risk_profile(1).await;
     assert_eq!(
-        charlie_seat.debt_encumbered_shares, 0,
-        "compatible second-best ask should have matched"
+        p0.encumbered_in_orders_atoms, 0,
+        "term-incompatible best ask must be skipped"
     );
-    assert_eq!(fixture.count_orders(Side::Ask).await, 1);
+    assert_eq!(
+        p1.encumbered_in_orders_atoms, 1_000_000,
+        "compatible worse-rate ask must be crossed"
+    );
+}
+
+/// A bid larger than the best ask's idle-pool-capped depth sweeps
+/// across multiple vault asks. Each cross records its own MatchedLoan.
+#[tokio::test]
+async fn match_sweeps_multiple_vault_asks() {
+    let fixture = MarketFixture::new().await;
+    // Two profiles, both at the same rate/term — the bid crosses both.
+    let borrower = vault_with_asks(
+        &fixture,
+        &[
+            (500, 30 * 86_400, 50_000_000),
+            (500, 30 * 86_400, 50_000_000),
+        ],
+    )
+    .await;
+
+    // Each profile has only 50M idle. A 70M bid fully consumes
+    // profile 0's idle (50M) and partially fills profile 1 (20M);
+    // the unbounded asks let the bid sweep across both profiles.
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            30 * 86_400,
+            70_000_000,
+            // 70_000_000 USDC atoms ($70) of debt; post ~3 SOL of wSOL
+            // collateral — comfortably over the requirement.
+            3_000_000_000,
+            ydelta::state::market_helpers::FLAG_OB_ONLY,
+        )
+        .await
+        .unwrap();
+
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(
+        market.matched_loan_sequence, 2,
+        "the bid swept both vault asks — one MatchedLoan each"
+    );
+
+    // Total encumbrance across the two profiles equals the bid size.
+    let p0 = fixture.read_risk_profile(0).await;
+    let p1 = fixture.read_risk_profile(1).await;
+    assert_eq!(
+        p0.encumbered_in_orders_atoms + p1.encumbered_in_orders_atoms,
+        70_000_000,
+        "swept fills sum to the bid principal"
+    );
+}
+
+/// A fully-filled multi-cross bid must leave ZERO collateral frozen in
+/// the borrower's encumbered bucket. The per-cross collateral split
+/// FLOORS (`mul_div_u64`); without a dust sweep on the final cross,
+/// `Σ matched_collateral < bid collateral` and the floored-off atoms
+/// stay permanently stuck in the borrower seat's
+/// `collateral_encumbered_shares` (un-withdrawable, unattributed to any
+/// loan). The matcher sweeps ALL remaining collateral into the last cross.
+///
+/// Setup: two profiles split a 70M-atom bid 50M / 20M. With 3 SOL of
+/// collateral the pro-rata split is `3e9 × 50/70` and `3e9 × 20/70` —
+/// neither divides evenly, so a plain floored sum is 2_999_999_999
+/// (1 atom of dust). The dust sweep makes the sum exactly 3_000_000_000
+/// and the borrower's encumbered collateral drain to 0.
+#[tokio::test]
+async fn match_multi_cross_full_fill_freezes_no_collateral_dust() {
+    let fixture = MarketFixture::new().await;
+    // Two profiles, same rate/term — the bid crosses both. 50M idle on
+    // profile 0, plenty on profile 1, so a 70M bid fully fills.
+    let borrower = vault_with_asks(
+        &fixture,
+        &[
+            (500, 30 * 86_400, 50_000_000),
+            (500, 30 * 86_400, 50_000_000),
+        ],
+    )
+    .await;
+
+    let bid_principal: u64 = 70_000_000;
+    // 3 SOL of wSOL collateral. The 50/70 and 20/70 pro-rata splits both
+    // floor — the dust-sweep fix must still account every atom.
+    let bid_collateral: u64 = 3_000_000_000;
+
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            /*rate_bps=*/ 800,
+            30 * 86_400,
+            bid_principal,
+            bid_collateral,
+            // OB_ONLY so the bid fully fills against the book (no P2Pool
+            // residual) — this is the `remaining_principal == 0` branch
+            // the dust-sweep fix targets.
+            ydelta::state::market_helpers::FLAG_OB_ONLY,
+        )
+        .await
+        .unwrap();
+
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(
+        market.matched_loan_sequence, 2,
+        "the bid swept both vault asks — two MatchedLoans"
+    );
+
+    // (1) Every collateral atom is attributed to a loan — the sum of
+    //     per-loan collateral equals the bid's posted collateral. The
+    //     buggy floored split would sum to 2_999_999_999.
+    let total_loan_collateral = fixture.sum_matched_loan_collateral().await;
+    assert_eq!(
+        total_loan_collateral, bid_collateral,
+        "Σ MatchedLoan.collateral_atoms must equal the bid collateral — \
+         no floored-off dust"
+    );
+
+    // (2) The borrower's seat encumbered-collateral bucket is fully
+    //     drained: a fully-filled bid never rests, so after the matching
+    //     pass nothing should remain encumbered.
+    let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
+    assert_eq!(
+        borrower_seat.collateral_encumbered_shares, 0,
+        "fully-filled multi-cross bid must leave zero collateral frozen \
+         in the borrower's encumbered bucket"
+    );
 }

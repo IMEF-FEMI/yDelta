@@ -33,6 +33,13 @@ pub const NO_EXPIRATION_LAST_VALID_UNIX_TS: i64 = 0;
 /// chosen at the project's inception; do not reuse for any other type.
 pub const MARKET_FIXED_DISCRIMINANT: u64 = 0x79_64_65_6C_74_61_4D_4B; // "ydeltaMK"
 
+/// Current on-chain account-layout version. Stamped into the
+/// `version` field of every versioned header (`MarketFixed`,
+/// `GlobalVaultFixed`, `LoanFixed`, `UserAccountFixed`) at create
+/// time and asserted at load time, so an account written under a
+/// different layout is rejected rather than misparsed.
+pub const ACCOUNT_LAYOUT_VERSION: u8 = 1;
+
 /// Dust gate. Caller-supplied principal must be at least this many
 /// atoms.
 pub const MIN_PRINCIPAL_ATOMS: u64 = 1;
@@ -91,8 +98,3 @@ pub const VAULT_NODE_BLOCK_PAYLOAD_SIZE: usize = VAULT_NODE_BLOCK_SIZE - RBTREE_
 pub const VAULT_NODE_FREE_LIST_BLOCK_SIZE: usize = VAULT_NODE_BLOCK_SIZE - FREE_LIST_OVERHEAD;
 pub const VAULT_CLAIMED_SEAT_SIZE: usize = VAULT_NODE_BLOCK_PAYLOAD_SIZE;
 pub const VAULT_ORDER_REF_SIZE: usize = VAULT_NODE_BLOCK_PAYLOAD_SIZE;
-
-/// Hard upper bound on a profile's `allowed_market_max`. The
-/// `create_risk_profile` ix enforces this ceiling against
-/// caller-supplied `allowed_market_max` values.
-pub const RISK_PROFILE_ALLOWED_MARKETS_CAP: u8 = 8;

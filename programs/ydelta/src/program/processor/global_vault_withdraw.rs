@@ -3,6 +3,7 @@
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use hypertree::{HyperTreeReadOperations, NIL};
 use solana_program::{
     account_info::AccountInfo, clock::Clock, entrypoint::ProgramResult, program::invoke_signed,
     program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
@@ -74,7 +75,6 @@ pub fn process_global_vault_withdraw(
         let v_data: &Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (v_fixed_bytes, v_dynamic) = v_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let v_header: &GlobalVaultFixed = bytemuck::from_bytes(v_fixed_bytes);
-        use hypertree::HyperTreeReadOperations;
         let probe = RiskProfileDepositorSeat::probe(*payer.info.key, params.profile_id);
         let seat_idx = {
             let tree = RiskProfileDepositorSeatTreeReadOnly::new(
@@ -118,13 +118,12 @@ pub fn process_global_vault_withdraw(
     };
 
     // Accrue and compute atoms_out.
-    let (atoms_out, new_total_shares, new_total_assets, principal_decrement) = {
+    let (atoms_out, new_total_shares, mut profile_total_assets_after, _) = {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
-        use hypertree::{HyperTreeReadOperations, NIL};
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
         let profile_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
             tree.lookup_index(&probe)
@@ -135,6 +134,16 @@ pub fn process_global_vault_withdraw(
             "profile_id {} not found in vault",
             params.profile_id
         )?;
+
+        // Read the vault-wide marginfi liquidity ONCE up front (the
+        // integration account is shared by every profile). Used by the
+        // physical-sufficiency check below.
+        let mfi_asset_shares: u128 = crate::protocol::marginfi::read_asset_shares_u128(
+            integration_account.info,
+            lending_pool.info.key,
+        )?;
+        let mfi_atoms: u64 =
+            MarginfiV18Adapter.shares_to_amount(&[lending_pool.info.clone()], mfi_asset_shares)?;
 
         let profile_node = get_mut_helper_risk_profile(dynamic, profile_idx);
         let profile = profile_node.get_mut_value();
@@ -162,34 +171,47 @@ pub fn process_global_vault_withdraw(
             "computed atoms_out is 0 — shares too small to redeem any atoms"
         )?;
 
-        // Reject if the depositor would pull from liquidity that's
-        // reserved for resting orders or already deployed into loans.
+        // ─── Per-profile liquidity gate ───
         //
-        // The cap is denominated in **assets-atoms**, not principal:
-        // `atoms_out` is `shares × total_assets / total_shares`, so it
-        // includes the depositor's slice of accrued yield. The vault's
-        // real-time liquid backing is the marginfi integration
-        // account's `asset_shares × asset_share_value` (yield accrues
-        // there directly). Deployed principal has already left
-        // marginfi to the borrower side and so is naturally absent
-        // from this balance — we only need to reserve
-        // `encumbered_in_orders_atoms`, which still sits in marginfi
-        // until matching withdraws it on-demand to fund the loan.
-        let mfi_asset_shares: u128 = crate::protocol::marginfi::read_asset_shares_u128(
-            integration_account.info,
-            lending_pool.info.key,
-        )?;
-        let mfi_atoms: u64 = MarginfiV18Adapter
-            .shares_to_amount(&[lending_pool.info.clone()], mfi_asset_shares)?;
-        let withdrawable: u64 = mfi_atoms.saturating_sub(profile.encumbered_in_orders_atoms);
+        // The marginfi integration account is shared by EVERY profile
+        // in the vault. Gating only against the vault-wide marginfi
+        // balance would let a depositor in one profile drain atoms that
+        // economically back a DIFFERENT profile. So gate per-profile
+        // against the withdrawing profile's OWN idle asset base:
+        //
+        //   profile_idle = total_principal − deployed − encumbered_in_orders
+        //
+        // `total_principal_atoms` carries the profile's current
+        // withdrawable asset basis: deposits plus realised / physically
+        // accrued gains already sitting in marginfi. `deployed_principal_atoms`
+        // has already left marginfi to the borrower side;
+        // `encumbered_in_orders_atoms` is reserved for a resting order.
+        // Only the idle remainder is the profile's to redeem. We also
+        // keep a vault-wide physical check so the marginfi balance
+        // actually suffices to pay out.
+        let profile_idle: u64 = profile
+            .total_principal_atoms
+            .saturating_sub(profile.deployed_principal_atoms)
+            .saturating_sub(profile.encumbered_in_orders_atoms);
         require!(
-            withdrawable >= atoms_out,
+            profile_idle >= atoms_out,
             YdeltaError::VaultInsufficientIdleAtoms,
-            "marginfi liquidity ({} atoms) − encumbered_in_orders_atoms ({}) < \
-             atoms_out ({}) — wait for repayments or curator to cancel \
-             outstanding orders",
-            mfi_atoms,
+            "profile idle ({} = total_principal {} − deployed {} − encumbered {}) \
+             < atoms_out ({}) — wait for loans to close or orders to cancel",
+            profile_idle,
+            { profile.total_principal_atoms },
+            { profile.deployed_principal_atoms },
             { profile.encumbered_in_orders_atoms },
+            atoms_out
+        )?;
+        // Vault-wide physical-sufficiency check: the shared marginfi
+        // integration account must actually hold enough atoms to settle
+        // this withdrawal.
+        require!(
+            mfi_atoms >= atoms_out,
+            YdeltaError::VaultInsufficientIdleAtoms,
+            "vault marginfi liquidity ({} atoms) < atoms_out ({})",
+            mfi_atoms,
             atoms_out
         )?;
 
@@ -201,6 +223,47 @@ pub fn process_global_vault_withdraw(
             .and_then(|x| x.checked_div(profile.total_shares))
             .ok_or(ProgramError::ArithmeticOverflow)?)
             as u64;
+
+        // ─── Principal-decrement cap ───
+        //
+        // A withdrawal may only reduce the IDLE portion of principal —
+        // it must never push `total_principal` below `deployed +
+        // encumbered`. The proportional `principal_decrement` could
+        // exceed `profile_idle` when a profile has accrued loan yield
+        // (the depositor's shares redeem yield-inflated assets while
+        // principal is largely deployed). Reject in that case — the
+        // depositor must wait for loans to close / orders to cancel.
+        require!(
+            principal_decrement <= profile_idle,
+            YdeltaError::VaultInsufficientIdleAtoms,
+            "principal_decrement ({}) exceeds profile idle ({}) — withdrawal \
+             would strand deployed/encumbered capital; wait for loans to \
+             close or orders to cancel",
+            principal_decrement,
+            profile_idle
+        )?;
+
+        // ─── Forbid burning the last share with capital in flight ───
+        //
+        // The final-burn reconciliation below zeroes `total_principal_atoms`
+        // /`total_assets_atoms` once `total_shares` hits 0. If a loan is
+        // still deployed (or atoms are encumbered in a resting order) at
+        // that moment, those real atoms would be orphaned: the invariant
+        // `total_principal ≥ deployed + encumbered` breaks and the stranded
+        // capital can never be redeemed. Reject the last-share burn until
+        // every loan has closed and every order has been cancelled.
+        let burns_last_share: bool = profile.total_shares == params.shares_to_burn;
+        if burns_last_share {
+            require!(
+                profile.deployed_principal_atoms == 0 && profile.encumbered_in_orders_atoms == 0,
+                YdeltaError::VaultInsufficientIdleAtoms,
+                "cannot burn the last vault share while capital is in flight \
+                 (deployed {} + encumbered {} > 0) — wait for loans to close \
+                 and orders to cancel",
+                { profile.deployed_principal_atoms },
+                { profile.encumbered_in_orders_atoms }
+            )?;
+        }
 
         profile.total_shares = profile
             .total_shares
@@ -222,7 +285,6 @@ pub fn process_global_vault_withdraw(
             principal_decrement,
         )
     };
-    let _ = principal_decrement;
 
     // Withdraw from the integration account into global_vault_staging.
     let expected_shares: u128 =
@@ -252,35 +314,48 @@ pub fn process_global_vault_withdraw(
         &[global_vault_signer_seeds],
     )?;
 
-    // Reconcile bookkeeping with marginfi's actual return.
-    // The earlier accounting decremented total_assets by atoms_out and total_principal
-    // by principal_decrement (both pre-CPI computed). If marginfi pays
-    // out a different amount (within ±1 by the adapter's drift gate),
-    // adjust BOTH fields by the same proportional ratio so the
-    // assets/principal invariant the idle gate relies on stays
-    // intact. Drift is asserted ≤ 1 atom by the adapter, so the
-    // proportional add-back is at most 1 atom per side.
-    // Per-call drift between marginfi's actual_atoms and our computed
-    // atoms_out is bounded to ±1 atom by the adapter's drift gate,
-    // and partial-withdraw drift compounds across calls. We don't
-    // reconcile it per-call (doing so would violate the
-    // proportional-decrement invariant tests rely on); instead we
-    // zero everything on the FINAL burn so cumulative dust never
-    // strands as phantom assets/principal.
-    if new_total_shares == 0 {
+    let payout_atoms = actual_atoms.min(atoms_out);
+    let surplus_atoms = actual_atoms.saturating_sub(payout_atoms);
+    let shortfall_atoms = atoms_out.saturating_sub(payout_atoms);
+
+    // Reconcile per-call drift instead of pushing it onto the
+    // withdrawing LP. If marginfi returned fewer atoms than planned, the
+    // shortfall remained inside the shared integration account and should
+    // stay attributed to the remaining profile shares. If marginfi
+    // returned more, that surplus is redeposited below rather than
+    // leaked cross-profile.
+    if shortfall_atoms > 0 || new_total_shares == 0 {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        use hypertree::{HyperTreeReadOperations, NIL};
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
         let profile_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
             tree.lookup_index(&probe)
         };
         if profile_idx != NIL {
             let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
-            profile.total_assets_atoms = 0;
-            profile.total_principal_atoms = 0;
+            if shortfall_atoms > 0 && new_total_shares > 0 {
+                profile.total_assets_atoms = profile
+                    .total_assets_atoms
+                    .checked_add(shortfall_atoms)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+                profile.total_principal_atoms = profile
+                    .total_principal_atoms
+                    .checked_add(shortfall_atoms)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            }
+            if new_total_shares == 0 {
+                // Final burn: the last-share-burn guard already ensured
+                // `deployed == 0 && encumbered == 0`, so every atom the
+                // profile still books is idle. Zero the per-profile
+                // `total_*` so any residual drift is donation-like rather
+                // than becoming phantom assets the next genesis depositor
+                // could mint against.
+                profile.total_assets_atoms = 0;
+                profile.total_principal_atoms = 0;
+            }
+            profile_total_assets_after = profile.total_assets_atoms;
         }
     }
 
@@ -294,16 +369,33 @@ pub fn process_global_vault_withdraw(
         global_vault_signer,
         &vault_key,
         global_vault_signer_bump,
-        actual_atoms,
+        payout_atoms,
         mint.mint.decimals,
     )?;
+
+    if surplus_atoms > 0 {
+        let deposit_accounts: Vec<AccountInfo> = vec![
+            marginfi_group.info.clone(),
+            integration_account.info.clone(),
+            global_vault_signer.clone(),
+            lending_pool.info.clone(),
+            global_vault_staging.info.clone(),
+            liquidity_vault.info.clone(),
+            token_program.info.clone(),
+            marginfi_program.info.clone(),
+        ];
+        let _credited_shares: u128 = MarginfiV18Adapter.deposit(
+            &deposit_accounts,
+            surplus_atoms,
+            &[global_vault_signer_seeds],
+        )?;
+    }
 
     // Burn shares on the authoritative vault-side seat.
     let seat_zeroed: bool = {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        use hypertree::HyperTreeReadOperations;
         let probe = RiskProfileDepositorSeat::probe(*payer.info.key, params.profile_id);
         let seat_idx = {
             let tree = RiskProfileDepositorSeatTreeReadOnly::new(
@@ -352,7 +444,7 @@ pub fn process_global_vault_withdraw(
             .ok_or(ProgramError::ArithmeticOverflow)?;
         pos.last_updated_unix = now;
         if seat_zeroed {
-            let _ = remove_vault_position(fixed, dynamic, vault_key, params.profile_id);
+            remove_vault_position(fixed, dynamic, vault_key, params.profile_id)?;
         }
     }
 
@@ -361,8 +453,8 @@ pub fn process_global_vault_withdraw(
         depositor: *payer.info.key,
         shares_burned: params.shares_to_burn,
         profile_total_shares: new_total_shares,
-        atoms_out: actual_atoms,
-        profile_total_assets_atoms: new_total_assets,
+        atoms_out: payout_atoms,
+        profile_total_assets_atoms: profile_total_assets_after,
         profile_id: params.profile_id,
         _padding: [0; 15],
     })?;

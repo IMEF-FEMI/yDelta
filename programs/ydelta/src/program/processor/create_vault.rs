@@ -55,26 +55,21 @@ pub fn process_create_vault(
     let vault_key = *vault.key;
     let vault_bytes = vault_key.to_bytes();
 
-    // Allocate the vault PDA via system_program::create_account.
+    // Allocate the vault PDA. `create_pda_resilient` (not
+    // `create_account`) so that pre-funding the deterministic PDA with a
+    // stray lamport cannot permanently brick vault creation for a mint.
     let rent: Rent = Rent::get()?;
-    let lamports = rent.minimum_balance(GLOBAL_VAULT_FIXED_SIZE);
     let mint_bytes = mint_key.to_bytes();
     let vault_bump_arr = [vault_bump];
     let vault_seeds: &[&[u8]] = &[VAULT_SEED, &mint_bytes, &vault_bump_arr];
-    invoke_signed(
-        &system_instruction::create_account(
-            payer.info.key,
-            &vault_key,
-            lamports,
-            GLOBAL_VAULT_FIXED_SIZE as u64,
-            &crate::id(),
-        ),
-        &[
-            payer.info.clone(),
-            vault.clone(),
-            system_program.info.clone(),
-        ],
-        &[vault_seeds],
+    create_pda_resilient(
+        payer.info,
+        &vault,
+        system_program.info,
+        GLOBAL_VAULT_FIXED_SIZE,
+        &crate::id(),
+        vault_seeds,
+        &rent,
     )?;
 
     // Allocate the per-vault SPL staging token account.
@@ -91,23 +86,16 @@ pub fn process_create_vault(
     } else {
         spl_token::state::Account::LEN
     };
-    let staging_lamports = rent.minimum_balance(staging_space);
     let staging_bump_arr = [global_vault_staging_bump];
     let staging_seeds: &[&[u8]] = &[VAULT_STAGING_SEED, &vault_bytes, &staging_bump_arr];
-    invoke_signed(
-        &system_instruction::create_account(
-            payer.info.key,
-            global_vault_staging.key,
-            staging_lamports,
-            staging_space as u64,
-            token_prog_for_mint.key,
-        ),
-        &[
-            payer.info.clone(),
-            global_vault_staging.clone(),
-            system_program.info.clone(),
-        ],
-        &[staging_seeds],
+    create_pda_resilient(
+        payer.info,
+        &global_vault_staging,
+        system_program.info,
+        staging_space,
+        token_prog_for_mint.key,
+        staging_seeds,
+        &rent,
     )?;
     // Initialize the SPL token account with global_vault_signer as authority.
     let init_staging_ix = if mint_owner == &spl_token_2022::id() {
@@ -193,5 +181,41 @@ pub fn process_create_vault(
         global_vault_signer: *global_vault_signer.key,
     })?;
 
+    Ok(())
+}
+
+/// Create a PDA-owned account in a way that tolerates a pre-funded
+/// target. Plain `system_instruction::create_account` aborts if the
+/// account already holds lamports, which lets anyone permanently brick
+/// creation of a deterministic PDA by pre-funding it with a single
+/// lamport. `transfer` (rent shortfall only) + `allocate` + `assign` is
+/// immune to that grief vector and produces an equivalent account.
+fn create_pda_resilient<'info>(
+    payer: &AccountInfo<'info>,
+    target: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    space: usize,
+    owner: &Pubkey,
+    signer_seeds: &[&[u8]],
+    rent: &Rent,
+) -> ProgramResult {
+    let required = rent.minimum_balance(space);
+    let current = target.lamports();
+    if current < required {
+        invoke(
+            &system_instruction::transfer(payer.key, target.key, required - current),
+            &[payer.clone(), target.clone(), system_program.clone()],
+        )?;
+    }
+    invoke_signed(
+        &system_instruction::allocate(target.key, space as u64),
+        &[target.clone(), system_program.clone()],
+        &[signer_seeds],
+    )?;
+    invoke_signed(
+        &system_instruction::assign(target.key, owner),
+        &[target.clone(), system_program.clone()],
+        &[signer_seeds],
+    )?;
     Ok(())
 }

@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::str::FromStr;
 
+use base64::Engine;
 use solana_program::pubkey::Pubkey;
 use solana_program_test::{ProgramTest, ProgramTestContext};
 use solana_sdk::account::Account;
@@ -421,7 +422,6 @@ impl AdapterFixture {
 /// Decode a `solana account ... --output json` dump file into an
 /// `Account` ready for `ProgramTest::add_account`.
 pub fn load_account_from_fixture(filename: &str) -> Account {
-    use base64::Engine;
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(filename);

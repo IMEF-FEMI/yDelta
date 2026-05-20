@@ -51,6 +51,7 @@ pub fn process_protocol_fee_claim(
     if fee_shares == 0 {
         return Ok(());
     }
+    let fee_atoms = MarginfiV18Adapter.shares_to_amount(&[debt_bank.info.clone()], fee_shares)?;
 
     // ─── marginfi.withdraw lender_marginfi → market_debt_vault ───
     let market_signer_seeds: &[&[u8]] = &[
@@ -77,10 +78,13 @@ pub fn process_protocol_fee_claim(
     let actual_atoms =
         MarginfiV18Adapter.withdraw(&withdraw_accounts, fee_shares, &[market_signer_seeds])?;
 
+    // Never pay the admin more than the claimed fee shares were worth.
+    // If marginfi returns one atom above book value inside its drift
+    // gate, that surplus belongs to the lender-side pool, not the admin.
+    let payout_atoms: u64 = actual_atoms.min(fee_atoms);
+    let surplus_atoms: u64 = actual_atoms.saturating_sub(payout_atoms);
+
     // ─── SPL transfer market_debt_vault → admin_debt_token ───
-    // Use the actual atoms returned by marginfi (within ±1 of fee_atoms
-    // by adapter's drift gate) so the transfer never asks for more than
-    // what landed in the staging vault.
     if token_program.info.key == &spl_token_2022::id() {
         let ix = spl_token_2022::instruction::transfer_checked(
             token_program.info.key,
@@ -89,7 +93,7 @@ pub fn process_protocol_fee_claim(
             admin_debt_token.info.key,
             market_signer.key,
             &[],
-            actual_atoms,
+            payout_atoms,
             debt_mint.mint.decimals,
         )?;
         invoke_signed(
@@ -110,7 +114,7 @@ pub fn process_protocol_fee_claim(
             admin_debt_token.info.key,
             market_signer.key,
             &[],
-            actual_atoms,
+            payout_atoms,
         )?;
         invoke_signed(
             &ix,
@@ -122,6 +126,21 @@ pub fn process_protocol_fee_claim(
             ],
             &[market_signer_seeds],
         )?;
+    }
+
+    if surplus_atoms > 0 {
+        let deposit_accounts: Vec<AccountInfo> = vec![
+            marginfi_group.info.clone(),
+            lender_marginfi_account.info.clone(),
+            market_signer.clone(),
+            debt_bank.info.clone(),
+            market_debt_vault.info.clone(),
+            debt_liquidity_vault.info.clone(),
+            token_program.info.clone(),
+            marginfi_program.info.clone(),
+        ];
+        let _returned_shares: u128 =
+            MarginfiV18Adapter.deposit(&deposit_accounts, surplus_atoms, &[market_signer_seeds])?;
     }
 
     Ok(())

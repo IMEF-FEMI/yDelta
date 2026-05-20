@@ -1,3 +1,9 @@
+//! `place_order` is borrower-IOC-only: the taker is always a
+//! `Side::Bid` borrower and the order type is always
+//! `ImmediateOrCancel`. The bid crosses resting vault risk-profile asks
+//! and any residual either fires the P2Pool fallback or drops — it
+//! never rests on the book.
+
 use solana_sdk::signer::Signer;
 
 use ydelta::state::{OrderType, Side};
@@ -39,43 +45,22 @@ async fn fund_trader(
     (trader, debt_ata, coll_ata)
 }
 
+/// A borrower IOC bid against an empty book leaves no resting order:
+/// with no crossable vault ask the residual drops (`OB_ONLY` is set by
+/// the native `place_order` helper) and the seat's encumbrance is
+/// fully refunded — the bid never rests.
 #[tokio::test]
-async fn place_ask_encumbers_debt() {
-    let mut fixture = TestFixture::new().await;
-    let (alice, _, _) = fund_trader(&mut fixture, 1_000, 0).await;
-
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            700,
-            0,
-        )
-        .await
-        .unwrap();
-
-    let seat = fixture.read_seat(&alice.pubkey()).await;
-    assert_eq!(seat.debt_withdrawable_shares, 300);
-    assert_eq!(seat.debt_encumbered_shares, 700);
-    assert_eq!(seat.open_lend_count, 1);
-    assert_eq!(seat.open_borrow_count, 0);
-    assert_eq!(fixture.count_orders(Side::Ask).await, 1);
-    assert_eq!(fixture.count_orders(Side::Bid).await, 0);
-}
-
-#[tokio::test]
-async fn place_bid_encumbers_collateral() {
+async fn borrower_bid_against_empty_book_drops_and_unencumbers() {
     let mut fixture = TestFixture::new().await;
     let (bob, _, _) = fund_trader(&mut fixture, 0, 5_000).await;
+
+    let pre = fixture.read_seat(&bob.pubkey()).await;
 
     fixture
         .place_order(
             &bob,
             Side::Bid,
-            OrderType::Limit,
+            OrderType::ImmediateOrCancel,
             800,
             60 * 86_400,
             400,
@@ -84,72 +69,47 @@ async fn place_bid_encumbers_collateral() {
         .await
         .unwrap();
 
-    let seat = fixture.read_seat(&bob.pubkey()).await;
-    assert_eq!(seat.collateral_withdrawable_shares, 4_500);
-    assert_eq!(seat.collateral_encumbered_shares, 500);
-    assert_eq!(seat.open_borrow_count, 1);
-    assert_eq!(fixture.count_orders(Side::Bid).await, 1);
-}
-
-#[tokio::test]
-async fn cancel_unencumbers() {
-    let mut fixture = TestFixture::new().await;
-    let (alice, _, _) = fund_trader(&mut fixture, 1_000, 0).await;
-
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            700,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.cancel_order(&alice, 0).await.unwrap();
-
-    let seat = fixture.read_seat(&alice.pubkey()).await;
-    assert_eq!(seat.debt_withdrawable_shares, 1_000);
-    assert_eq!(seat.debt_encumbered_shares, 0);
-    assert_eq!(seat.open_lend_count, 0);
+    // No resting orders — the IOC bid never rests on either tree.
+    assert_eq!(fixture.count_orders(Side::Bid).await, 0);
     assert_eq!(fixture.count_orders(Side::Ask).await, 0);
+
+    // The residual dropped: the borrower seat's collateral is fully
+    // refunded and the open-borrow counter is back to its pre value.
+    let post = fixture.read_seat(&bob.pubkey()).await;
+    assert_eq!(
+        post.collateral_withdrawable_shares,
+        pre.collateral_withdrawable_shares
+    );
+    assert_eq!(
+        post.collateral_encumbered_shares,
+        pre.collateral_encumbered_shares
+    );
+    assert_eq!(post.open_borrow_count, pre.open_borrow_count);
 }
 
+/// `place_order` consumes one order sequence number per call even
+/// though the bid never rests — the sequence is stamped on the
+/// `OrderPlaced` log for off-chain indexers.
 #[tokio::test]
-async fn update_order_rate_change_is_rejected() {
-    // Rate changes via `update_order` are rejected on both sides:
-    // an Ask re-rated downward could cross a resting Bid that has
-    // become undercollateralized since placement; the LTV must
-    // re-check against current oracles, which requires a fresh
-    // `place_order` call. `update_order` is bounded to non-rate
-    // mutations (last_valid_unix_ts / flags).
+async fn borrower_bid_consumes_one_sequence() {
     let mut fixture = TestFixture::new().await;
-    let (alice, _, _) = fund_trader(&mut fixture, 1_000, 0).await;
+    let (bob, _, _) = fund_trader(&mut fixture, 0, 5_000).await;
 
     fixture
         .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            700,
-            0,
+            &bob,
+            Side::Bid,
+            OrderType::ImmediateOrCancel,
+            800,
+            60 * 86_400,
+            400,
+            500,
         )
         .await
         .unwrap();
-    fixture.refresh_blockhash().await;
-    let result = fixture.update_order_rate(&alice, 0, 750).await;
-    assert!(
-        result.is_err(),
-        "rate change via update_order must be rejected; use cancel + place_order"
-    );
 
-    // Original order still rests at the original rate.
     let market = fixture.read_market().await;
     assert_eq!(market.fixed.order_sequence_number, 1);
-    assert_eq!(fixture.count_orders(Side::Ask).await, 1);
+    assert_eq!(fixture.count_orders(Side::Bid).await, 0);
+    assert_eq!(fixture.count_orders(Side::Ask).await, 0);
 }

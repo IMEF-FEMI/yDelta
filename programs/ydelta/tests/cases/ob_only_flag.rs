@@ -3,11 +3,10 @@
 //! Native `TestFixture` uses synthetic banks, so the actual P2Pool
 //! `marginfi.borrow` CPI cannot fire here; both `OB_ONLY` and the
 //! default observe the same external behaviour (residual rests).
-//! This test
-//! pins the plumbing — flag accepted, ix succeeds, residual rests as
-//! expected — so the regression set is in place when Step 9.5 wires
-//! the CPI.
+//! This test pins the plumbing — flag accepted, ix succeeds, residual
+//! rests as expected.
 
+use hypertree::NIL;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 
@@ -42,9 +41,11 @@ async fn ob_only_flag_accepted_by_place_order() {
         .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
         .await;
 
-    // Bob places a Limit Bid with the OB_ONLY flag set + a principal
-    // big enough to leave a residual after any matching pass. Asks
-    // tree is empty, so the entire principal will rest.
+    // Bob places a borrower IOC bid with the OB_ONLY flag set. The
+    // asks tree is empty, so nothing matches and the entire principal
+    // is a residual. With OB_ONLY set the residual is dropped (it does
+    // not fall through to the P2Pool fallback) — and a borrower bid
+    // never rests on the book.
     let principal: u64 = 1_000_000;
     let collateral: u64 = 100_000_000;
     let result = fixture
@@ -65,11 +66,15 @@ async fn ob_only_flag_accepted_by_place_order() {
         result
     );
 
-    // Residual rests as a Bid on the book (one resting bid, no asks).
+    // No asks-tree resting order and no MatchedLoan: the OB_ONLY
+    // residual was dropped, not rested and not auto-borrowed.
     let market = fixture.read_market_fixed().await;
-    use hypertree::NIL;
-    assert_ne!(
-        market.bids_root_index, NIL,
-        "Limit Bid with residual should have rested"
+    assert_eq!(
+        market.asks_root_index, NIL,
+        "no order should rest — a borrower bid is IOC-only"
+    );
+    assert_eq!(
+        market.matched_loan_sequence, 0,
+        "OB_ONLY residual must drop, not trigger the P2Pool fallback"
     );
 }

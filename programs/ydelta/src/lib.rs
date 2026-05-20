@@ -1,12 +1,13 @@
 //! yDelta — fixed-rate / fixed-term lending protocol on a Solana
-//! CLOB. Lenders post asks `(rate, term)`; borrowers post bids
-//! `(rate, term, principal, collateral, borrower_ltv)`; the matching
-//! engine crosses them into discrete loans. Idle capital on either
-//! side earns marginfi supply yield via the seat-share invariant.
+//! CLOB. The book holds only vault risk-profile asks `(rate, term)`;
+//! a borrower bid `(rate, term, principal, collateral)` is an
+//! immediate-or-cancel taker that crosses them into discrete loans.
+//! Idle capital on either side earns marginfi supply yield via the
+//! seat-share invariant.
 //!
-//! Two lender flavours share the orderbook: wallets (per-`UserAccount`
-//! seats) and risk profiles inside a `GlobalVault` (curator-managed,
-//! depositor-funded). Borrowers do not distinguish between them.
+//! Lender quotes come only from risk profiles inside a `GlobalVault`
+//! (curator-managed, depositor-funded). The vault profile's curator-set
+//! `max_ltv_bps` cap is enforced at match time.
 
 pub mod logs;
 pub mod math;
@@ -26,14 +27,11 @@ use program::{
         process_transfer_curator, process_transfer_global_vault_admin,
         process_transfer_market_admin,
     },
-    cancel_order::process_cancel_order,
     cancel_order_for_risk_profile::process_cancel_order_for_risk_profile,
     check_liquidatable::{process_check_ltv_liquidatable, process_check_maturity_liquidatable},
     claim_curator_fee::process_claim_curator_fee,
-    claim_repayment::process_claim_repayment,
     claim_repayment_for_risk_profile::process_claim_repayment_for_risk_profile,
     claim_seat::process_claim_seat,
-    claim_seat_for_risk_profile::process_claim_seat_for_risk_profile,
     convert_p2pool_to_fixed::process_convert_p2pool_to_fixed,
     create_market::process_create_market,
     create_risk_profile::process_create_risk_profile,
@@ -50,15 +48,12 @@ use program::{
     place_order_for_risk_profile::process_place_order_for_risk_profile,
     process_matched_loan::process_process_matched_loan,
     protocol_fee_claim::process_protocol_fee_claim,
-    release_seat_for_risk_profile::process_release_seat_for_risk_profile,
     repay::process_repay,
     set_fee_config::process_set_fee_config,
     set_market_pause::process_set_market_pause,
-    set_seat_max_exposure_for_risk_profile::process_set_seat_max_exposure_for_risk_profile,
+    set_vault_pause::process_set_vault_pause,
     settle_matured_loan::process_settle_matured_loan,
     sync_market_position::process_sync_market_position,
-    sync_market_seats_for_risk_profile::process_sync_market_seats_for_risk_profile,
-    update_order::process_update_order,
     update_order_for_risk_profile::process_update_order_for_risk_profile,
     update_risk_profile::process_update_risk_profile,
     withdraw::process_withdraw,
@@ -74,8 +69,8 @@ use solana_security_txt::security_txt;
 
 // TODO(pre-mainnet): fill `project_url`, `contacts`, `policy`,
 // `source_code` with real values before deploy. Empty fields fail the
-// solana-security-txt spec's "useful" check and weaken auditor /
-// incident-response posture.
+// solana-security-txt spec's "useful" check and weaken incident-response
+// posture.
 #[cfg(not(feature = "no-entrypoint"))]
 security_txt! {
     name: "ydelta",
@@ -109,13 +104,10 @@ pub fn process_instruction(
         YdeltaInstruction::Deposit => process_deposit(program_id, accounts, data)?,
         YdeltaInstruction::Withdraw => process_withdraw(program_id, accounts, data)?,
         YdeltaInstruction::PlaceOrder => process_place_order(program_id, accounts, data)?,
-        YdeltaInstruction::CancelOrder => process_cancel_order(program_id, accounts, data)?,
-        YdeltaInstruction::UpdateOrder => process_update_order(program_id, accounts, data)?,
         YdeltaInstruction::ProcessMatchedLoan => {
             process_process_matched_loan(program_id, accounts, data)?
         }
         YdeltaInstruction::Repay => process_repay(program_id, accounts, data)?,
-        YdeltaInstruction::ClaimRepayment => process_claim_repayment(program_id, accounts, data)?,
         YdeltaInstruction::SyncMarketPosition => {
             process_sync_market_position(program_id, accounts, data)?
         }
@@ -128,9 +120,6 @@ pub fn process_instruction(
         }
         YdeltaInstruction::GlobalVaultWithdraw => {
             process_global_vault_withdraw(program_id, accounts, data)?
-        }
-        YdeltaInstruction::ClaimSeatForRiskProfile => {
-            process_claim_seat_for_risk_profile(program_id, accounts, data)?
         }
         YdeltaInstruction::PlaceOrderForRiskProfile => {
             process_place_order_for_risk_profile(program_id, accounts, data)?
@@ -183,12 +172,6 @@ pub fn process_instruction(
         YdeltaInstruction::UpdateRiskProfile => {
             process_update_risk_profile(program_id, accounts, data)?
         }
-        YdeltaInstruction::ReleaseSeatForRiskProfile => {
-            process_release_seat_for_risk_profile(program_id, accounts, data)?
-        }
-        YdeltaInstruction::SyncMarketSeatsForRiskProfile => {
-            process_sync_market_seats_for_risk_profile(program_id, accounts, data)?
-        }
         YdeltaInstruction::ConvertP2PoolToFixed => {
             process_convert_p2pool_to_fixed(program_id, accounts, data)?
         }
@@ -198,9 +181,7 @@ pub fn process_instruction(
         YdeltaInstruction::CheckMaturityLiquidatable => {
             process_check_maturity_liquidatable(program_id, accounts, data)?
         }
-        YdeltaInstruction::SetSeatMaxExposureForRiskProfile => {
-            process_set_seat_max_exposure_for_risk_profile(program_id, accounts, data)?
-        }
+        YdeltaInstruction::SetVaultPause => process_set_vault_pause(program_id, accounts, data)?,
     }
 
     Ok(())

@@ -8,7 +8,7 @@ use solana_program::{
 
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
-use crate::state::{MarketFixed, MARKET_FIXED_SIZE};
+use crate::state::MARKET_FIXED_SIZE;
 use crate::validation::{
     get_borrower_integration_account_address, get_lender_integration_account_address,
     get_market_signer_address, get_vault_address,
@@ -24,7 +24,8 @@ pub fn derive_borrower_marginfi_account(market: &Pubkey) -> Pubkey {
     get_borrower_integration_account_address(market).0
 }
 
-/// **Deprecated** — Phase-3 alias for the lender-side PDA.
+/// Alias for the lender-side marginfi-account PDA. New callers should
+/// use `derive_lender_marginfi_account` directly.
 pub fn derive_marginfi_account(market: &Pubkey) -> Pubkey {
     derive_lender_marginfi_account(market)
 }
@@ -46,7 +47,6 @@ pub fn create_market_instructions(
     collateral_bank: &Pubkey,
     marginfi_program: &Pubkey,
 ) -> Result<Vec<Instruction>, ProgramError> {
-    let _ = std::mem::size_of::<MarketFixed>();
     let space: usize = MARKET_FIXED_SIZE;
     Ok(vec![
         system_instruction::create_account(

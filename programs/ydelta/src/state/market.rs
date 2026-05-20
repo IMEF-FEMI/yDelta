@@ -93,30 +93,24 @@ pub struct MatchedLoan {
     pub borrower_rate_bps: u16,                    // 76..78
     pub lender_rate_bps: u16,                      // 78..80
     pub loan_type: u8,                             // 80 — 0 = Fixed, 1 = P2Pool
-    pub flags: u8,                                 // 81 — bit 0: VAULT_LENDER (reserved)
-    //       bit 1: SECONDARY (secondary cross)
-    //       bit 2: SECONDARY_SPLIT (partial)
-    _pad_before_p5: [u8; 6], // 82..88 — align next u64 to 8
-    // Fields populated only on SECONDARY-flagged nodes. Both zero on
-    // primary crosses.
-    pub referenced_loan_sequence: u64, // 88..96  — sequence of the loan being transferred
-    pub cash_paid_atoms: u64,          // 96..104 — matched_proportional_price
-    pub new_lender_seat_index: hypertree::DataIndex, // 104..108 — taker (ask) seat for secondary
-    _padding1: [u8; 4],                // 108..112 — align next u128 to 16
+    pub flags: u8,                                 // 81 — bit 0: VAULT_LENDER
+    //       bit 3: VAULT_PRESETTLED
+    _pad_before_p5: [u8; 6], // 82..88 — align next u128 to 16
+
+    /// Reserved padding.
+    _reserved: [u8; 24], // 88..112
 
     /// Snapshot of debt_bank.asset_share_value (fp48) at the
     /// lender-side place-order time. Stamped onto LoanFixed at
     /// promote-time as `lender_debt_share_price_snapshot_fp48`. Zero
-    /// for SECONDARY (loan body keeps the original snapshot from the
-    /// transferred loan) and for P2Pool (no human lender).
+    /// for P2Pool (no human lender).
     pub lender_debt_share_price_snapshot_fp48: u128, // 112..128
     /// Snapshot of collateral_bank.asset_share_value (fp48) at the
     /// borrower-side place-order time. Stamped onto LoanFixed at
     /// promote-time as `borrower_collateral_share_price_snapshot_fp48`.
-    /// Zero for SECONDARY.
     pub borrower_collateral_share_price_snapshot_fp48: u128, // 128..144
 }
-// 8 + 8 + 16 + 8 + 8 + 8 + 8 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 6 + 8 + 8 + 4 + 4 + 16 + 16 = 144
+// 8 + 8 + 16 + 8 + 8 + 8 + 8 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 6 + 24 + 16 + 16 = 144
 const_assert_eq!(
     size_of::<MatchedLoan>(),
     super::constants::MATCHED_LOAN_SIZE
@@ -124,19 +118,22 @@ const_assert_eq!(
 const_assert_eq!(size_of::<MatchedLoan>() % 16, 0);
 
 // Bit masks for `MatchedLoan.flags`.
-/// reserved for forward-compat
-#[allow(dead_code)]
+/// Set at match time on every orderbook-funded Fixed loan whose lender
+/// is a vault risk profile. The cranker (`process_matched_loan`) trusts
+/// this match-time record to route wallet-vs-vault settlement, rather
+/// than a live re-read of the lender seat's `owner_kind`.
 pub const MATCHED_LOAN_FLAG_VAULT_LENDER: u8 = 0b0000_0001;
-pub const MATCHED_LOAN_FLAG_SECONDARY: u8 = 0b0000_0010;
-pub const MATCHED_LOAN_FLAG_SECONDARY_SPLIT: u8 = 0b0000_0100;
-/// Set by the matching engine when a vault-owned maker (Ask) is fully
-/// filled by this match. The cranker reads it to remove the stale
-/// `RiskProfileOrderRef` from the vault's `market_orders` tree
-/// (otherwise the next `place_order_for_risk_profile` for the same
-/// `(market, profile_id)` errors with `VaultProfileOrderExists`).
-/// Independent of `VAULT_LENDER` so the cranker can still take the
-/// vault settlement path on partial fills.
-pub const MATCHED_LOAN_FLAG_VAULT_MAKER_FULLY_FILLED: u8 = 0b0000_1000;
+/// Set on the Fixed `MatchedLoan` nodes emitted by
+/// `convert_p2pool_to_fixed`. The convert processor performs the vault
+/// principal migration (`global_vault.integration → market_debt_vault`)
+/// and uses the atoms to retire the borrower's P2Pool marginfi
+/// liability inline — so the vault profile's `encumbered_in_orders →
+/// deployed` bookkeeping is already done by the time the cranker runs.
+/// `process_matched_loan` checks this bit and SKIPS `do_vault_settle`
+/// (and its vault-settle account requirement) for these nodes: the
+/// atoms are not flowing into `market.lender_integration_account` at
+/// crank time — they already left the vault to repay the borrower.
+pub const MATCHED_LOAN_FLAG_VAULT_PRESETTLED: u8 = 0b0000_1000;
 
 impl Ord for MatchedLoan {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -169,7 +166,6 @@ impl std::fmt::Display for MatchedLoan {
 }
 
 /// `MarketFixed` — the 512-byte header at the start of every market account.
-///1.
 ///
 /// Layout note: u128 fields require 16-byte alignment, which dictates field
 /// ordering. `accumulated_protocol_fee_shares` is placed right after the four
@@ -201,8 +197,10 @@ pub struct MarketFixed {
 
     pub num_bytes_allocated: u32,
 
-    pub bids_root_index: DataIndex,
-    pub bids_best_index: DataIndex,
+    /// Reserved. Unused index slot, always set to `NIL`.
+    pub _reserved_bids_root: DataIndex,
+    /// Reserved. Unused index slot, always set to `NIL`.
+    pub _reserved_bids_best: DataIndex,
     pub asks_root_index: DataIndex,
     pub asks_best_index: DataIndex,
     pub claimed_seats_root_index: DataIndex,
@@ -268,7 +266,15 @@ pub struct MarketFixed {
     /// `MarketPaused`. Set/cleared by `set_market_pause`
     /// (admin-gated). Read-only ixs (`SyncMarketPosition`) stay live.
     pub is_paused: u8,
-    _padding_pause: [u8; 7],
+    /// `1` once the admin has explicitly called `set_fee_config`
+    /// at least once. A fresh `FeeConfig` defaults every bps field
+    /// (incl. `ltv_buffer_bps`) to 0, so a market unpaused before fee
+    /// config was set would run zero-margin LTV checks.
+    /// `set_market_pause(0)` (unpause) is gated on this flag — the admin
+    /// MUST consciously run `set_fee_config` (setting `ltv_buffer_bps`
+    /// to the desired safety margin) before the market can go live.
+    pub fee_config_set: u8,
+    _padding_pause: [u8; 6],
 }
 // Total size accounting (= 512 = MARKET_FIXED_SIZE):
 //   8   discriminant
@@ -276,14 +282,15 @@ pub struct MarketFixed {
 //   128 4 × Pubkey (debt_mint, collateral_mint, debt_vault, collateral_vault)
 //   16  u128 (accumulated_protocol_fee_shares)
 //   16  2 × u64 (order_sequence_number, matched_loan_sequence)
-//   36  9 × u32 (num_bytes_allocated, 7 × DataIndex, position_count)
+//   36  9 × u32 (num_bytes_allocated, 7 × DataIndex incl. 2 reserved
+//        index slots, position_count)
 //   24  FeeConfig
 //   4   _padding_after_fee
 //   192 6 × Pubkey (integration accounts + signer + group)
 //   8   3 × u8 bumps + 5 _padding_bumps
 //   32  admin Pubkey
 //   32  pending_admin Pubkey
-//   8   is_paused u8 + _padding_pause [u8;7]
+//   8   is_paused u8 + fee_config_set u8 + _padding_pause [u8;6]
 //   ──
 //   512
 const_assert_eq!(size_of::<MarketFixed>(), MARKET_FIXED_SIZE);
@@ -302,7 +309,7 @@ impl MarketFixed {
             get_vault_address(market_key, collateral_mint.info.key);
         MarketFixed {
             discriminator: MARKET_FIXED_DISCRIMINANT,
-            version: 0,
+            version: crate::state::constants::ACCOUNT_LAYOUT_VERSION,
             debt_mint_decimals: debt_mint.mint.decimals,
             collateral_mint_decimals: collateral_mint.mint.decimals,
             debt_vault_bump,
@@ -316,8 +323,8 @@ impl MarketFixed {
             order_sequence_number: 0,
             matched_loan_sequence: 0,
             num_bytes_allocated: 0,
-            bids_root_index: NIL,
-            bids_best_index: NIL,
+            _reserved_bids_root: NIL,
+            _reserved_bids_best: NIL,
             asks_root_index: NIL,
             asks_best_index: NIL,
             claimed_seats_root_index: NIL,
@@ -350,7 +357,10 @@ impl MarketFixed {
             // against the "fresh keypair every run" duplicate-market
             // hazard in setup scripts.
             is_paused: 1,
-            _padding_pause: [0; 7],
+            // Fee config not yet set — `set_market_pause(0)` refuses to
+            // unpause until `set_fee_config` flips this.
+            fee_config_set: 0,
+            _padding_pause: [0; 6],
         }
     }
 
@@ -367,6 +377,17 @@ impl YdeltaAccount for MarketFixed {
             "Invalid market discriminant actual:{} expected:{}",
             self.discriminator,
             MARKET_FIXED_DISCRIMINANT
+        )?;
+        Ok(())
+    }
+
+    fn verify_version(&self) -> ProgramResult {
+        require!(
+            self.version == crate::state::constants::ACCOUNT_LAYOUT_VERSION,
+            ProgramError::InvalidAccountData,
+            "Stale MarketFixed layout: version {} (expected {})",
+            self.version,
+            crate::state::constants::ACCOUNT_LAYOUT_VERSION
         )?;
         Ok(())
     }
@@ -402,6 +423,55 @@ pub fn get_mut_helper_order(data: &mut [u8], index: DataIndex) -> &mut RBNode<Re
 }
 pub fn get_helper_matched_loan(data: &[u8], index: DataIndex) -> &RBNode<MatchedLoan> {
     get_helper::<RBNode<MatchedLoan>>(data, index)
+}
+
+/// Resolve `seat_index` to a *live* `ClaimedSeat` and assert it
+/// carries `expected_owner_kind`.
+///
+/// A `MatchedLoan` queue node stores raw seat `DataIndex`es captured at
+/// match time. The primary-promotion cranker stamps a fresh `LoanFixed`
+/// from those indices much later; without this check it would trust a
+/// node pointing at a freed slot or a seat of the wrong owner kind.
+///
+/// Liveness is proven by looking the seat up in the claimed-seat tree
+/// by its own `(owner, risk_profile_id)` key and confirming the tree
+/// returns the *same* index — a node that has been removed/freed (or an
+/// out-of-range index reading garbage) cannot round-trip. Seats are
+/// never removed from the tree today, but this is the structural
+/// guarantee the promotion path should not silently depend on.
+pub fn verify_live_seat(
+    dynamic: &[u8],
+    claimed_seats_root_index: DataIndex,
+    seat_index: DataIndex,
+    expected_owner_kind: u8,
+) -> Result<ClaimedSeat, ProgramError> {
+    require!(
+        seat_index != NIL,
+        crate::program::YdeltaError::IncorrectAccount,
+        "MatchedLoan references a NIL seat index"
+    )?;
+    let seat: ClaimedSeat = *get_helper_seat(dynamic, seat_index).get_value();
+    let tree = ClaimedSeatTreeReadOnly::new(dynamic, claimed_seats_root_index, NIL);
+    let resolved = tree.lookup_index(&ClaimedSeat::new_empty(
+        seat.owner,
+        seat.owner_kind,
+        seat.risk_profile_id,
+    ));
+    require!(
+        resolved == seat_index,
+        crate::program::YdeltaError::IncorrectAccount,
+        "MatchedLoan seat index {} does not resolve to a live claimed seat",
+        seat_index
+    )?;
+    require!(
+        seat.owner_kind == expected_owner_kind,
+        crate::program::YdeltaError::IncorrectAccount,
+        "MatchedLoan seat {} has owner_kind {} (expected {})",
+        seat_index,
+        seat.owner_kind,
+        expected_owner_kind
+    )?;
+    Ok(seat)
 }
 pub fn get_mut_helper_matched_loan(data: &mut [u8], index: DataIndex) -> &mut RBNode<MatchedLoan> {
     get_mut_helper::<RBNode<MatchedLoan>>(data, index)
@@ -440,11 +510,6 @@ impl<Fixed: DerefOrBorrow<MarketFixed>, Dynamic: DerefOrBorrow<[u8]>>
         let tree: ClaimedSeatTreeReadOnly =
             ClaimedSeatTreeReadOnly::new(dynamic, fixed.claimed_seats_root_index, NIL);
         tree.lookup_index(&ClaimedSeat::new_empty(*owner, 0, risk_profile_id))
-    }
-
-    pub fn get_bids(&self) -> BooksideReadOnly {
-        let MarketRef { fixed, dynamic } = self.borrow_market();
-        BooksideReadOnly::new(dynamic, fixed.bids_root_index, fixed.bids_best_index)
     }
 
     pub fn get_asks(&self) -> BooksideReadOnly {

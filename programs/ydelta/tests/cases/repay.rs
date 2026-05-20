@@ -1,19 +1,17 @@
-//! Step 8 — end-to-end test for `process_repay`.
+//! End-to-end test for `process_repay` in the quote-only model.
 //!
-//! Flow (mirrors process_matched_loan setup, then repays):
-//! 1. Alice (lender) deposits USDC.
-//! 2. Bob (borrower)'s collateral seat is seeded directly to skip the
+//! Flow:
+//! 1. A vault risk profile is funded and rests an unbounded ask
+//!    (`provide_vault_liquidity`).
+//! 2. The borrower's collateral seat is seeded directly to skip the
 //!    wSOL-deposit overflow; market state is fine.
-//! 3. Alice asks; Bob bids matching principal; loan promoted by cranker.
-//! 4. Alice ALSO needs USDC to repay (lender's share of the position),
-//!    but actually the BORROWER repays. Bob has the principal credit
-//!    from cranker, but to repay he needs USDC in his wallet (the loan
-//!    paid him atoms, not shares — since he's repaying through marginfi
-//!    deposit, he needs SPL atoms). Pre-mint USDC into Bob's ATA.
-//! 5. Bob repays full. Assert loan.state == Repaid,
-//!    outstanding_debt_atoms == 0, Bob's collateral_withdrawable_shares
-//!    grew by amount_to_shares(loan.collateral_atoms), the loan PDA
-//!    still exists (lender's claim hasn't run).
+//! 3. The borrower places an IOC bid that crosses the vault ask; the
+//!    cranker promotes the matched loan.
+//! 4. The borrower repays (needs SPL USDC atoms in their wallet).
+//! 5. Asserts loan.state == Repaid, outstanding_debt_atoms == 0, the
+//!    borrower's collateral_withdrawable_shares grew by
+//!    amount_to_shares(loan.collateral_atoms), the loan PDA still
+//!    exists (the lender's claim hasn't run).
 
 use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
@@ -21,10 +19,7 @@ use solana_sdk::signer::Signer;
 use marginfi_mocks::state::Bank;
 use ydelta::math::{div_scale, to_scaled};
 use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
-use ydelta::state::{
-    loan::{LoanState, LoanType},
-    OrderType, Side,
-};
+use ydelta::state::loan::{LoanState, LoanType};
 
 use crate::test_utils::marginfi_fixture::mainnet;
 use crate::test_utils::market_fixture::MarketFixture;
@@ -37,85 +32,91 @@ fn amount_to_shares_against(bank_data: &[u8], amount_atoms: u64) -> u128 {
     div_scale(amount_fp48, asv_u128).unwrap()
 }
 
+const PRINCIPAL_ATOMS: u64 = 1_000_000;
+const COLLATERAL_ATOMS: u64 = 100_000_000;
+const TERM_SECONDS: u32 = 30 * 86_400;
+
+/// Stand up a funded vault profile (lender side) + a borrower whose
+/// IOC bid has crossed the vault ask into a promoted Fixed loan.
+/// Returns `(borrower, borrower_usdc)`.
+async fn match_one_loan(fixture: &MarketFixture) -> (solana_sdk::signature::Keypair, Pubkey) {
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let borrower = fixture.create_trader().await;
+
+    // Lender side: vault profile rests an unbounded ask at 600bps/30d.
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            TERM_SECONDS,
+            /*deposit_atoms=*/ 10_000_000,
+        )
+        .await;
+
+    fixture.claim_seat(&borrower).await;
+    // Borrower's collateral seat seeded directly (skip wSOL bank
+    // overflow). Borrower's USDC ATA seeded for the eventual repay.
+    fixture
+        .seed_seat_shares(&borrower.pubkey(), 1_000_000_000, /*is_debt=*/ false)
+        .await;
+    let borrower_usdc = Pubkey::new_unique();
+    fixture.put_token_account(
+        borrower_usdc,
+        mainnet::usdc_mint(),
+        borrower.pubkey(),
+        100_000_000,
+    );
+    fixture.refresh_blockhash().await;
+
+    // Borrower IOC bid @ 800bps crosses the vault ask.
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            TERM_SECONDS,
+            PRINCIPAL_ATOMS,
+            COLLATERAL_ATOMS,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Vault-funded loan → promote via the risk-profile cranker.
+    fixture
+        .crank_matched_loan_for_risk_profile(0)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    (borrower, borrower_usdc)
+}
+
 #[tokio::test]
 async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     let fixture = MarketFixture::new().await;
-
-    let alice = fixture.create_trader().await;
-    let bob = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
-
-    // Alice's USDC funding for the lender side.
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    // Bob's USDC funding for the eventual repay (post-match he'll owe USDC).
-    let bob_usdc = Pubkey::new_unique();
-    fixture.put_token_account(bob_usdc, mainnet::usdc_mint(), bob.pubkey(), 100_000_000);
-    fixture.refresh_blockhash().await;
-
-    let alice_deposit_atoms: u64 = 10_000_000;
-    fixture
-        .deposit(
-            &alice,
-            alice_usdc,
-            /*is_debt=*/ true,
-            alice_deposit_atoms,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    // Bob's collateral seat seeded directly (skip wSOL bank overflow).
-    fixture
-        .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
-        .await;
-
-    // ─── Match: Alice asks 1M @ 600bps / 30d, Bob bids 1M @ 800bps / 30d.
-    let principal_atoms: u64 = 1_000_000;
-    let collateral_atoms: u64 = 100_000_000;
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal_atoms,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            principal_atoms,
-            collateral_atoms,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    fixture.crank_matched_loan(0).await.unwrap();
-    fixture.refresh_blockhash().await;
+    let (bob, bob_usdc) = match_one_loan(&fixture).await;
 
     // Sanity: loan exists, is Active, with the right principal.
     let loan_pre = fixture.read_loan(0).await;
     assert_eq!(loan_pre.state, LoanState::Active as u8);
     assert_eq!(loan_pre.loan_type, LoanType::Fixed as u8);
-    assert_eq!(loan_pre.principal_debt_atoms, principal_atoms);
-    assert_eq!(loan_pre.outstanding_debt_atoms, principal_atoms);
-    assert_eq!(loan_pre.collateral_atoms, collateral_atoms);
+    assert_eq!(loan_pre.principal_debt_atoms, PRINCIPAL_ATOMS);
+    assert_eq!(loan_pre.outstanding_debt_atoms, PRINCIPAL_ATOMS);
+    assert_eq!(loan_pre.collateral_atoms, COLLATERAL_ATOMS);
+    // Rate matching: lender_rate == ask_rate (600), borrower_rate ==
+    // max(bid_rate, ask_rate + protocol_fee_bps_floor). The floor
+    // defaults to 0 on a fresh market, so borrower_rate == 800.
+    assert_eq!(loan_pre.lender_rate_bps, 600);
+    assert_eq!(loan_pre.borrower_rate_bps, 800);
 
     let bob_seat_pre = fixture.read_seat(&bob.pubkey()).await;
     let bob_coll_pre = bob_seat_pre.collateral_withdrawable_shares;
@@ -132,14 +133,14 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     let loan_post = fixture.read_loan(0).await;
     assert_eq!(loan_post.state, LoanState::Repaid as u8);
     assert_eq!(loan_post.outstanding_debt_atoms, 0);
-    // Lender's claimable not zeroed yet — that's `process_claim_repayment`.
+    // Lender's claimable not zeroed yet — that's claim_repayment_for_risk_profile.
     assert!(loan_post.lender_claimable_atoms > 0);
 
     // Bob's seat: collateral credited back at the loan's place-time
     // snapshot, not the live bank value (byte-symmetric with the
     // place_order encumber).
     let snapshot_fp48 = loan_post.borrower_collateral_share_price_snapshot_fp48;
-    let expected_coll_shares: u128 = ((collateral_atoms as u128) << 48) / snapshot_fp48;
+    let expected_coll_shares: u128 = ((COLLATERAL_ATOMS as u128) << 48) / snapshot_fp48;
     let bob_seat_post = fixture.read_seat(&bob.pubkey()).await;
     assert_eq!(
         bob_seat_post.collateral_withdrawable_shares - bob_coll_pre,
@@ -154,69 +155,13 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
 #[tokio::test]
 async fn partial_repay_leaves_loan_active_and_collateral_locked() {
     let fixture = MarketFixture::new().await;
-
-    let alice = fixture.create_trader().await;
-    let bob = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
-
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    let bob_usdc = Pubkey::new_unique();
-    fixture.put_token_account(bob_usdc, mainnet::usdc_mint(), bob.pubkey(), 100_000_000);
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .deposit(&alice, alice_usdc, true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
-        .await;
-
-    let principal_atoms: u64 = 1_000_000;
-    let collateral_atoms: u64 = 100_000_000;
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal_atoms,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            principal_atoms,
-            collateral_atoms,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
-    fixture.refresh_blockhash().await;
+    let (bob, bob_usdc) = match_one_loan(&fixture).await;
 
     let bob_seat_pre = fixture.read_seat(&bob.pubkey()).await;
     let bob_coll_pre = bob_seat_pre.collateral_withdrawable_shares;
 
     // Repay half.
-    let half: u64 = principal_atoms / 2;
+    let half: u64 = PRINCIPAL_ATOMS / 2;
     fixture
         .repay(&bob, 0, bob_usdc, half, /*full_repay=*/ false)
         .await
@@ -225,7 +170,7 @@ async fn partial_repay_leaves_loan_active_and_collateral_locked() {
     // Loan stays Active; outstanding decremented exactly by `half`.
     let loan_post = fixture.read_loan(0).await;
     assert_eq!(loan_post.state, LoanState::Active as u8);
-    assert_eq!(loan_post.outstanding_debt_atoms, principal_atoms - half);
+    assert_eq!(loan_post.outstanding_debt_atoms, PRINCIPAL_ATOMS - half);
 
     // Borrower's collateral should NOT have been credited back yet —
     // partial repay does not release collateral.

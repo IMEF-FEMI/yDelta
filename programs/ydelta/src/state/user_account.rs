@@ -4,7 +4,8 @@ use std::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
 use hypertree::{
-    get_helper, get_mut_helper, DataIndex, Get, RBNode, RedBlackTree, RedBlackTreeReadOnly, NIL,
+    get_helper, get_mut_helper, DataIndex, Get, HyperTreeReadOperations,
+    HyperTreeValueIteratorTrait, RBNode, RedBlackTree, RedBlackTreeReadOnly, NIL,
 };
 use shank::{ShankAccount, ShankType};
 use solana_program::{entrypoint::ProgramResult, program_error::ProgramError, pubkey::Pubkey};
@@ -70,7 +71,7 @@ impl UserAccountFixed {
             market_position_count: 0,
             open_loan_count: 0,
             bump,
-            version: 0,
+            version: crate::state::constants::ACCOUNT_LAYOUT_VERSION,
             _padding: [0; 2],
             _reserved: [0; 7],
         }
@@ -91,6 +92,17 @@ impl YdeltaAccount for UserAccountFixed {
             "Invalid UserAccount discriminant: {} (expected {})",
             self.discriminator,
             USER_ACCOUNT_FIXED_DISCRIMINANT
+        )?;
+        Ok(())
+    }
+
+    fn verify_version(&self) -> ProgramResult {
+        require!(
+            self.version == crate::state::constants::ACCOUNT_LAYOUT_VERSION,
+            ProgramError::InvalidAccountData,
+            "Stale UserAccountFixed layout: version {} (expected {})",
+            self.version,
+            crate::state::constants::ACCOUNT_LAYOUT_VERSION
         )?;
         Ok(())
     }
@@ -416,7 +428,6 @@ pub fn upsert_market_position(
     market: Pubkey,
     seat_index_in_market: DataIndex,
 ) -> Result<DataIndex, ProgramError> {
-    use hypertree::HyperTreeReadOperations;
     let probe = MarketPosition::new_empty(market, seat_index_in_market);
     let existing_idx: DataIndex = {
         let tree = MarketPositionTreeReadOnly::new(dynamic, fixed.market_positions_root_index, NIL);
@@ -436,7 +447,14 @@ pub fn upsert_market_position(
     tree.insert(order_index, probe);
     fixed.market_positions_root_index = tree.get_root_index();
     drop(tree);
-    fixed.market_position_count = fixed.market_position_count.saturating_add(1);
+    // `checked_add` (not `saturating_add`): a saturated count silently
+    // desyncs from the tree and the desync assertion is debug-only /
+    // stripped from the SBF release build. Hard-fail instead.
+    fixed.market_position_count = fixed
+        .market_position_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    assert_market_position_count(fixed, dynamic);
     Ok(order_index)
 }
 
@@ -450,7 +468,6 @@ pub fn upsert_vault_position(
     vault: Pubkey,
     profile_id: u8,
 ) -> Result<DataIndex, ProgramError> {
-    use hypertree::HyperTreeReadOperations;
     let probe = VaultPosition::new_empty(vault, profile_id);
     let existing_idx: DataIndex = {
         let tree = VaultPositionTreeReadOnly::new(dynamic, fixed.vault_positions_root_index, NIL);
@@ -470,7 +487,12 @@ pub fn upsert_vault_position(
     tree.insert(order_index, probe);
     fixed.vault_positions_root_index = tree.get_root_index();
     drop(tree);
-    fixed.vault_position_count = fixed.vault_position_count.saturating_add(1);
+    // `checked_add` — see `upsert_market_position`.
+    fixed.vault_position_count = fixed
+        .vault_position_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    assert_vault_position_count(fixed, dynamic);
     Ok(order_index)
 }
 
@@ -483,24 +505,85 @@ pub fn remove_vault_position(
     dynamic: &mut [u8],
     vault: Pubkey,
     profile_id: u8,
-) -> DataIndex {
-    use hypertree::HyperTreeReadOperations;
+) -> Result<DataIndex, ProgramError> {
     let probe = VaultPosition::new_empty(vault, profile_id);
     let idx: DataIndex = {
         let tree = VaultPositionTreeReadOnly::new(dynamic, fixed.vault_positions_root_index, NIL);
         tree.lookup_index(&probe)
     };
     if idx == NIL {
-        return NIL;
+        return Ok(NIL);
     }
     let mut tree = VaultPositionTree::new(dynamic, fixed.vault_positions_root_index, NIL);
     tree.remove_by_index(idx);
     fixed.vault_positions_root_index = tree.get_root_index();
     drop(tree);
-    fixed.vault_position_count = fixed.vault_position_count.saturating_sub(1);
+    // `checked_sub` (not `saturating_sub`): an underflow here means the
+    // count already desynced from the tree (a double-remove or a
+    // remove-without-insert) — a real accounting bug. Hard-fail.
+    fixed.vault_position_count = fixed
+        .vault_position_count
+        .checked_sub(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    assert_vault_position_count(fixed, dynamic);
     release_address_on_user_account_fixed(fixed, dynamic, idx);
-    idx
+    Ok(idx)
 }
+
+/// Walk a read-only tree and count its live nodes. Used by the
+/// debug-only count-vs-tree-size assertions below — the position/loan
+/// `*_count` fields use saturating arithmetic, which would silently
+/// absorb a desync from the real tree size. This makes any desync
+/// detectable in debug/test builds (the SBF release build strips
+/// `debug_assert!`, so this is a development invariant check, not an
+/// on-chain gate).
+#[cfg(debug_assertions)]
+fn count_tree_nodes<V>(dynamic: &[u8], root_index: DataIndex) -> usize
+where
+    V: hypertree::Payload,
+{
+    let tree = RedBlackTreeReadOnly::<V>::new(dynamic, root_index, NIL);
+    tree.iter::<V>().count()
+}
+
+/// Debug-assert the stored `market_position_count` matches the
+/// actual `MarketPosition` tree size.
+#[cfg(debug_assertions)]
+fn assert_market_position_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
+    let actual = count_tree_nodes::<MarketPosition>(dynamic, fixed.market_positions_root_index);
+    debug_assert_eq!(
+        actual, fixed.market_position_count as usize,
+        "market_position_count desynced from tree size"
+    );
+}
+#[cfg(not(debug_assertions))]
+fn assert_market_position_count(_fixed: &UserAccountFixed, _dynamic: &[u8]) {}
+
+/// Debug-assert the stored `vault_position_count` matches the
+/// actual `VaultPosition` tree size.
+#[cfg(debug_assertions)]
+fn assert_vault_position_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
+    let actual = count_tree_nodes::<VaultPosition>(dynamic, fixed.vault_positions_root_index);
+    debug_assert_eq!(
+        actual, fixed.vault_position_count as usize,
+        "vault_position_count desynced from tree size"
+    );
+}
+#[cfg(not(debug_assertions))]
+fn assert_vault_position_count(_fixed: &UserAccountFixed, _dynamic: &[u8]) {}
+
+/// Debug-assert the stored `open_loan_count` matches the actual
+/// `UserLoanRef` tree size.
+#[cfg(debug_assertions)]
+fn assert_open_loan_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
+    let actual = count_tree_nodes::<UserLoanRef>(dynamic, fixed.open_loans_root_index);
+    debug_assert_eq!(
+        actual, fixed.open_loan_count as usize,
+        "open_loan_count desynced from tree size"
+    );
+}
+#[cfg(not(debug_assertions))]
+fn assert_open_loan_count(_fixed: &UserAccountFixed, _dynamic: &[u8]) {}
 
 /// Apply the four balance fields from a `ClaimedSeat` onto the
 /// user's `MarketPosition` mirror. Caller has already located /
@@ -531,7 +614,6 @@ pub fn insert_open_loan(
     started_at_unix: i64,
     matures_at_unix: i64,
 ) -> Result<DataIndex, ProgramError> {
-    use hypertree::HyperTreeReadOperations;
     let probe = UserLoanRef {
         loan: loan_pda,
         ..Default::default()
@@ -567,7 +649,12 @@ pub fn insert_open_loan(
     tree.insert(order_index, new_ref);
     fixed.open_loans_root_index = tree.get_root_index();
     drop(tree);
-    fixed.open_loan_count = fixed.open_loan_count.saturating_add(1);
+    // `checked_add` — see `upsert_market_position`.
+    fixed.open_loan_count = fixed
+        .open_loan_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    assert_open_loan_count(fixed, dynamic);
     Ok(order_index)
 }
 
@@ -578,8 +665,7 @@ pub fn remove_open_loan(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
     loan_pda: Pubkey,
-) -> DataIndex {
-    use hypertree::HyperTreeReadOperations;
+) -> Result<DataIndex, ProgramError> {
     let probe = UserLoanRef {
         loan: loan_pda,
         ..Default::default()
@@ -589,13 +675,18 @@ pub fn remove_open_loan(
         tree.lookup_index(&probe)
     };
     if idx == NIL {
-        return NIL;
+        return Ok(NIL);
     }
     let mut tree = OpenLoanTree::new(dynamic, fixed.open_loans_root_index, NIL);
     tree.remove_by_index(idx);
     fixed.open_loans_root_index = tree.get_root_index();
     drop(tree);
-    fixed.open_loan_count = fixed.open_loan_count.saturating_sub(1);
+    // `checked_sub` — see `remove_vault_position`.
+    fixed.open_loan_count = fixed
+        .open_loan_count
+        .checked_sub(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    assert_open_loan_count(fixed, dynamic);
     release_address_on_user_account_fixed(fixed, dynamic, idx);
-    idx
+    Ok(idx)
 }

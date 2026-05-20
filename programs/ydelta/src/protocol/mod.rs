@@ -134,8 +134,9 @@ pub trait LendingProtocol {
 
     /// Convert atoms to **asset-side** integration shares at the bank's
     /// current `asset_share_value`. Reads the bank account; no CPI.
-    /// Use this for lender-side bookkeeping (deposit, claim_repayment,
-    /// settle_matured_loan, liquidate_loan, do_vault_settle).
+    /// Use this for lender-side bookkeeping (deposit,
+    /// claim_repayment_for_risk_profile, settle_matured_loan,
+    /// liquidate_loan, do_vault_settle).
     fn amount_to_asset_shares<'info>(
         &self,
         accounts: &[AccountInfo<'info>],

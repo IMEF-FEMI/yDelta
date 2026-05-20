@@ -1,6 +1,6 @@
-//! Instruction builders for `CheckLtvLiquidatable` (tag 40) and
-//! `CheckMaturityLiquidatable` (tag 41) — read-only liquidatability
-//! gates designed for `simulateTransaction` callers.
+//! Instruction builders for `CheckLtvLiquidatable` and
+//! `CheckMaturityLiquidatable` — read-only liquidatability gates
+//! designed for `simulateTransaction` callers.
 
 use solana_program::{
     instruction::{AccountMeta, Instruction},

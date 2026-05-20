@@ -1,10 +1,17 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::{get_mut_helper, DataIndex, Get, NIL};
+use crate::{get_helper, get_mut_helper, DataIndex, Get, NIL};
 
 // FreeList is a linked list that keeps track of all the available nodes that
 // can be filled with ClaimedSeats and RestingOrders.
 const END: u32 = u32::MAX;
+
+/// Upper bound on how far [`FreeList::add`]'s double-free scan will walk
+/// the list before giving up. The free list can never legitimately be
+/// longer than the number of blocks in the largest account (~10 MiB /
+/// smallest block), so this is comfortably above any real list length
+/// while still bounding the worst-case cost of the guard.
+const MAX_FREE_LIST_SCAN: usize = 1 << 20;
 pub struct FreeList<'a, T: Pod> {
     /// Index in data of the head of the free list.
     head_index: DataIndex,
@@ -51,8 +58,27 @@ impl<'a, T: Pod> FreeList<'a, T> {
         self.head_index
     }
 
-    /// Free a node to the free list
+    /// Free a node to the free list.
+    ///
+    /// Double-free guard (debug builds only): re-linking an index
+    /// that is already on the free list cycles the list, and a later
+    /// `remove()` then hands the same slot out twice — two live nodes
+    /// aliasing one block, silently corrupting whichever trees they
+    /// belong to. A full scan on every free is O(n) per tree-node
+    /// removal, so it is gated to debug/test builds; release builds rely
+    /// on the program layer proving single-free. The scan is bounded by
+    /// `MAX_FREE_LIST_SCAN` so a pre-corrupted cyclic list cannot hang.
     pub fn add(&mut self, index: DataIndex) {
+        #[cfg(debug_assertions)]
+        {
+            let mut cursor: DataIndex = self.head_index;
+            let mut steps: usize = 0;
+            while cursor != END && steps < MAX_FREE_LIST_SCAN {
+                assert_ne!(cursor, index, "FreeList::add: double-free of index {index}");
+                cursor = get_helper::<FreeListNode<T>>(self.data, cursor).next_index;
+                steps += 1;
+            }
+        }
         let node: &mut FreeListNode<T> = get_mut_helper::<FreeListNode<T>>(self.data, index);
         node.node_inner = T::zeroed();
         node.next_index = self.head_index;

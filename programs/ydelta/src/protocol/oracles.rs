@@ -57,21 +57,27 @@ const _MARGINFI_ORACLE_MIN_AGE_SECS: i64 = 10;
 /// doesn't reject future-dated oracle data explicitly (the Pyth SDK
 /// handles its own range checks). Defense-in-depth.
 ///
-/// TODO(oracle-future-skew): the gate using this constant is currently
-/// disabled in `read_oracle_price` — see the matching TODO there.
-#[allow(dead_code)]
-const MAX_FUTURE_SKEW_SECS: i64 = 10;
+/// Why 900 s (15 min): Pyth publishers timestamp with wall-clock,
+/// while Solana's `Clock::unix_timestamp` is a stake-weighted estimate
+/// that can lag wall-clock. A tight bound is unsafe — Pyth's
+/// `publish_time` has been observed running tens of minutes ahead of
+/// the on-chain clock, which a tight gate would wrongly reject as
+/// `OracleStale`. The bound must still reject a publisher (or a spoofed
+/// Switchboard `last_update_timestamp`) that claims a price far in the
+/// future, which would otherwise make a price "never stale". 15 min
+/// absorbs realistic stake-weighted-clock drift with headroom.
+const MAX_FUTURE_SKEW_SECS: i64 = 900;
 
 /// Expected number of oracle accounts for a given `OracleSetup`. Mirrors
 /// marginfi v2's `OraclePriceFeedAdapter::try_from_bank_with_max_age`
 /// arity per branch (see `reference/marginfi-v2/programs/marginfi/src/state/price.rs`).
 ///
-/// Support matrix on yDelta v1:
+/// Support matrix:
 /// - `PythPushOracle`, `SwitchboardPull`: 1 account, decoder implemented.
 /// - `StakedWithPythPush`: 3 accounts, decoder implemented (LST adjust).
 /// - Everything else: `None` → `OracleSetupUnsupported`. This includes
-///   the v2 integration setups (Kamino / Drift / Solend / JupLend, both
-///   Pyth- and Switchboard-flavoured) and the Fixed-price banks. They're
+///   the external-integration setups (Kamino / Drift / Solend / JupLend,
+///   both Pyth- and Switchboard-flavoured) and the Fixed-price banks. They're
 ///   listed explicitly rather than caught by a `_` arm so that any
 ///   future addition to marginfi's `OracleSetup` enum surfaces as an
 ///   exhaustiveness compile error here, forcing a deliberate decision
@@ -79,18 +85,18 @@ const MAX_FUTURE_SKEW_SECS: i64 = 10;
 pub fn expected_oracle_account_count(setup: OracleSetup) -> Option<usize> {
     match setup {
         OracleSetup::None => None,
-        // Deprecated upstream — banks created before the v0.1.4 migration.
+        // Legacy marginfi oracle setups — not supported by yDelta.
         OracleSetup::PythLegacy | OracleSetup::SwitchboardV2 => None,
         OracleSetup::PythPushOracle | OracleSetup::SwitchboardPull => Some(1),
         OracleSetup::StakedWithPythPush => Some(3),
-        // ── v2 integration setups (not supported on yDelta v1) ──
+        // ── External-integration setups (not supported by yDelta) ──
         //
         // Each is a single-oracle bank at the CPI boundary but the
         // surrounding protocol (Kamino reserve, Drift spot market,
         // Solend reserve, JupLend lending state) sits in
         // `Bank.integration_acc_1/2/3`. Supporting them needs the
-        // matching reserve/market decoder, which is out of scope for
-        // v1. Reject explicitly here.
+        // matching reserve/market decoder, which yDelta does not
+        // implement. Reject explicitly here.
         OracleSetup::KaminoPythPush
         | OracleSetup::KaminoSwitchboardPull
         | OracleSetup::DriftPythPull
@@ -174,8 +180,7 @@ pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResul
             // [1] LST mint, [2] stake state. Adjust the Pyth SOL price
             // by `(sol_pool_balance - 1 SOL) / lst_supply` to derive
             // the LST's USD-per-token. Mirrors marginfi's
-            // `try_from_bank_with_max_age` `StakedWithPythPush` branch
-            // Mirrors marginfi's price handling.
+            // `try_from_bank_with_max_age` `StakedWithPythPush` branch.
             let lst_mint_ai = &oracle_accounts[1];
             let stake_state_ai = &oracle_accounts[2];
             require!(
@@ -188,12 +193,43 @@ pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResul
                 YdeltaError::IncorrectAccount,
                 "stake_state account does not match bank.config.oracle_keys[2]"
             )?;
+            // The LST mint and stake-state accounts are
+            // pubkey-pinned above, but a pinned key proves nothing about
+            // the bytes at fixed offsets unless the account is owned by
+            // the program that produces that layout. Assert ownership
+            // before decoding: the LST mint must be an SPL-token mint,
+            // the stake-state account must be owned by the stake program.
+            require!(
+                *lst_mint_ai.owner == spl_token::id() || *lst_mint_ai.owner == spl_token_2022::id(),
+                YdeltaError::IncorrectAccount,
+                "lst_mint not owned by an SPL token program (owner={:?})",
+                lst_mint_ai.owner
+            )?;
+            require!(
+                *stake_state_ai.owner == solana_program::stake::program::id(),
+                YdeltaError::IncorrectAccount,
+                "stake_state not owned by the stake program (owner={:?})",
+                stake_state_ai.owner
+            )?;
 
-            let lst_supply = read_spl_mint_supply(lst_mint_ai)?;
+            let (lst_supply, lst_decimals) = read_spl_mint_supply_and_decimals(lst_mint_ai)?;
             require!(
                 lst_supply > 0,
                 AdapterError::OracleSetupUnsupported,
                 "LST mint supply is zero — staked oracle path requires non-empty pool"
+            )?;
+            // The exchange-rate math below assumes the LST mint
+            // and SOL share the same decimal scale (SOL = 9). A
+            // different-decimal LST mint would mis-price by orders of
+            // magnitude, so reject explicitly rather than silently
+            // produce garbage.
+            require!(
+                lst_decimals == SOL_DECIMALS,
+                AdapterError::OracleSetupUnsupported,
+                "LST mint decimals {} != SOL decimals {} — unsupported \
+                 staked-LST oracle configuration",
+                lst_decimals,
+                SOL_DECIMALS
             )?;
             let sol_pool_balance = read_stake_state_v2_delegated_lamports(stake_state_ai)?;
             // The pool has a non-refundable 1 SOL minimum that doesn't
@@ -203,16 +239,33 @@ pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResul
             let sol_pool_adjusted = sol_pool_balance
                 .checked_sub(LAMPORTS_PER_SOL)
                 .ok_or(AdapterError::OracleSetupUnsupported)?;
+            // A pool that holds non-zero LST supply but no backing SOL
+            // is anomalous; producing a 0 price here would make a
+            // collateral LTV check trivially pass. Reject instead.
+            require!(
+                sol_pool_adjusted > 0,
+                AdapterError::OracleSetupUnsupported,
+                "staked-LST pool has zero backing SOL after the 1-SOL \
+                 minimum — refusing to derive a zero price"
+            )?;
 
             let (raw_pyth_fp48, ts) = decode_pyth_push(&oracle_data, oracle_max_confidence)?;
             // Adjust: lst_price_fp48 = sol_price_fp48 × sol_adj / lst_supply.
-            // Both SOL and LST use 9 decimals so no decimal scaling
-            // needed, matching marginfi's handling.
+            // SOL and the LST mint share 9 decimals (asserted above), so
+            // no decimal rescaling is needed. The divisor
+            // (`lst_supply`) was already proven non-zero, so a checked
+            // division here can only fail on overflow — never silently
+            // saturate to 0.
             let adjusted_fp48 = raw_pyth_fp48
                 .checked_mul(sol_pool_adjusted as u128)
                 .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?
                 .checked_div(lst_supply as u128)
-                .unwrap_or(0);
+                .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?;
+            require!(
+                adjusted_fp48 > 0,
+                AdapterError::OracleNonPositive,
+                "derived staked-LST price is zero"
+            )?;
             (adjusted_fp48, ts)
         }
         _ => return Err(AdapterError::OracleSetupUnsupported.into()),
@@ -224,18 +277,28 @@ pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResul
         max_age
     };
     let age = now - publish_time;
-    // TODO(oracle-future-skew): restore the symmetric gate
-    //     `if age < -MAX_FUTURE_SKEW_SECS || age > effective_max_age`
-    // once we have a defensible tolerance. Disabled on 2026-05-12 after
-    // tx 2z2L…Kj1d failed with OracleStale: Pyth `publish_time` ran
-    // ~41 min ahead of `Clock::unix_timestamp` because Solana's
-    // stake-weighted clock lags wall-clock while Pyth publishers use
-    // wall-clock. Marginfi v2's reference reader doesn't gate future
-    // skew either. See `MAX_FUTURE_SKEW_SECS` (currently unused).
-    if age > effective_max_age {
+    // Symmetric staleness gate:
+    //   - `age > effective_max_age`: the price is too far in the PAST.
+    //   - `age < -MAX_FUTURE_SKEW_SECS`: `publish_time` is too far in
+    //     the FUTURE. A price dated far ahead of the chain clock would
+    //     otherwise never read as "stale", so a compromised/buggy
+    //     publisher (or a spoofed Switchboard `last_update_timestamp`)
+    //     could pin a frozen price indefinitely. `MAX_FUTURE_SKEW_SECS`
+    //     (15 min) absorbs Solana's stake-weighted-clock lag relative
+    //     to the wall-clock Pyth publishers use — see its doc comment.
+    if !oracle_timestamp_acceptable(age, effective_max_age) {
         return Err(AdapterError::OracleStale.into());
     }
     Ok(price_fp48)
+}
+
+/// Pure staleness decision. `age = now - publish_time`.
+/// Returns `false` when the oracle's timestamp is either too old
+/// (`age > max_age`) or too far in the future
+/// (`age < -MAX_FUTURE_SKEW_SECS`). Extracted so the symmetric gate is
+/// unit-testable without a `Clock` sysvar.
+fn oracle_timestamp_acceptable(age: i64, effective_max_age: i64) -> bool {
+    age >= -MAX_FUTURE_SKEW_SECS && age <= effective_max_age
 }
 
 // ─────────────────── Pyth-push (PriceUpdateV2) ───────────────────
@@ -272,6 +335,15 @@ pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResul
 
 const PYTH_DISC_LEN: usize = 8;
 const PYTH_VERIFICATION_LEVEL_OFFSET: usize = PYTH_DISC_LEN + 32;
+
+// Sane bounds for a Pyth `PriceUpdateV2.exponent`. Real feeds
+// publish negative exponents in roughly -12..0 (USD price with up to
+// 12 fractional digits). A small positive headroom (+2) is allowed for
+// the rare integer-priced feed; anything outside this window is treated
+// as a malformed/anomalous update rather than scaled into a 0 or an
+// overflow.
+const PYTH_MIN_EXPONENT: i32 = -12;
+const PYTH_MAX_EXPONENT: i32 = 2;
 // Variant tag for the pyth-solana-receiver-sdk `VerificationLevel`
 // `Full` variant. (Variant `Partial { num_signatures: u8 }` = 0 is
 // rejected outright per `MIN_PYTH_PUSH_VERIFICATION_LEVEL = Full`.)
@@ -345,6 +417,26 @@ fn decode_pyth_push(data: &[u8], oracle_max_confidence_u32: u32) -> AdapterResul
     if price <= 0 {
         return Err(AdapterError::OracleNonPositive.into());
     }
+    // A Full-verified Pyth `PriceUpdateV2` always carries a
+    // non-zero confidence interval. A reported `conf` of exactly 0 is
+    // anomalous — the signature of an uninitialized or spoofed feed
+    // account — so reject rather than auto-trust a "perfectly certain"
+    // price. (Switchboard's `std_dev == 0` is handled differently — see
+    // `check_confidence_interval` — because a zero std_dev there is a
+    // legitimate low-volatility outcome.)
+    if conf == 0 {
+        solana_program::msg!("pyth confidence rejection: reported conf is exactly 0");
+        return Err(AdapterError::OracleMaxConfidenceExceeded.into());
+    }
+    // Bound the exponent to a sane range before scaling. Real
+    // Pyth feeds publish exponents in roughly -12..0 (USD prices with
+    // up to 12 fractional digits); positive exponents are vanishingly
+    // rare and a large-magnitude exponent fed into `scale_to_fp48`
+    // either overflows or saturates the price to 0. Reject out-of-range
+    // exponents explicitly instead of silently producing a 0 price.
+    if !(PYTH_MIN_EXPONENT..=PYTH_MAX_EXPONENT).contains(&exponent) {
+        return Err(AdapterError::OracleSetupUnsupported.into());
+    }
     let price_fp48 = scale_to_fp48(price as u128, exponent)?;
     let conf_fp48 = scale_to_fp48(conf as u128, exponent)?;
     check_confidence_interval(
@@ -386,6 +478,12 @@ const SWB_LAST_UPDATE_TS_OFFSET: usize = SWB_DISC_LEN + 2208;
 const SWB_RESULT_VALUE_OFFSET: usize = SWB_DISC_LEN + 2256;
 const SWB_RESULT_STD_DEV_OFFSET: usize = SWB_DISC_LEN + 2272;
 const SWB_PRECISION: u32 = 18;
+// `min_sample_size` is the final byte of the 160-byte header
+// block that ends right before `last_update_timestamp` (body 2208), so
+// it sits at body offset 2207. `result.num_samples` is the count of
+// submissions that fed the current result, at body offset 2352.
+const SWB_MIN_SAMPLE_SIZE_OFFSET: usize = SWB_DISC_LEN + 2207;
+const SWB_RESULT_NUM_SAMPLES_OFFSET: usize = SWB_DISC_LEN + 2352;
 
 /// Decode a Switchboard-Pull `PullFeedAccountData` account.
 ///
@@ -397,9 +495,22 @@ fn decode_switchboard_pull(
     data: &[u8],
     oracle_max_confidence_u32: u32,
 ) -> AdapterResult<(u128, i64)> {
-    if data.len() < SWB_RESULT_STD_DEV_OFFSET + 16 {
+    if data.len() < SWB_RESULT_NUM_SAMPLES_OFFSET + 1 {
         return Err(AdapterError::InvalidIntegrationAccount.into());
     }
+    // Reject a result computed from too few submissions. A
+    // single-submission result has no cross-validation and is trivial
+    // for one malicious node to skew. `num_samples` must reach the
+    // feed's own configured `min_sample_size` floor.
+    let min_sample_size = data[SWB_MIN_SAMPLE_SIZE_OFFSET];
+    let num_samples = data[SWB_RESULT_NUM_SAMPLES_OFFSET];
+    require!(
+        num_samples >= min_sample_size && num_samples > 0,
+        AdapterError::OracleSetupUnsupported,
+        "switchboard result has {} samples; feed min_sample_size is {}",
+        num_samples,
+        min_sample_size
+    )?;
     let last_update_ts = i64::from_le_bytes(
         data[SWB_LAST_UPDATE_TS_OFFSET..SWB_LAST_UPDATE_TS_OFFSET + 8]
             .try_into()
@@ -422,17 +533,22 @@ fn decode_switchboard_pull(
     // to fp48: `(result_value << 48) / 10^PRECISION`. Both operands fit
     // in u128 with margin since result_value ≤ 2^96 ≈ 7.9e28 and the
     // 10^18 divisor is small.
-    let denom = pow10_u128(SWB_PRECISION);
+    let denom = pow10_u128(SWB_PRECISION)?;
+    // `checked_mul` (not `saturating_mul`): a saturated product would
+    // silently corrupt the price. Fault closed on overflow, matching the
+    // Pyth `scale_to_fp48` path.
     let price_fp48 = (result_value as u128)
-        .saturating_mul(1u128 << 48)
+        .checked_mul(1u128 << 48)
+        .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?
         .checked_div(denom)
-        .unwrap_or(0);
+        .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?;
     // std_dev shares result_value's PRECISION scale.
     let std_dev_fp48 = if std_dev > 0 {
         (std_dev as u128)
-            .saturating_mul(1u128 << 48)
+            .checked_mul(1u128 << 48)
+            .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?
             .checked_div(denom)
-            .unwrap_or(0)
+            .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?
     } else {
         0
     };
@@ -459,6 +575,16 @@ fn check_confidence_interval(
     multiplier_bps: u128,
     oracle_max_confidence_u32: u32,
 ) -> AdapterResult<()> {
+    // A confidence of exactly 0 short-circuits to `Ok` here.
+    // The two feed types are treated asymmetrically by their callers:
+    //   - Pyth: `decode_pyth_push` rejects `conf == 0` BEFORE calling
+    //     this helper — a Full-verified `PriceUpdateV2` always carries a
+    //     real (non-zero) confidence interval, so a zeroed `conf` is the
+    //     signature of an uninitialized/spoofed account.
+    //   - Switchboard: a `std_dev` of exactly 0 is legitimate — it
+    //     means every submission in the result agreed to the wire
+    //     precision (common on low-volatility feeds). Rejecting it
+    //     would falsely fault healthy feeds, so it is accepted.
     if conf_fp48 == 0 {
         return Ok(());
     }
@@ -490,15 +616,23 @@ fn check_confidence_interval(
 //
 // SPL Mint layout (post-init): mint_authority COption<Pubkey> = 36
 // bytes (4-byte tag + 32 pubkey), then `supply: u64` at body offset
-// 36..44. The token program owns the account so we don't need to
-// validate ownership here — marginfi already keyed it via
-// `oracle_keys[1]`.
+// 36..44, then `decimals: u8` at body offset 44. The caller validates
+// program ownership (SPL token / token-2022) before this is read so
+// the fixed offsets are authentic.
 
 const SPL_MINT_SUPPLY_OFFSET: usize = 36;
+const SPL_MINT_DECIMALS_OFFSET: usize = 44;
 
-fn read_spl_mint_supply(mint_ai: &AccountInfo) -> AdapterResult<u64> {
+/// Native SOL decimal scale (lamports). Stake-pool LST mints that pair
+/// 1:1 with SOL liquidity must match this for the exchange-rate math.
+const SOL_DECIMALS: u8 = 9;
+
+/// Read both `supply` and `decimals` from an SPL mint account. The
+/// LST exchange rate must scale by the LST mint's *actual* decimals,
+/// not a hard-coded assumption.
+fn read_spl_mint_supply_and_decimals(mint_ai: &AccountInfo) -> AdapterResult<(u64, u8)> {
     let data = mint_ai.try_borrow_data()?;
-    if data.len() < SPL_MINT_SUPPLY_OFFSET + 8 {
+    if data.len() < SPL_MINT_DECIMALS_OFFSET + 1 {
         return Err(AdapterError::InvalidIntegrationAccount.into());
     }
     let supply = u64::from_le_bytes(
@@ -506,7 +640,8 @@ fn read_spl_mint_supply(mint_ai: &AccountInfo) -> AdapterResult<u64> {
             .try_into()
             .unwrap(),
     );
-    Ok(supply)
+    let decimals = data[SPL_MINT_DECIMALS_OFFSET];
+    Ok((supply, decimals))
 }
 
 /// Decode a `StakeStateV2::Stake` account and return
@@ -531,7 +666,7 @@ fn read_stake_state_v2_delegated_lamports(stake_ai: &AccountInfo) -> AdapterResu
 /// integer-only math.
 fn scale_to_fp48(value: u128, exponent: i32) -> AdapterResult<u128> {
     if exponent >= 0 {
-        let factor = pow10_u128(exponent as u32);
+        let factor = pow10_u128(exponent as u32)?;
         let scaled = value
             .checked_mul(factor)
             .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?;
@@ -540,23 +675,43 @@ fn scale_to_fp48(value: u128, exponent: i32) -> AdapterResult<u128> {
             .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?)
     } else {
         let abs_exp = (-exponent) as u32;
-        let denom = pow10_u128(abs_exp);
+        let denom = pow10_u128(abs_exp)?;
         // Order matters for precision: (value << 48) / denom keeps as
         // many fractional bits as the i128 input affords. value is ≤
         // 2^63 (i64), so value << 48 ≤ 2^111 — fits in u128.
         let shifted = value
             .checked_shl(48)
             .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?;
-        Ok(shifted.checked_div(denom).unwrap_or(0))
+        // `denom = pow10_u128(..)` is always >= 1, so the division
+        // itself never faults. The hazard is a result of 0: a
+        // genuinely tiny price whose `(value << 48) / denom` truncates
+        // toward 0. A 0 price makes every downstream LTV check trivially
+        // pass, so hard-error instead and let the caller fault closed.
+        let scaled = shifted
+            .checked_div(denom)
+            .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?;
+        if scaled == 0 {
+            return Err(AdapterError::OracleNonPositive.into());
+        }
+        Ok(scaled)
     }
 }
 
-fn pow10_u128(exp: u32) -> u128 {
+/// `10^exp` as a `u128`. Uses `checked_mul` and surfaces an overflow
+/// as an error rather than `saturating_mul`: a malformed `exponent`
+/// (≥ 39, where `10^exp` exceeds `u128::MAX`) would saturate to
+/// `u128::MAX`, which then yields a price of `0` after the division in
+/// `scale_to_fp48` / the Switchboard decode. A silent price of `0`
+/// makes the LTV check trivially pass; faulting closed is the only
+/// safe behaviour.
+fn pow10_u128(exp: u32) -> AdapterResult<u128> {
     let mut acc: u128 = 1;
     for _ in 0..exp {
-        acc = acc.saturating_mul(10);
+        acc = acc
+            .checked_mul(10)
+            .ok_or(solana_program::program_error::ProgramError::ArithmeticOverflow)?;
     }
-    acc
+    Ok(acc)
 }
 
 #[cfg(test)]
@@ -565,10 +720,21 @@ mod tests {
 
     #[test]
     fn pow10_handful_of_values() {
-        assert_eq!(pow10_u128(0), 1);
-        assert_eq!(pow10_u128(1), 10);
-        assert_eq!(pow10_u128(6), 1_000_000);
-        assert_eq!(pow10_u128(18), 1_000_000_000_000_000_000);
+        assert_eq!(pow10_u128(0).unwrap(), 1);
+        assert_eq!(pow10_u128(1).unwrap(), 10);
+        assert_eq!(pow10_u128(6).unwrap(), 1_000_000);
+        assert_eq!(pow10_u128(18).unwrap(), 1_000_000_000_000_000_000);
+    }
+
+    /// An out-of-range exponent must fault, not `saturating_mul` to
+    /// `u128::MAX` (which silently yields a price of `0` after the
+    /// divide). `10^38` is the largest power of ten that fits in
+    /// `u128`; `10^39` overflows.
+    #[test]
+    fn pow10_overflow_faults_instead_of_saturating() {
+        assert!(pow10_u128(38).is_ok());
+        assert!(pow10_u128(39).is_err());
+        assert!(pow10_u128(u32::MAX).is_err());
     }
 
     #[test]
@@ -690,10 +856,17 @@ mod tests {
     }
 
     #[test]
-    fn confidence_zero_always_passes() {
-        // No oracle uncertainty → no rejection regardless of max_conf.
+    fn confidence_exactly_zero_rejected() {
+        // A verified Pyth update reporting confidence == 0 is
+        // anomalous (uninitialized / spoofed feed). The decoder must
+        // reject it rather than auto-trust a perfectly-certain price.
         let buf = build_pyth_full_with(100_000_000, 0);
-        assert!(decode_pyth_push(&buf, 0).is_ok());
+        let err = decode_pyth_push(&buf, 0).unwrap_err();
+        // Custom(104) = AdapterError::OracleMaxConfidenceExceeded.
+        assert_eq!(
+            err,
+            solana_program::program_error::ProgramError::Custom(104)
+        );
     }
 
     #[test]
@@ -715,5 +888,71 @@ mod tests {
         let one_fp48 = 1u128 << 48;
         let conf_fp48 = one_fp48 / 20;
         assert!(check_confidence_interval(one_fp48, conf_fp48, STD_DEV_MULTIPLE_BPS, 0,).is_ok());
+    }
+
+    /// Build a Full-variant Pyth-push buffer with a custom exponent.
+    fn build_pyth_full_exponent(price: i64, conf: u64, exponent: i32) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::with_capacity(134);
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&[0xAAu8; 32]);
+        buf.push(1); // Full
+        buf.extend_from_slice(&[0xCCu8; 32]);
+        buf.extend_from_slice(&price.to_le_bytes());
+        buf.extend_from_slice(&conf.to_le_bytes());
+        buf.extend_from_slice(&exponent.to_le_bytes());
+        buf.extend_from_slice(&1_700_000_000_i64.to_le_bytes());
+        buf.extend_from_slice(&1_700_000_000_i64.to_le_bytes());
+        buf.extend_from_slice(&price.to_le_bytes());
+        buf.extend_from_slice(&conf.to_le_bytes());
+        buf.extend_from_slice(&12345_u64.to_le_bytes());
+        while buf.len() < 134 {
+            buf.push(0);
+        }
+        buf
+    }
+
+    #[test]
+    fn pyth_exponent_within_bounds_accepted() {
+        // -8 is a typical Pyth USD-price exponent — inside [-12, 2].
+        let buf = build_pyth_full_exponent(100_000_000, 50, -8);
+        assert!(decode_pyth_push(&buf, 0).is_ok());
+    }
+
+    #[test]
+    fn pyth_exponent_out_of_range_rejected() {
+        // A wildly out-of-range exponent must be rejected, not
+        // scaled into a saturated 0 price.
+        for bad_exp in [-30_i32, -13, 3, 50] {
+            let buf = build_pyth_full_exponent(100_000_000, 50, bad_exp);
+            assert!(
+                decode_pyth_push(&buf, 0).is_err(),
+                "exponent {} should be rejected",
+                bad_exp
+            );
+        }
+    }
+
+    #[test]
+    fn future_skew_gate_rejects_future_dated_oracle() {
+        // A fresh price (age ~= 0) and a slightly-stale price within
+        // max_age are accepted; a price dated far in the future
+        // (large negative age) is rejected by the symmetric gate, as
+        // is an over-stale price.
+        let max_age = DEFAULT_ORACLE_MAX_AGE_SECS;
+        // Fresh.
+        assert!(oracle_timestamp_acceptable(0, max_age));
+        // Slightly stale but inside the window.
+        assert!(oracle_timestamp_acceptable(max_age - 1, max_age));
+        // Over-stale (past).
+        assert!(!oracle_timestamp_acceptable(max_age + 1, max_age));
+        // Mildly future-dated within the skew tolerance — accepted
+        // (absorbs stake-weighted-clock lag).
+        assert!(oracle_timestamp_acceptable(-MAX_FUTURE_SKEW_SECS, max_age));
+        // Far-future-dated — REJECTED by the future side of the gate.
+        assert!(!oracle_timestamp_acceptable(
+            -MAX_FUTURE_SKEW_SECS - 1,
+            max_age
+        ));
+        assert!(!oracle_timestamp_acceptable(-86_400, max_age));
     }
 }

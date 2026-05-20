@@ -109,8 +109,20 @@ impl<'a, 'info> CreateMarketContext<'a, 'info> {
         let market_signer_ai = next_account_info(account_iter)?;
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        let collateral_bank = MarginfiBankInfo::new(collateral_bank_ai, marginfi_program.info.key)?;
+        // pin both banks to the marginfi_group account passed here.
+        // create_market stamps `MarketFixed.marginfi_group = group_ai.key`,
+        // so binding the banks to it now guarantees every later loader's
+        // bank/account-vs-stored-group check is consistent.
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            group_ai.key,
+        )?;
+        let collateral_bank = MarginfiBankInfo::new_with_expected_group(
+            collateral_bank_ai,
+            marginfi_program.info.key,
+            group_ai.key,
+        )?;
 
         // Bind each bank's mint to the market's mint. Without this
         // check, a privileged admin could stand up a market whose
@@ -279,10 +291,20 @@ impl<'a, 'info> DepositContext<'a, 'info> {
         let borrower_integration_account: Pubkey = market_fixed.borrower_integration_account;
         let market_signer_pk: Pubkey = market_fixed.market_signer;
         let market_signer_bump: u8 = market_fixed.market_signer_bump;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         let token_account_info = next_account_info(account_iter)?;
         let token_mint_bytes = token_account_info.try_borrow_data()?;
+        // Length guard: an account with 1-31 bytes of data would panic on
+        // the `[0..32]` slice below. `TokenAccountInfo::new_with_owner`
+        // re-validates the account as a real SPL token account further
+        // down; this only protects the side-selection read.
+        require!(
+            token_mint_bytes.len() >= 32,
+            YdeltaError::InvalidDepositAccounts,
+            "trader token account data too short to read mint",
+        )?;
         let (mint_key, expected_bank, is_debt) =
             if token_mint_bytes[0..32] == debt_mint.to_bytes()[..] {
                 (debt_mint, debt_lending_pool, true)
@@ -324,9 +346,29 @@ impl<'a, 'info> DepositContext<'a, 'info> {
         let market_signer_ai = next_account_info(account_iter)?;
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
 
+        // bind group + bank + marginfi-account to the group pinned
+        // on `MarketFixed.marginfi_group`.
+        // the integration account on this hot deposit CPI path is
+        // a per-market PDA whose marginfi `authority` is the
+        // `market_signer`; bind it so a hijacked marginfi account is
+        // rejected even if the address check is ever dropped.
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
-        let marginfi_account = MarginfiAccountInfo::new(mfi_acct_ai, marginfi_program.info.key)?;
-        let bank = MarginfiBankInfo::new(bank_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
+        let marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
+            mfi_acct_ai,
+            marginfi_program.info.key,
+            &market_signer_pk,
+            &expected_marginfi_group,
+        )?;
+        let bank = MarginfiBankInfo::new_with_expected_group(
+            bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
 
         require!(
             *mfi_acct_ai.key == expected_integration_account,
@@ -401,7 +443,6 @@ pub(crate) struct WithdrawContext<'a, 'info> {
     /// Per-market staging vault, owned by `market_signer`. Marginfi
     /// withdraws atoms here; ydelta then SPL-transfers vault → user.
     pub vault: TokenAccountInfo<'a, 'info>,
-    pub vault_bump: u8,
     pub token_program: TokenProgram<'a, 'info>,
     pub mint: MintAccountInfo<'a, 'info>,
     pub is_debt: bool,
@@ -448,10 +489,17 @@ impl<'a, 'info> WithdrawContext<'a, 'info> {
         let borrower_integration_account: Pubkey = market_fixed.borrower_integration_account;
         let market_signer_pk: Pubkey = market_fixed.market_signer;
         let market_signer_bump: u8 = market_fixed.market_signer_bump;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         let token_account_info = next_account_info(account_iter)?;
         let token_mint_bytes = token_account_info.try_borrow_data()?;
+        // Length guard — see the equivalent in `DepositContext::load`.
+        require!(
+            token_mint_bytes.len() >= 32,
+            YdeltaError::InvalidWithdrawAccounts,
+            "trader token account data too short to read mint",
+        )?;
         let (mint_key, _expected_bank, is_debt) =
             if token_mint_bytes[0..32] == debt_mint.to_bytes()[..] {
                 (debt_mint, debt_lending_pool, true)
@@ -471,7 +519,7 @@ impl<'a, 'info> WithdrawContext<'a, 'info> {
             TokenAccountInfo::new_with_owner(token_account_info, &mint_key, payer.key)?;
         // Per-market staging vault for this side, owned by `market_signer`.
         let vault_ai = next_account_info(account_iter)?;
-        let (expected_vault, vault_bump) = get_vault_address(market.key, &mint_key);
+        let (expected_vault, _vault_bump) = get_vault_address(market.key, &mint_key);
         let vault = TokenAccountInfo::new_with_owner_and_key(
             vault_ai,
             &mint_key,
@@ -496,10 +544,33 @@ impl<'a, 'info> WithdrawContext<'a, 'info> {
         let market_signer_ai = next_account_info(account_iter)?;
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
 
+        // bind group + banks + marginfi-account to the group pinned
+        // on `MarketFixed.marginfi_group`.
+        // the integration account on this hot withdraw CPI path is
+        // a per-market PDA whose marginfi `authority` is the
+        // `market_signer`; bind it uniformly.
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
-        let marginfi_account = MarginfiAccountInfo::new(mfi_acct_ai, marginfi_program.info.key)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        let collateral_bank = MarginfiBankInfo::new(collateral_bank_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
+        let marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
+            mfi_acct_ai,
+            marginfi_program.info.key,
+            &market_signer_pk,
+            &expected_marginfi_group,
+        )?;
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let collateral_bank = MarginfiBankInfo::new_with_expected_group(
+            collateral_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
 
         require!(
             *mfi_acct_ai.key == expected_integration_account,
@@ -577,7 +648,6 @@ impl<'a, 'info> WithdrawContext<'a, 'info> {
             market,
             trader_token,
             vault,
-            vault_bump,
             token_program,
             mint,
             is_debt,
@@ -594,57 +664,6 @@ impl<'a, 'info> WithdrawContext<'a, 'info> {
             market_signer_bump,
             marginfi_program,
             user_account_ai,
-        })
-    }
-}
-
-/// Shared account shape for `CancelOrder` and `UpdateOrder`. Pure seat-
-/// balance bookkeeping — no token accounts, no marginfi CPI, no oracle
-/// reads. `PlaceOrder` is a separate context (it carries marginfi/oracle
-/// accounts for LTV-at-match + P2Pool fallback); `cancel` and `update`
-/// keep the simpler 3-account form.
-pub(crate) struct OrderContext<'a, 'info> {
-    pub payer: Signer<'a, 'info>,
-    pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
-    pub _system_program: Program<'a, 'info>,
-    /// Signer's UserAccount mirror.
-    pub user_account_ai: &'a AccountInfo<'info>,
-    /// OPTIONAL trailing loan account, supplied only when canceling a
-    /// `SecondaryLoanSale` bid so the processor can clear the loan's
-    /// `has_resting_secondary_bid` flag (O(1) duplicate-check
-    /// counterpart). For primary cancels this is `None`.
-    pub secondary_loan_ai: Option<&'a AccountInfo<'info>>,
-}
-
-impl<'a, 'info> OrderContext<'a, 'info> {
-    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
-        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
-
-        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        let _ = load_global_config(account_iter)?;
-        let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
-        require_market_not_paused(&market)?;
-        let _system_program =
-            Program::new(next_account_info(account_iter)?, &system_program::id())?;
-
-        // Signer's UserAccount + system_program for auto-create.
-        let user_account_ai = next_account_info(account_iter)?;
-        let system_program_ai = next_account_info(account_iter)?;
-        let _ = crate::validation::user_account::ensure_user_account_for_signer(
-            &payer,
-            user_account_ai,
-            system_program_ai,
-        )?;
-
-        // Optional trailing loan account for secondary-bid cancels.
-        let secondary_loan_ai = account_iter.next();
-
-        Ok(Self {
-            payer,
-            market,
-            _system_program,
-            user_account_ai,
-            secondary_loan_ai,
         })
     }
 }
@@ -694,24 +713,11 @@ pub(crate) struct PlaceOrderContext<'a, 'info> {
     pub debt_liquidity_vault: TokenAccountInfo<'a, 'info>,
     /// Marginfi PDA at `[b"liquidity_vault_auth", debt_bank.key]`.
     pub debt_bank_liquidity_vault_authority: &'a AccountInfo<'info>,
-    /// Destination of the `marginfi.borrow` CPI when a Bid's residual
-    /// triggers a P2Pool borrow. The borrower's debt-mint wallet token
-    /// account — atoms land directly here so the borrower doesn't need
-    /// a separate claim ix. Owned by `payer`.
-    pub borrower_debt_token: TokenAccountInfo<'a, 'info>,
     /// SPL token program for the borrower's debt-mint ATA. Marginfi's
     /// `lending_account_borrow` does the SPL transfer internally.
     pub token_program: TokenProgram<'a, 'info>,
     /// Signer's UserAccount mirror.
     pub user_account_ai: &'a AccountInfo<'info>,
-    /// Present only when `kind == SecondaryLoanSale`. The existing
-    /// Loan PDA being put up for sale by the seller (signer). Loader
-    /// validates: market match, `loan_type == Fixed`, `outstanding > 0`,
-    /// `lender_seat_index == signer's seat`. The matching engine works
-    /// off snapshot fields stamped onto the `RestingOrder` at placement;
-    /// the cranker re-reads the loan at finalization (staleness
-    /// defense). `None` for primary orders.
-    pub secondary_loan: Option<YdeltaAccountInfo<'a, 'info, crate::state::loan::LoanFixed>>,
     /// Optional GlobalVault account. Required only when the matching
     /// engine crosses a vault-owned maker; without it, those crosses
     /// are skipped (Manifest-style `GlobalSkip`). The processor
@@ -722,14 +728,8 @@ pub(crate) struct PlaceOrderContext<'a, 'info> {
 }
 
 impl<'a, 'info> PlaceOrderContext<'a, 'info> {
-    /// Loader for `place_order`. `kind` decides whether an extra Loan
-    /// PDA account is consumed at the end of the account list
-    /// (`SecondaryLoanSale` path). For `Primary` orders no trailing
-    /// loan account is consumed.
-    pub fn load(
-        accounts: &'a [AccountInfo<'info>],
-        kind: crate::state::OrderKind,
-    ) -> Result<Self, ProgramError> {
+    /// Loader for `place_order`.
+    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
@@ -752,6 +752,7 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
         let market_signer_pk: Pubkey = market_fixed.market_signer;
         let market_signer_bump: u8 = market_fixed.market_signer_bump;
         let debt_mint_pk: Pubkey = market_fixed.debt_mint;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         // Marginfi accounts — strict order on the wire.
@@ -770,11 +771,33 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
         let borrower_debt_token_ai = next_account_info(account_iter)?;
         let token_program = TokenProgram::new(next_account_info(account_iter)?)?;
 
+        // bind group + banks + marginfi-account to the group pinned
+        // on `MarketFixed.marginfi_group`.
+        // the borrower-side integration account on this hot
+        // place_order CPI path is a per-market PDA whose marginfi
+        // `authority` is the `market_signer`; bind it uniformly.
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
-        let borrower_marginfi_account =
-            MarginfiAccountInfo::new(mfi_acct_ai, marginfi_program.info.key)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        let collateral_bank = MarginfiBankInfo::new(collateral_bank_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
+        let borrower_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
+            mfi_acct_ai,
+            marginfi_program.info.key,
+            &market_signer_pk,
+            &expected_marginfi_group,
+        )?;
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let collateral_bank = MarginfiBankInfo::new_with_expected_group(
+            collateral_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
 
         require!(
             *mfi_acct_ai.key == borrower_integration_account,
@@ -830,11 +853,12 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
         // StakedWithPythPush) flow through end-to-end; the decoder
         // side rejects setups it doesn't yet know how to read.
 
-        // Borrower's debt-mint ATA — destination of the marginfi.borrow
-        // CPI on the P2Pool fallback. Owned by the payer so the
-        // borrower receives borrowed atoms in their own wallet directly.
-        let borrower_debt_token =
-            TokenAccountInfo::new_with_owner(borrower_debt_token_ai, &debt_mint_pk, payer.key)?;
+        // Borrower's debt-mint ATA. It is still required in the account
+        // list (and validated here as a debt-mint token account owned by
+        // the payer) for forward use — e.g. an opt-in immediate-liquidity
+        // flow where the marginfi.borrow CPI lands atoms here directly —
+        // but the processor does not currently read it.
+        let _ = TokenAccountInfo::new_with_owner(borrower_debt_token_ai, &debt_mint_pk, payer.key)?;
 
         // Signer's UserAccount + system_program for auto-create.
         let user_account_ai = next_account_info(account_iter)?;
@@ -850,9 +874,15 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
         // through `market.debt_vault` and into
         // `lender_integration_account` so they earn lender-side yield
         // until the borrower withdraws via `process_withdraw`.
+        // lender_integration_account is a per-market PDA whose
+        // marginfi `authority` is the `market_signer`; bind it uniformly.
         let lender_mfi_acct_ai = next_account_info(account_iter)?;
-        let lender_marginfi_account =
-            MarginfiAccountInfo::new(lender_mfi_acct_ai, marginfi_program.info.key)?;
+        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
+            lender_mfi_acct_ai,
+            marginfi_program.info.key,
+            &market_signer_pk,
+            &expected_marginfi_group,
+        )?;
         require!(
             *lender_mfi_acct_ai.key == lender_integration_account,
             YdeltaError::IncorrectAccount,
@@ -867,52 +897,6 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
             "market_debt_vault does not match MarketFixed.debt_vault"
         )?;
         let market_debt_vault = TokenAccountInfo::new(market_debt_vault_ai, &debt_mint_pk)?;
-
-        // SecondaryLoanSale path consumes one extra account (the Loan
-        // PDA being put up for sale) at the end of the list.
-        // Validation here is read-only: market match, loan_type=Fixed,
-        // outstanding>0, lender owns the loan. The matching engine then
-        // snapshots rate/term/principal off the loan onto the
-        // RestingOrder; the loan account is NOT carried through into
-        // the matching pass.
-        let secondary_loan = if kind == crate::state::OrderKind::SecondaryLoanSale {
-            let loan_ai = next_account_info(account_iter)?;
-            let loan = YdeltaAccountInfo::<crate::state::loan::LoanFixed>::new(loan_ai)?;
-            let loan_fixed = loan.get_fixed()?;
-            require!(
-                loan_fixed.market == *market.key,
-                YdeltaError::IncorrectAccount,
-                "secondary_loan.market does not match this market"
-            )?;
-            require!(
-                loan_fixed.loan_type == crate::state::loan::LoanType::Fixed as u8,
-                YdeltaError::SecondaryLoanWrongType,
-                "secondary_loan.loan_type is not Fixed (P2Pool loans cannot be resold)"
-            )?;
-            // Vault-funded loans run their full tenure. They can only
-            // exit via the borrower's repay, post-maturity
-            // `settle_matured_loan`, or LTV-breach `liquidate_loan`.
-            // Secondary book is wallet-lender only.
-            require!(
-                loan_fixed.lender_kind == crate::state::OWNER_KIND_USER,
-                YdeltaError::SecondaryLoanWrongType,
-                "secondary_loan: vault-funded loans cannot be sold on the \
-                 secondary book — they hold to maturity / liquidation"
-            )?;
-            require!(
-                loan_fixed.outstanding_debt_atoms > 0,
-                YdeltaError::SecondaryLoanSettled,
-                "secondary_loan has no outstanding debt to transfer"
-            )?;
-            // Owner check (signer's seat == loan.lender_seat_index) is
-            // done in the processor where the seat tree is reachable;
-            // do it there to avoid double-borrowing the market data
-            // here.
-            drop(loan_fixed);
-            Some(loan)
-        } else {
-            None
-        };
 
         // Optional GlobalVault account at the tail. Always derivable
         // from `debt_mint` so well-behaved callers include it;
@@ -962,10 +946,8 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
             marginfi_program,
             debt_liquidity_vault,
             debt_bank_liquidity_vault_authority: debt_bank_liquidity_vault_authority_ai,
-            borrower_debt_token,
             token_program,
             user_account_ai,
-            secondary_loan,
             vault,
         })
     }
@@ -974,62 +956,25 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
 /// Resolved cranker dispatch mode, computed by the loader by reading
 /// the MatchedLoan queue node's flags. The processor branches on this
 /// enum to drive the correct finalization path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProcessMatchedLoanMode {
-    /// Fresh-loan creation. `loan` is empty; processor allocates via
-    /// system_program::create_account.
-    Primary,
-    /// Full secondary transfer. `existing_loan` is the
-    /// already-initialized Loan PDA being mutated. No new PDA.
-    SecondaryFull,
-    /// Partial secondary transfer with split. `existing_loan` is
-    /// mutated; `split_loan_to_create` (empty) is allocated for the
-    /// buyer's new sub-loan.
-    SecondarySplit,
-}
-
 /// Account list for `ProcessMatchedLoan`. Permissionless cranker — anyone
 /// signs as `payer`. The cranker pays Loan-PDA rent (refunded if the
 /// loan ever closes).
 ///
-/// The cranker handles both PRIMARY and SECONDARY-flagged queue nodes.
-/// The on-wire account count varies by mode:
-/// - PRIMARY: `[payer, market, loan, debt_bank, marginfi_program,
-///   system_program]` (6).
-/// - SECONDARY full: PRIMARY accounts + `[collateral_bank, debt_oracle,
-///   collateral_oracle]` for the cranker-side LTV check (9).
-/// - SECONDARY split: SECONDARY full + `[split_loan_to_create]` (10).
-///
-/// The loader reads the queue node up front to determine `mode` and
-/// parses the appropriate account suffix.
+/// The on-wire account list is
+/// `[payer, market, loan, debt_bank, marginfi_program, system_program]`
+/// (6), optionally followed by the vault-settlement bundle when the
+/// lender's seat is risk-profile-owned.
 pub(crate) struct ProcessMatchedLoanContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
-    /// Empty Loan PDA being created (mode == Primary). `None` for
-    /// SECONDARY paths.
-    pub loan: Option<EmptyAccount<'a, 'info>>,
-    /// SECONDARY (full or split): existing Loan PDA being mutated.
-    /// `None` for primary.
-    pub existing_loan: Option<YdeltaAccountInfo<'a, 'info, crate::state::loan::LoanFixed>>,
-    /// SECONDARY_SPLIT only: empty Loan PDA allocated for the buyer's
-    /// new sub-loan. `None` otherwise.
-    pub split_loan_to_create: Option<EmptyAccount<'a, 'info>>,
-    /// Bump for the loan PDA being created (primary or split).
-    /// Unused for SECONDARY full.
+    /// Empty Loan PDA being created.
+    pub loan: EmptyAccount<'a, 'info>,
+    /// Bump for the loan PDA being created.
     pub loan_bump: u8,
     /// Debt bank — read by the processor for `amount_to_shares` against
     /// the credited principal.
     pub debt_bank: MarginfiBankInfo<'a, 'info>,
-    /// SECONDARY paths: collateral bank for LTV recheck. `None` for
-    /// primary.
-    pub collateral_bank: Option<MarginfiBankInfo<'a, 'info>>,
-    /// SECONDARY paths: variadic oracle slices for LTV recheck. `None`
-    /// for primary. See [`MarginfiOracleAis`].
-    pub debt_oracle_ais: Option<MarginfiOracleAis<'a, 'info>>,
-    pub collateral_oracle_ais: Option<MarginfiOracleAis<'a, 'info>>,
     pub system_program: Program<'a, 'info>,
-    /// Resolved cranker dispatch mode. Always set.
-    pub mode: ProcessMatchedLoanMode,
     /// MatchedLoan queue node, copied at load time so the processor
     /// can re-read without re-borrowing the market data.
     pub queue_node: crate::state::market::MatchedLoan,
@@ -1037,9 +982,9 @@ pub(crate) struct ProcessMatchedLoanContext<'a, 'info> {
     /// uses this to remove the node + free the slot after
     /// finalization (or on stale-bid drop).
     pub queue_node_index: hypertree::DataIndex,
-    /// Vault settlement bundle. Required when Primary mode AND
-    /// lender's `ClaimedSeat.owner_kind == GlobalVault`. None for
-    /// wallet lenders (the loader skips reading these accounts).
+    /// Vault settlement bundle. Required when the lender's
+    /// `ClaimedSeat.owner_kind == GlobalVault`. None for wallet
+    /// lenders (the loader skips reading these accounts).
     pub vault_settle: Option<VaultSettleAccounts<'a, 'info>>,
 }
 
@@ -1087,17 +1032,22 @@ impl<'a, 'info> ProcessMatchedLoanContext<'a, 'info> {
             "marginfi_program key does not match expected program id"
         )?;
         let debt_lending_pool: Pubkey = market.get_fixed()?.debt_lending_pool;
-        let collateral_lending_pool: Pubkey = market.get_fixed()?.collateral_lending_pool;
+        let expected_marginfi_group: Pubkey = market.get_fixed()?.marginfi_group;
         require!(
             *debt_bank_ai.key == debt_lending_pool,
             YdeltaError::IncorrectAccount,
             "debt_bank does not match market.debt_lending_pool"
         )?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program_ai.key)?;
+        // bind debt_bank to the group pinned on MarketFixed.
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program_ai.key,
+            &expected_marginfi_group,
+        )?;
 
-        // Read the queue node up front so we can dispatch on SECONDARY
-        // flags. The node is copied (Pod) so the loader can drop the
-        // borrow before the processor mutates the market.
+        // Read the queue node up front. The node is copied (Pod) so the
+        // loader can drop the borrow before the processor mutates the
+        // market.
         let (queue_node, queue_node_index) = {
             let root = market.get_fixed()?.matched_loans_root_index;
             let market_data = market.info.try_borrow_data()?;
@@ -1117,120 +1067,32 @@ impl<'a, 'info> ProcessMatchedLoanContext<'a, 'info> {
             (node, idx)
         };
 
-        let is_secondary =
-            (queue_node.flags & crate::state::market::MATCHED_LOAN_FLAG_SECONDARY) != 0;
-        let is_split =
-            (queue_node.flags & crate::state::market::MATCHED_LOAN_FLAG_SECONDARY_SPLIT) != 0;
-
-        // Branch on flags to determine the loan_a slot's expected role
-        // (empty PDA to create, vs init PDA to mutate) and the rest of
-        // the account-list shape.
-        let mode = match (is_secondary, is_split) {
-            (false, _) => ProcessMatchedLoanMode::Primary,
-            (true, false) => ProcessMatchedLoanMode::SecondaryFull,
-            (true, true) => ProcessMatchedLoanMode::SecondarySplit,
+        // Empty Loan PDA at [b"loan", market, queue.sequence_le].
+        let (loan, loan_bump) = {
+            let (expected_loan, bump) = crate::state::loan::loan_pda(market.key, sequence);
+            require!(
+                *loan_ai.key == expected_loan,
+                YdeltaError::IncorrectAccount,
+                "loan account does not match per-(market, sequence) PDA"
+            )?;
+            (EmptyAccount::new(loan_ai)?, bump)
         };
 
-        let (loan, existing_loan, loan_bump) = match mode {
-            ProcessMatchedLoanMode::Primary => {
-                // Empty Loan PDA at [b"loan", market, queue.sequence_le].
-                let (expected_loan, bump) = crate::state::loan::loan_pda(market.key, sequence);
-                require!(
-                    *loan_ai.key == expected_loan,
-                    YdeltaError::IncorrectAccount,
-                    "loan account does not match per-(market, sequence) PDA"
-                )?;
-                (Some(EmptyAccount::new(loan_ai)?), None, bump)
-            }
-            ProcessMatchedLoanMode::SecondaryFull | ProcessMatchedLoanMode::SecondarySplit => {
-                // Existing Loan PDA at the queue node's
-                // referenced_loan_sequence.
-                let referenced_seq = queue_node.referenced_loan_sequence;
-                let (expected_loan, _bump) =
-                    crate::state::loan::loan_pda(market.key, referenced_seq);
-                require!(
-                    *loan_ai.key == expected_loan,
-                    YdeltaError::IncorrectAccount,
-                    "loan_a does not match the referenced loan PDA \
-                     [b\"loan\", market, referenced_loan_sequence={}]",
-                    referenced_seq
-                )?;
-                let existing = YdeltaAccountInfo::<crate::state::loan::LoanFixed>::new(loan_ai)?;
-                (None, Some(existing), 0u8)
-            }
-        };
-
-        // SECONDARY paths add: collateral_bank, debt_oracle_ais,
-        // collateral_oracle_ais. SECONDARY_SPLIT also adds
-        // split_loan_to_create. Oracle slices are variadic per the
-        // bank's `OracleSetup`; pubkey-pinned per-slot by
-        // `MarginfiOracleAis::load`.
-        let (collateral_bank, debt_oracle_ais, collateral_oracle_ais, split_loan_to_create) =
-            match mode {
-                ProcessMatchedLoanMode::Primary => (None, None, None, None),
-                ProcessMatchedLoanMode::SecondaryFull | ProcessMatchedLoanMode::SecondarySplit => {
-                    let collateral_bank_ai = next_account_info(account_iter)?;
-                    require!(
-                        *collateral_bank_ai.key == collateral_lending_pool,
-                        YdeltaError::IncorrectAccount,
-                        "collateral_bank does not match market.collateral_lending_pool"
-                    )?;
-                    let collateral_bank =
-                        MarginfiBankInfo::new(collateral_bank_ai, marginfi_program_ai.key)?;
-
-                    let debt_oracle_ais = MarginfiOracleAis::load(account_iter, debt_bank_ai)?;
-                    let collateral_oracle_ais =
-                        MarginfiOracleAis::load(account_iter, collateral_bank_ai)?;
-
-                    let split_loan_to_create = if mode == ProcessMatchedLoanMode::SecondarySplit {
-                        let split_ai = next_account_info(account_iter)?;
-                        // Derive the split PDA from the QUEUE NODE'S
-                        // stable `sequence` (== the cranker's
-                        // `params.matched_loan_sequence` ix data,
-                        // which is also the key the loader uses to
-                        // look up the queue node), under the distinct
-                        // `SPLIT_LOAN_SEED` prefix. Stable across the
-                        // slot — concurrent place_orders bumping
-                        // `market.matched_loan_sequence` cannot
-                        // invalidate the cranker's pre-derived PDA.
-                        let (expected_split, _bump) =
-                            crate::state::loan::split_loan_pda(market.key, sequence);
-                        require!(
-                            *split_ai.key == expected_split,
-                            YdeltaError::IncorrectAccount,
-                            "split_loan_to_create PDA must equal \
-                             [b\"split_loan\", market, queue_node_sequence={}]",
-                            sequence
-                        )?;
-                        Some(EmptyAccount::new(split_ai)?)
-                    } else {
-                        None
-                    };
-
-                    (
-                        Some(collateral_bank),
-                        Some(debt_oracle_ais),
-                        Some(collateral_oracle_ais),
-                        split_loan_to_create,
-                    )
-                }
-            };
-
-        // Vault settlement accounts. Required when:
-        // - Primary mode: the lender's seat is risk-profile-owned (the
-        //   cranker's `do_vault_settle` migrates atoms vault → market).
-        // - Secondary mode: the NEW lender's seat is risk-profile-owned
-        //   (a SecondaryLoanSale bid crossed a risk-profile maker, so
-        //   the cranker migrates the buyer's cash atoms vault → market
-        //   for the seller's payout).
+        // Vault settlement accounts. Required when the lender's seat is
+        // risk-profile-owned (the cranker's `do_vault_settle` migrates
+        // atoms vault → market).
+        //
+        // EXCEPTION — `MATCHED_LOAN_FLAG_VAULT_PRESETTLED`: nodes emitted
+        // by `convert_p2pool_to_fixed` already had their vault principal
+        // migrated and the profile `encumbered → deployed` bookkeeping
+        // applied by the convert processor. The cranker must NOT
+        // re-migrate, so the vault-settle accounts are neither required
+        // nor loaded for these nodes.
+        let presettled: bool =
+            queue_node.flags & crate::state::market::MATCHED_LOAN_FLAG_VAULT_PRESETTLED != 0;
         let vault_settle: Option<VaultSettleAccounts<'a, 'info>> = {
-            let trigger_seat_index: hypertree::DataIndex = match mode {
-                ProcessMatchedLoanMode::Primary => queue_node.lender_seat_index,
-                ProcessMatchedLoanMode::SecondaryFull | ProcessMatchedLoanMode::SecondarySplit => {
-                    queue_node.new_lender_seat_index
-                }
-            };
-            if trigger_seat_index == NIL {
+            let trigger_seat_index: hypertree::DataIndex = queue_node.lender_seat_index;
+            if trigger_seat_index == NIL || presettled {
                 None
             } else {
                 let owner_kind: u8 = {
@@ -1257,15 +1119,9 @@ impl<'a, 'info> ProcessMatchedLoanContext<'a, 'info> {
             payer,
             market,
             loan,
-            existing_loan,
-            split_loan_to_create,
             loan_bump,
             debt_bank,
-            collateral_bank,
-            debt_oracle_ais,
-            collateral_oracle_ais,
             system_program,
-            mode,
             queue_node,
             queue_node_index,
             vault_settle,
@@ -1341,7 +1197,7 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
     )?;
 
     // Vault.mint must equal the loan's debt mint.
-    {
+    let expected_marginfi_group: Pubkey = {
         let vfixed = vault.get_fixed()?;
         require!(
             vfixed.mint == mint_key,
@@ -1353,7 +1209,8 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
             YdeltaError::IncorrectAccount,
             "vault.lending_pool does not match market.debt_bank"
         )?;
-    }
+        vfixed.integration_pool
+    };
 
     // Market debt vault.
     let (expected_market_debt_vault, _) =
@@ -1423,17 +1280,23 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
     )?;
     let liquidity_vault = TokenAccountInfo::new(liquidity_vault_ai, &mint_key)?;
 
-    // Bind authorities to the respective signers.
-    let global_vault_integration_account = MarginfiAccountInfo::new_with_expected_authority(
-        vault_integration_ai,
-        marginfi_program_id,
-        vault_signer_ai.key,
-    )?;
-    let market_lender_integration_account = MarginfiAccountInfo::new_with_expected_authority(
-        market_lender_integration_ai,
-        marginfi_program_id,
-        &expected_market_signer,
-    )?;
+    // Bind authorities to the respective signers, and bind the
+    // marginfi-account `group` field to the group pinned on
+    // `GlobalVaultFixed.integration_pool`.
+    let global_vault_integration_account =
+        MarginfiAccountInfo::new_with_expected_authority_and_group(
+            vault_integration_ai,
+            marginfi_program_id,
+            vault_signer_ai.key,
+            &expected_marginfi_group,
+        )?;
+    let market_lender_integration_account =
+        MarginfiAccountInfo::new_with_expected_authority_and_group(
+            market_lender_integration_ai,
+            marginfi_program_id,
+            &expected_market_signer,
+            &expected_marginfi_group,
+        )?;
 
     require!(
         marginfi_program_ai.key == marginfi_program_id,
@@ -1442,6 +1305,12 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
     )?;
     let marginfi_program = MarginfiProgram::new(marginfi_program_ai)?;
     let marginfi_group = MarginfiGroupInfo::new(marginfi_group_ai, marginfi_program_id)?;
+    // the group account itself must equal the pinned group.
+    require!(
+        *marginfi_group_ai.key == expected_marginfi_group,
+        YdeltaError::IncorrectAccount,
+        "vault settle: marginfi_group does not match vault.integration_pool"
+    )?;
 
     Ok(VaultSettleAccounts {
         vault,
@@ -1461,93 +1330,6 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
         marginfi_group,
         marginfi_program,
     })
-}
-
-/// Account list for `ClaimRepayment`. Lender signs. Pure bookkeeping —
-/// no SPL transfer, no marginfi CPI. The atoms behind the lender's
-/// claim are already sitting on the market's marginfi-account asset
-/// position (deposited there by `process_repay`'s
-/// `marginfi.deposit`); the claim just converts them to seat-side
-/// shares the lender can `process_withdraw` later.
-///
-/// `cranker_refund`: optional trailing account. When the claim closes
-/// the loan PDA (full settlement), ydelta zeros the discriminator and
-/// transfers the rent lamports to this account if it was passed AND its
-/// key matches `loan.created_by`. If absent, the lamports stay
-/// stranded on the (now-zeroed) loan address until a separate sweeper
-/// ix recovers them.
-pub(crate) struct ClaimRepaymentContext<'a, 'info> {
-    pub payer: Signer<'a, 'info>,
-    pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
-    pub loan: YdeltaAccountInfo<'a, 'info, crate::state::loan::LoanFixed>,
-    pub debt_bank: MarginfiBankInfo<'a, 'info>,
-    /// Signer's UserAccount mirror.
-    pub user_account_ai: &'a AccountInfo<'info>,
-    pub cranker_refund: Option<&'a AccountInfo<'info>>,
-}
-
-impl<'a, 'info> ClaimRepaymentContext<'a, 'info> {
-    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
-        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
-
-        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        let _ = load_global_config(account_iter)?;
-        let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
-        require_market_not_paused(&market)?;
-        let loan = YdeltaAccountInfo::<crate::state::loan::LoanFixed>::new(next_account_info(
-            account_iter,
-        )?)?;
-        let debt_bank_ai = next_account_info(account_iter)?;
-        let marginfi_program_ai = next_account_info(account_iter)?;
-        // Signer's UserAccount + system_program (mandatory).
-        let user_account_ai = next_account_info(account_iter)?;
-        let system_program_ai = next_account_info(account_iter)?;
-        let _ = crate::validation::user_account::ensure_user_account_for_signer(
-            &payer,
-            user_account_ai,
-            system_program_ai,
-        )?;
-        // Trailing optional cranker_refund account.
-        let cranker_refund = account_iter.next();
-
-        // PDA + market binding.
-        let market_key = *market.key;
-        let loan_sequence: u64 = loan.get_fixed()?.matched_loan_sequence;
-        let (expected_loan, _bump) = crate::state::loan::loan_pda(&market_key, loan_sequence);
-        require!(
-            *loan.info.key == expected_loan,
-            YdeltaError::IncorrectAccount,
-            "loan PDA does not match [b\"loan\", market, sequence={}]",
-            loan_sequence
-        )?;
-        require!(
-            loan.get_fixed()?.market == market_key,
-            YdeltaError::IncorrectAccount,
-            "loan.market does not match passed-in market account"
-        )?;
-
-        require!(
-            marginfi_program_ai.key == &marginfi_mocks::ID,
-            YdeltaError::IncorrectAccount,
-            "marginfi_program key does not match expected program id"
-        )?;
-        let debt_lending_pool: Pubkey = market.get_fixed()?.debt_lending_pool;
-        require!(
-            *debt_bank_ai.key == debt_lending_pool,
-            YdeltaError::IncorrectAccount,
-            "debt_bank does not match market.debt_lending_pool"
-        )?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program_ai.key)?;
-
-        Ok(Self {
-            payer,
-            market,
-            loan,
-            debt_bank,
-            user_account_ai,
-            cranker_refund,
-        })
-    }
 }
 
 /// Account list for `ClaimRepaymentForRiskProfile`. Permissionless
@@ -1578,7 +1360,9 @@ pub(crate) struct ClaimRepaymentForRiskProfileContext<'a, 'info> {
     pub token_program: TokenProgram<'a, 'info>,
     pub marginfi_group: MarginfiGroupInfo<'a, 'info>,
     pub marginfi_program: MarginfiProgram<'a, 'info>,
-    pub cranker_refund: Option<&'a AccountInfo<'info>>,
+    /// rent-refund recipient, REQUIRED and bound to
+    /// `loan.created_by`. The close path refunds it unconditionally.
+    pub cranker_refund: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
@@ -1610,8 +1394,7 @@ impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
         require!(
             loan.get_fixed()?.lender_kind == crate::state::OWNER_KIND_RISK_PROFILE,
             YdeltaError::InvalidArgument,
-            "claim_repayment_for_risk_profile: loan is not risk-profile-funded \
-             (use claim_repayment for wallet lenders)"
+            "claim_repayment_for_risk_profile: loan is not risk-profile-funded"
         )?;
 
         let market_fixed: Ref<MarketFixed> = market.get_fixed()?;
@@ -1620,11 +1403,14 @@ impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
         let lender_integration_pk: Pubkey = market_fixed.lender_integration_account;
         let market_signer_pk: Pubkey = market_fixed.market_signer;
         let market_signer_bump: u8 = market_fixed.market_signer_bump;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         let global_vault_ai = next_account_info(account_iter)?;
         let global_vault =
             YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(global_vault_ai)?;
+        // a paused vault rejects repayment claims into it.
+        require_vault_not_paused(&global_vault)?;
         require!(
             *global_vault.info.key == loan.get_fixed()?.lender_global_vault,
             YdeltaError::IncorrectAccount,
@@ -1639,6 +1425,12 @@ impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
             global_vault.get_fixed()?.lending_pool == debt_lending_pool,
             YdeltaError::IncorrectAccount,
             "global_vault.lending_pool does not match market.debt_lending_pool"
+        )?;
+        // the vault's pinned group must equal the market's pinned group.
+        require!(
+            global_vault.get_fixed()?.integration_pool == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "global_vault.integration_pool does not match market.marginfi_group"
         )?;
 
         let global_vault_key = *global_vault.info.key;
@@ -1711,14 +1503,26 @@ impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
             "debt_mint does not match market.debt_mint"
         )?;
         let debt_mint = MintAccountInfo::new(debt_mint_ai)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        // Bind authority to market_signer.
-        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority(
+        // bind debt_bank + lender marginfi-account + group to the
+        // group pinned on MarketFixed.
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        // Bind authority to market_signer + group.
+        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
             lender_mfi_ai,
             marginfi_program.info.key,
             &market_signer_pk,
+            &expected_marginfi_group,
         )?;
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
 
         // Bank liquidity-vault binding. Oracle pubkeys pinned by
         // `MarginfiOracleAis::load`.
@@ -1756,14 +1560,32 @@ impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
             global_vault_signer_ai.key,
             &expected_gv_staging,
         )?;
-        // Bind authority to global_vault_signer.
-        let global_vault_integration_account = MarginfiAccountInfo::new_with_expected_authority(
-            global_vault_integration_ai,
-            marginfi_program.info.key,
-            global_vault_signer_ai.key,
-        )?;
+        // Bind authority to global_vault_signer + group.
+        let global_vault_integration_account =
+            MarginfiAccountInfo::new_with_expected_authority_and_group(
+                global_vault_integration_ai,
+                marginfi_program.info.key,
+                global_vault_signer_ai.key,
+                &expected_marginfi_group,
+            )?;
 
-        let cranker_refund = account_iter.next();
+        // The rent-refund recipient is REQUIRED and bound to the
+        // loan's `created_by` (the keeper who paid the PDA rent at
+        // promotion). `created_by` is on-chain readable, so any caller
+        // can build the correct account list; making it mandatory +
+        // pinned means the close path refunds the keeper UNCONDITIONALLY
+        // — the lender cannot strand keeper rent by omitting or
+        // mis-supplying the account.
+        let cranker_refund_ai = next_account_info(account_iter)?;
+        let loan_created_by: Pubkey = loan.get_fixed()?.created_by;
+        require!(
+            *cranker_refund_ai.key == loan_created_by,
+            YdeltaError::IncorrectAccount,
+            "cranker_refund {} does not match loan.created_by {}",
+            cranker_refund_ai.key,
+            loan_created_by
+        )?;
+        let cranker_refund = cranker_refund_ai;
 
         Ok(Self {
             payer,
@@ -1791,11 +1613,11 @@ impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
     }
 }
 
-/// Account list for `Repay`. Borrower signs. Atoms hop borrower wallet
-/// → market staging vault → `market.lender_integration_account` via
-/// marginfi.deposit. Same flow regardless of lender kind; the lender
-/// drains via `claim_repayment` (wallet) or
-/// `claim_repayment_for_risk_profile` (risk_profile-funded).
+/// Account list for `Repay`. Borrower signs. For a Fixed loan, atoms
+/// route to the lender's GlobalVault and the loan's lender (a vault
+/// risk profile) realises via `claim_repayment_for_risk_profile`. For
+/// a P2Pool loan, the repayment is made against the borrower marginfi
+/// liability directly.
 pub(crate) struct RepayContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -1805,6 +1627,9 @@ pub(crate) struct RepayContext<'a, 'info> {
     pub token_program: TokenProgram<'a, 'info>,
     pub debt_mint: MintAccountInfo<'a, 'info>,
     pub marginfi_group: MarginfiGroupInfo<'a, 'info>,
+    /// The market's LENDER-side marginfi account. The Fixed-loan repay
+    /// path tops this up via `marginfi.deposit` (atoms the lender later
+    /// claims). Unused on the P2Pool branch.
     pub marginfi_account: MarginfiAccountInfo<'a, 'info>,
     pub debt_bank: MarginfiBankInfo<'a, 'info>,
     pub liquidity_vault: TokenAccountInfo<'a, 'info>,
@@ -1815,10 +1640,18 @@ pub(crate) struct RepayContext<'a, 'info> {
     /// value.
     #[allow(dead_code)]
     pub collateral_bank: MarginfiBankInfo<'a, 'info>,
+    /// The market's BORROWER-side marginfi account. Required by the
+    /// P2Pool repay branch — voluntary repay retires the borrower's
+    /// variable-rate `liability_shares` directly via
+    /// `marginfi.repay_atoms`. Loaded unconditionally (the loader does
+    /// not branch on `loan.loan_type`); the Fixed branch leaves it
+    /// unread.
+    pub borrower_marginfi_account: MarginfiAccountInfo<'a, 'info>,
     pub market_signer: &'a AccountInfo<'info>,
     pub market_signer_bump: u8,
     pub marginfi_program: MarginfiProgram<'a, 'info>,
     pub user_account_ai: &'a AccountInfo<'info>,
+    pub cranker_refund: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> RepayContext<'a, 'info> {
@@ -1861,8 +1694,10 @@ impl<'a, 'info> RepayContext<'a, 'info> {
         // liability via marginfi.repay, then (b) credit A so the
         // lender can claim.
         let lender_integration_account: Pubkey = market_fixed.lender_integration_account;
+        let borrower_integration_account: Pubkey = market_fixed.borrower_integration_account;
         let market_signer_pk: Pubkey = market_fixed.market_signer;
         let market_signer_bump: u8 = market_fixed.market_signer_bump;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         let borrower_token = TokenAccountInfo::new_with_owner(
@@ -1884,25 +1719,66 @@ impl<'a, 'info> RepayContext<'a, 'info> {
         let token_program = TokenProgram::new(next_account_info(account_iter)?)?;
         let debt_mint = MintAccountInfo::new(next_account_info(account_iter)?)?;
 
-        // Integration accounts (lender side).
+        // Integration accounts. `mfi_acct_ai` is the LENDER-side
+        // account (Fixed repay tops it up via `marginfi.deposit`);
+        // `borrower_mfi_ai` is the BORROWER-side account (P2Pool repay
+        // retires its `liability_shares` via `marginfi.repay_atoms`).
         let group_ai = next_account_info(account_iter)?;
         let mfi_acct_ai = next_account_info(account_iter)?;
         let debt_bank_ai = next_account_info(account_iter)?;
         let liquidity_vault_ai = next_account_info(account_iter)?;
         let collateral_bank_ai = next_account_info(account_iter)?;
+        let borrower_mfi_ai = next_account_info(account_iter)?;
         let market_signer_ai = next_account_info(account_iter)?;
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
 
+        // bind group + banks + marginfi-accounts to the group
+        // pinned on MarketFixed.
+        // `mfi_acct_ai` is the lender-side integration account, a
+        // per-market PDA whose marginfi `authority` is the
+        // `market_signer`; bind it uniformly (the borrower-side account
+        // below already binds authority).
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
-        let marginfi_account = MarginfiAccountInfo::new(mfi_acct_ai, marginfi_program.info.key)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        let collateral_bank = MarginfiBankInfo::new(collateral_bank_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
+        let marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
+            mfi_acct_ai,
+            marginfi_program.info.key,
+            &market_signer_pk,
+            &expected_marginfi_group,
+        )?;
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let collateral_bank = MarginfiBankInfo::new_with_expected_group(
+            collateral_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        // Borrower-side marginfi account, authority-bound to the market
+        // signer (same constraint the liquidation paths enforce).
+        let borrower_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
+            borrower_mfi_ai,
+            marginfi_program.info.key,
+            &market_signer_pk,
+            &expected_marginfi_group,
+        )?;
+        require!(
+            *borrower_mfi_ai.key == borrower_integration_account,
+            YdeltaError::IncorrectAccount,
+            "borrower_marginfi_account does not match market.borrower_integration_account"
+        )?;
 
         require!(
             *mfi_acct_ai.key == lender_integration_account,
             YdeltaError::IncorrectAccount,
             "marginfi_account does not match market.lender_integration_account \
-             (repay routes to lender side for wallet-vs-wallet path)"
+             (Fixed repay routes deposit atoms to the lender side)"
         )?;
         require!(
             *debt_bank_ai.key == debt_lending_pool,
@@ -1940,6 +1816,15 @@ impl<'a, 'info> RepayContext<'a, 'info> {
             user_account_ai,
             system_program_ai,
         )?;
+        let cranker_refund_ai = next_account_info(account_iter)?;
+        let loan_created_by: Pubkey = loan.get_fixed()?.created_by;
+        require!(
+            *cranker_refund_ai.key == loan_created_by,
+            YdeltaError::IncorrectAccount,
+            "cranker_refund {} does not match loan.created_by {}",
+            cranker_refund_ai.key,
+            loan_created_by
+        )?;
 
         Ok(Self {
             payer,
@@ -1954,10 +1839,12 @@ impl<'a, 'info> RepayContext<'a, 'info> {
             debt_bank,
             liquidity_vault,
             collateral_bank,
+            borrower_marginfi_account,
             market_signer: market_signer_ai,
             market_signer_bump,
             marginfi_program,
             user_account_ai,
+            cranker_refund: cranker_refund_ai,
         })
     }
 }
@@ -1968,9 +1855,8 @@ impl<'a, 'info> RepayContext<'a, 'info> {
 /// keeper. Liquidator pays up to `repay_atoms_max` of the loan's
 /// `outstanding_debt_atoms` in debt-mint and receives pro-rata
 /// collateral. Atoms hop liquidator wallet → market debt staging →
-/// `market.lender_integration_account` regardless of lender kind; the
-/// lender drains via `claim_repayment` (wallet) or
-/// `claim_repayment_for_risk_profile` (risk_profile-funded).
+/// `market.lender_integration_account`; the lender (a vault risk
+/// profile) drains via `claim_repayment_for_risk_profile`.
 pub(crate) struct SettleMaturedLoanContext<'a, 'info> {
     pub payer: Signer<'a, 'info>, // liquidator
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -1997,6 +1883,7 @@ pub(crate) struct SettleMaturedLoanContext<'a, 'info> {
     pub token_program: TokenProgram<'a, 'info>,
     pub marginfi_group: MarginfiGroupInfo<'a, 'info>,
     pub marginfi_program: MarginfiProgram<'a, 'info>,
+    pub cranker_refund: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
@@ -2031,6 +1918,7 @@ impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
         let token_program = TokenProgram::new(next_account_info(account_iter)?)?;
         let group_ai = next_account_info(account_iter)?;
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
+        let cranker_refund_ai = next_account_info(account_iter)?;
 
         // Loan PDA validation.
         let market_key = *market.key;
@@ -2046,11 +1934,21 @@ impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
             YdeltaError::IncorrectAccount,
             "loan.market does not match passed market"
         )?;
-        require!(
-            loan.get_fixed()?.outstanding_debt_atoms > 0,
-            YdeltaError::InvalidArgument,
-            "loan already fully repaid (outstanding == 0)"
-        )?;
+        // `outstanding_debt_atoms` is the canonical live debt only
+        // for Fixed loans. For P2Pool loans it is a decorative snapshot
+        // (stamped at promotion, never accrued — see
+        // `loan_live_outstanding_atoms`); a direct read can under-count
+        // the real marginfi liability. Gate Fixed loans on the body
+        // field here; P2Pool loans are gated by the processor, which
+        // re-derives `outstanding_live_atoms` from the borrower's live
+        // marginfi `liability_shares` and rejects a zero residual.
+        if loan.get_fixed()?.loan_type()? == crate::state::loan::LoanType::Fixed {
+            require!(
+                loan.get_fixed()?.outstanding_debt_atoms > 0,
+                YdeltaError::InvalidArgument,
+                "loan already fully repaid (outstanding == 0)"
+            )?;
+        }
 
         // Market integration accounts + signer.
         let market_fixed: Ref<MarketFixed> = market.get_fixed()?;
@@ -2062,6 +1960,7 @@ impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
         let borrower_integration_pk: Pubkey = market_fixed.borrower_integration_account;
         let market_signer_pk: Pubkey = market_fixed.market_signer;
         let market_signer_bump: u8 = market_fixed.market_signer_bump;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         require!(
@@ -2098,6 +1997,14 @@ impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
             *market_signer_ai.key == market_signer_pk,
             YdeltaError::IncorrectAccount,
             "market_signer mismatch"
+        )?;
+        let loan_created_by: Pubkey = loan.get_fixed()?.created_by;
+        require!(
+            *cranker_refund_ai.key == loan_created_by,
+            YdeltaError::IncorrectAccount,
+            "cranker_refund {} does not match loan.created_by {}",
+            cranker_refund_ai.key,
+            loan_created_by
         )?;
 
         let debt_mint = MintAccountInfo::new(debt_mint_ai)?;
@@ -2143,19 +2050,35 @@ impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
         // per-market signer PDA. PDA-key checks elsewhere are the
         // primary defense; the on-disk authority bind closes the gap
         // should those address checks ever drift.
-        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority(
+        // bind authorities + `group` to MarketFixed.marginfi_group.
+        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
             lender_mfi_ai,
             marginfi_program.info.key,
             &market_signer_pk,
+            &expected_marginfi_group,
         )?;
-        let borrower_marginfi_account = MarginfiAccountInfo::new_with_expected_authority(
+        let borrower_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
             borrower_mfi_ai,
             marginfi_program.info.key,
             &market_signer_pk,
+            &expected_marginfi_group,
         )?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        let collateral_bank = MarginfiBankInfo::new(collateral_bank_ai, marginfi_program.info.key)?;
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let collateral_bank = MarginfiBankInfo::new_with_expected_group(
+            collateral_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
 
         // Liquidity-vault binding + LVA. Oracle pubkeys pinned by
         // `MarginfiOracleAis::load`.
@@ -2215,6 +2138,7 @@ impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
             token_program,
             marginfi_group,
             marginfi_program,
+            cranker_refund: cranker_refund_ai,
         })
     }
 }
@@ -2280,6 +2204,7 @@ impl<'a, 'info> ProtocolFeeClaimContext<'a, 'info> {
         let market_signer_pk: Pubkey = market_fixed.market_signer;
         let market_signer_bump: u8 = market_fixed.market_signer_bump;
         let market_debt_vault_pk: Pubkey = market_fixed.debt_vault;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         require!(
@@ -2342,14 +2267,26 @@ impl<'a, 'info> ProtocolFeeClaimContext<'a, 'info> {
         let market_debt_vault = TokenAccountInfo::new(market_debt_vault_ai, &debt_mint_pk)?;
         let debt_liquidity_vault = TokenAccountInfo::new(debt_liquidity_vault_ai, &debt_mint_pk)?;
         let debt_mint = MintAccountInfo::new(debt_mint_ai)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        // Bind lender marginfi-account authority to market_signer.
-        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority(
+        // bind debt_bank + lender marginfi-account + group to
+        // MarketFixed.marginfi_group.
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        // Bind lender marginfi-account authority to market_signer + group.
+        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
             lender_mfi_ai,
             marginfi_program.info.key,
             &market_signer_pk,
+            &expected_marginfi_group,
         )?;
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
 
         Ok(Self {
             payer,
@@ -2459,25 +2396,37 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
             "global_vault_staging does not match [b\"global_vault_staging\", vault]"
         )?;
 
-        // Vault must not exist yet (one-shot creation, mint-uniqueness invariant).
+        // Vault must not exist yet (one-shot creation, mint-uniqueness
+        // invariant). Gate on `data_is_empty()`, NOT `lamports() == 0`:
+        // anyone can pre-fund a deterministic PDA with 1 lamport, and a
+        // lamports-based gate would then permanently brick creation. The
+        // processor's account creation tolerates a pre-funded account.
         require!(
-            vault_ai.lamports() == 0,
+            vault_ai.data_is_empty(),
             YdeltaError::IncorrectAccount,
             "vault PDA already exists; one GlobalVault per mint"
         )?;
         require!(
-            integration_account_ai.lamports() == 0,
+            integration_account_ai.data_is_empty(),
             YdeltaError::IncorrectAccount,
             "integration_account already exists; one per vault"
         )?;
         require!(
-            vault_staging_ai.lamports() == 0,
+            vault_staging_ai.data_is_empty(),
             YdeltaError::IncorrectAccount,
             "global_vault_staging already exists; one per vault"
         )?;
 
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
-        let lending_pool = MarginfiBankInfo::new(lending_pool_ai, marginfi_program.info.key)?;
+        // pin the lending pool to the marginfi_group passed here.
+        // create_vault stamps `GlobalVaultFixed.integration_pool =
+        // group_ai.key`, so binding the bank to it now keeps every later
+        // vault loader's bank-vs-stored-group check consistent.
+        let lending_pool = MarginfiBankInfo::new_with_expected_group(
+            lending_pool_ai,
+            marginfi_program.info.key,
+            group_ai.key,
+        )?;
 
         // The bank must serve the vault's mint.
         {
@@ -2544,6 +2493,8 @@ impl<'a, 'info> GlobalVaultDepositContext<'a, 'info> {
         let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
             next_account_info(account_iter)?,
         )?;
+        // a paused vault rejects deposits.
+        require_vault_not_paused(&vault)?;
         let mint = MintAccountInfo::new(next_account_info(account_iter)?)?;
         let vault_signer_ai = next_account_info(account_iter)?;
         let vault_staging_ai = next_account_info(account_iter)?;
@@ -2592,12 +2543,30 @@ impl<'a, 'info> GlobalVaultDepositContext<'a, 'info> {
             YdeltaError::IncorrectAccount,
             "lending_pool does not match vault.lending_pool"
         )?;
+        let expected_marginfi_group: Pubkey = vault_fixed.integration_pool;
         drop(vault_fixed);
 
+        // bind group + bank + integration-account to the group
+        // pinned on GlobalVaultFixed.integration_pool.
+        // the integration account is a vault PDA whose marginfi
+        // `authority` is the `global_vault_signer`; bind it uniformly.
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
-        let integration_account =
-            MarginfiAccountInfo::new(integration_ai, marginfi_program.info.key)?;
-        let lending_pool = MarginfiBankInfo::new(lending_pool_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match GlobalVaultFixed.integration_pool"
+        )?;
+        let integration_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
+            integration_ai,
+            marginfi_program.info.key,
+            &expected_signer,
+            &expected_marginfi_group,
+        )?;
+        let lending_pool = MarginfiBankInfo::new_with_expected_group(
+            lending_pool_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
         let global_vault_staging = TokenAccountInfo::new_with_owner_and_key(
             vault_staging_ai,
             &mint_key,
@@ -2680,6 +2649,8 @@ impl<'a, 'info> GlobalVaultWithdrawContext<'a, 'info> {
         let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
             next_account_info(account_iter)?,
         )?;
+        // a paused vault rejects withdrawals.
+        require_vault_not_paused(&vault)?;
         let mint = MintAccountInfo::new(next_account_info(account_iter)?)?;
         let vault_signer_ai = next_account_info(account_iter)?;
         let vault_staging_ai = next_account_info(account_iter)?;
@@ -2729,12 +2700,30 @@ impl<'a, 'info> GlobalVaultWithdrawContext<'a, 'info> {
             YdeltaError::IncorrectAccount,
             "lending_pool does not match vault.lending_pool"
         )?;
+        let expected_marginfi_group: Pubkey = vault_fixed.integration_pool;
         drop(vault_fixed);
 
+        // bind group + bank + integration-account to the group
+        // pinned on GlobalVaultFixed.integration_pool.
+        // the integration account is a vault PDA whose marginfi
+        // `authority` is the `global_vault_signer`; bind it uniformly.
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
-        let integration_account =
-            MarginfiAccountInfo::new(integration_ai, marginfi_program.info.key)?;
-        let lending_pool = MarginfiBankInfo::new(lending_pool_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match GlobalVaultFixed.integration_pool"
+        )?;
+        let integration_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
+            integration_ai,
+            marginfi_program.info.key,
+            &expected_signer,
+            &expected_marginfi_group,
+        )?;
+        let lending_pool = MarginfiBankInfo::new_with_expected_group(
+            lending_pool_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
         let global_vault_staging = TokenAccountInfo::new_with_owner_and_key(
             vault_staging_ai,
             &mint_key,
@@ -2836,6 +2825,8 @@ impl<'a, 'info> ClaimCuratorFeeContext<'a, 'info> {
         let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
             next_account_info(account_iter)?,
         )?;
+        // a paused vault rejects curator-fee claims.
+        require_vault_not_paused(&vault)?;
         let vault_signer_ai = next_account_info(account_iter)?;
         let vault_staging_ai = next_account_info(account_iter)?;
         let vault_integration_ai = next_account_info(account_iter)?;
@@ -2884,7 +2875,19 @@ impl<'a, 'info> ClaimCuratorFeeContext<'a, 'info> {
             YdeltaError::IncorrectAccount,
             "debt_bank does not match vault.lending_pool"
         )?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
+        // bind group + bank + integration-account to the group
+        // pinned on GlobalVaultFixed.integration_pool.
+        let expected_marginfi_group: Pubkey = vault.get_fixed()?.integration_pool;
+        require!(
+            *marginfi_group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match GlobalVaultFixed.integration_pool"
+        )?;
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
 
         // Bank vault + LVA + oracle.
         {
@@ -2923,8 +2926,15 @@ impl<'a, 'info> ClaimCuratorFeeContext<'a, 'info> {
         let curator_token =
             TokenAccountInfo::new_with_owner(curator_token_ai, &mint_key, payer.info.key)?;
         let liquidity_vault = TokenAccountInfo::new(liquidity_vault_ai, &mint_key)?;
+        // the integration account is a vault PDA whose marginfi
+        // `authority` is the `global_vault_signer`; bind it uniformly.
         let global_vault_integration_account =
-            MarginfiAccountInfo::new(vault_integration_ai, marginfi_program.info.key)?;
+            MarginfiAccountInfo::new_with_expected_authority_and_group(
+                vault_integration_ai,
+                marginfi_program.info.key,
+                &expected_signer,
+                &expected_marginfi_group,
+            )?;
 
         Ok(Self {
             payer,
@@ -2946,59 +2956,11 @@ impl<'a, 'info> ClaimCuratorFeeContext<'a, 'info> {
     }
 }
 
-/// Account list for `ClaimSeatForRiskProfile` (and reused by
-/// `ReleaseSeatForRiskProfile`).
-///
-/// Split-payer layout:
-///   [0] `fee_payer` (signer, writable) — pays tx fee + on-chain rent
-///       for any vault/market dynamic-region expansion the ix triggers.
-///       Typically a bot wallet that the curator doesn't need to fund.
-///   [1] `curator`   (signer)           — satisfies the per-profile
-///       curator gate enforced in the processor. No lamports are
-///       debited from this account.
-pub(crate) struct ClaimSeatForRiskProfileContext<'a, 'info> {
-    pub fee_payer: Signer<'a, 'info>,
-    pub curator: Signer<'a, 'info>,
-    pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
-    pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
-    pub system_program: Program<'a, 'info>,
-}
-
-impl<'a, 'info> ClaimSeatForRiskProfileContext<'a, 'info> {
-    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
-        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
-
-        let fee_payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        let curator = Signer::new(next_account_info(account_iter)?)?;
-        let _ = load_global_config(account_iter)?;
-        let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
-            next_account_info(account_iter)?,
-        )?;
-        let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
-        require_market_not_paused(&market)?;
-        let system_program = Program::new(next_account_info(account_iter)?, &system_program::id())?;
-
-        // Curator gate runs in the processor (it needs `params.profile_id`,
-        // which loaders don't see). Mint binding stays here because it
-        // doesn't depend on the profile id and applies symmetrically to
-        // every claim attempt.
-        require_vault_mint_matches_market(&vault, &market)?;
-
-        Ok(Self {
-            fee_payer,
-            curator,
-            vault,
-            market,
-            system_program,
-        })
-    }
-}
-
 /// Account list for `CancelOrderForRiskProfile`. Curator-gated.
 /// Reused by `place_order_for_risk_profile` and
 /// `update_order_for_risk_profile`.
 ///
-/// Split-payer layout, same shape as `ClaimSeatForRiskProfileContext`:
+/// Split-payer layout:
 ///   [0] `fee_payer` (signer, writable) — pays tx fee + any rent for
 ///       dynamic-region expansion (place_order may grow the vault's
 ///       `node_free_list`).
@@ -3022,6 +2984,9 @@ impl<'a, 'info> CancelOrderForRiskProfileContext<'a, 'info> {
         let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
             next_account_info(account_iter)?,
         )?;
+        // a paused vault rejects place / cancel / update of its
+        // risk-profile orders (this loader backs all three ixs).
+        require_vault_not_paused(&vault)?;
         let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
         require_market_not_paused(&market)?;
         let _system_program =
@@ -3058,6 +3023,9 @@ impl<'a, 'info> CreateRiskProfileContext<'a, 'info> {
         let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
             next_account_info(account_iter)?,
         )?;
+        // a paused vault rejects create / update of its risk
+        // profiles (this loader backs both ixs).
+        require_vault_not_paused(&vault)?;
         let _system_program =
             Program::new(next_account_info(account_iter)?, &system_program::id())?;
 
@@ -3226,49 +3194,30 @@ impl<'a, 'info> SetMarketPauseContext<'a, 'info> {
     }
 }
 
-/// Account list for `SyncMarketSeatsForRiskProfile`. Permissionless
-/// — `payer` may be any signer. The loader collects the (≤8) trailing
-/// market accounts; the processor cross-checks each against
-/// `RiskProfile.active_markets` and re-stamps the cached
-/// `risk_profile_max_ltv_bps` on every present `(global_vault, OWNER_KIND_RISK_PROFILE,
-/// profile_id)` seat.
-#[allow(dead_code)] // load-bearing: validated at load time
-pub(crate) struct SyncMarketSeatsForRiskProfileContext<'a, 'info> {
+/// Account list for `SetVaultPause`. Mirrors
+/// `SetMarketPauseContext`: `[payer, global_config, vault]`. The
+/// processor enforces the vault-admin signer gate. The vault account
+/// is deliberately NOT run through `require_vault_not_paused` — this ix
+/// is the recovery surface that toggles the flag, so it must be
+/// callable in both directions regardless of the current pause state.
+pub(crate) struct SetVaultPauseContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
-    pub global_vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
-    pub markets: Vec<&'a AccountInfo<'info>>,
+    pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
 }
 
-impl<'a, 'info> SyncMarketSeatsForRiskProfileContext<'a, 'info> {
+impl<'a, 'info> SetVaultPauseContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        let _ = load_global_config(account_iter)?;
-        let global_vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
+        // Slot-1 GlobalConfig conformance with the rest of the
+        // state-mutating loaders. `_no_pause` variant — SetVaultPause is
+        // part of the admin-recovery surface and must stay callable
+        // while the protocol is globally paused.
+        let _ = load_global_config_no_pause(account_iter)?;
+        let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
             next_account_info(account_iter)?,
         )?;
-        // Trailing variable-length list of market accounts. Each must
-        // be ydelta-owned + carry the market discriminator. Cap at the
-        // active_markets max so a stranger can't overflow the call.
-        const MAX: usize = crate::state::vault::RiskProfile::ACTIVE_MARKETS_MAX as usize;
-        let mut markets: Vec<&'a AccountInfo<'info>> = Vec::with_capacity(MAX);
-        for ai in account_iter.by_ref() {
-            require!(
-                markets.len() < MAX,
-                YdeltaError::InvalidArgument,
-                "sync_market_seats_for_risk_profile: more than {} market accounts passed",
-                MAX
-            )?;
-            // Validate the discriminator/owner so a stranger can't pass
-            // arbitrary yDelta accounts as "markets".
-            let _ = YdeltaAccountInfo::<MarketFixed>::new(ai)?;
-            markets.push(ai);
-        }
-        Ok(Self {
-            payer,
-            global_vault,
-            markets,
-        })
+        Ok(Self { payer, vault })
     }
 }
 
@@ -3281,6 +3230,22 @@ pub(crate) fn require_market_not_paused(
         market.get_fixed()?.is_paused == 0,
         YdeltaError::MarketPaused,
         "market is paused"
+    )?;
+    Ok(())
+}
+
+/// Helper used by every vault-scoped state-mutating ix's loader:
+/// rejects when the vault is paused. Mirrors
+/// `require_market_not_paused`. Deliberately NOT called by the
+/// two-step vault-admin transfer loaders so a stuck vault can still
+/// have its admin rotated for recovery.
+pub(crate) fn require_vault_not_paused(
+    vault: &YdeltaAccountInfo<'_, '_, crate::state::vault::GlobalVaultFixed>,
+) -> Result<(), ProgramError> {
+    require!(
+        vault.get_fixed()?.is_paused == 0,
+        YdeltaError::VaultPaused,
+        "vault is paused"
     )?;
     Ok(())
 }
@@ -3512,6 +3477,10 @@ pub(crate) struct ConvertP2PoolToFixedContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
     pub loan: YdeltaAccountInfo<'a, 'info, crate::state::loan::LoanFixed>,
+    /// System program — the convert processor pre-expands the market
+    /// account (one MatchedLoan block per crossable ask), and
+    /// `expand_market` CPIs a `system_program::transfer` rent top-up.
+    pub system_program: Program<'a, 'info>,
     pub borrower_marginfi_account: MarginfiAccountInfo<'a, 'info>,
     pub lender_marginfi_account: MarginfiAccountInfo<'a, 'info>,
     pub debt_bank: MarginfiBankInfo<'a, 'info>,
@@ -3529,15 +3498,18 @@ pub(crate) struct ConvertP2PoolToFixedContext<'a, 'info> {
     pub token_program: TokenProgram<'a, 'info>,
     pub marginfi_group: MarginfiGroupInfo<'a, 'info>,
     pub marginfi_program: MarginfiProgram<'a, 'info>,
-    /// Optional refund target for the P2Pool loan PDA's lamports on
-    /// full conversion. The processor closes the PDA when the loan is
-    /// fully refinanced and refunds rent here iff the passed key
-    /// matches `loan.created_by` (the cranker who originally promoted
-    /// the P2Pool MatchedLoan). `None` skips the refund — lamports
-    /// stay stranded on the now-zeroed account, recoverable by a
-    /// future sweeper. Mirrors the cranker_refund pattern in
-    /// `claim_repayment` and `claim_repayment_for_risk_profile`.
-    pub cranker_refund: Option<&'a AccountInfo<'info>>,
+    /// The market's `GlobalVault` account. Every resting ask is a vault
+    /// risk-profile quote, so the convert matcher MUST read the vault to
+    /// size each cross against the profile's live idle pool. Pinned to
+    /// `global_vault_pda(debt_mint)`.
+    pub global_vault: &'a AccountInfo<'info>,
+    /// Rent-refund target for the P2Pool loan PDA's lamports on
+    /// full conversion. REQUIRED and bound to `loan.created_by` (the
+    /// keeper who promoted the P2Pool MatchedLoan). The processor closes
+    /// the PDA on a full refinance and refunds rent here
+    /// unconditionally. On a partial conversion the account is unused
+    /// (the PDA is not closed) — passing it is harmless.
+    pub cranker_refund: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
@@ -3551,6 +3523,7 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
         let loan = YdeltaAccountInfo::<crate::state::loan::LoanFixed>::new(next_account_info(
             account_iter,
         )?)?;
+        let system_program = Program::new(next_account_info(account_iter)?, &system_program::id())?;
 
         // Loan must be a P2Pool body on this market, still Active.
         let market_key = *market.key;
@@ -3586,7 +3559,6 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
 
         let market_fixed: Ref<MarketFixed> = market.get_fixed()?;
         let debt_mint_pk: Pubkey = market_fixed.debt_mint;
-        let collateral_mint_pk: Pubkey = market_fixed.collateral_mint;
         let debt_lending_pool: Pubkey = market_fixed.debt_lending_pool;
         let collateral_lending_pool: Pubkey = market_fixed.collateral_lending_pool;
         let lender_integration_pk: Pubkey = market_fixed.lender_integration_account;
@@ -3594,7 +3566,7 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
         let market_signer_pk: Pubkey = market_fixed.market_signer;
         let market_signer_bump: u8 = market_fixed.market_signer_bump;
         let market_debt_vault_pk: Pubkey = market_fixed.debt_vault;
-        let _ = collateral_mint_pk;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         let borrower_mfi_ai = next_account_info(account_iter)?;
@@ -3686,30 +3658,71 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
         )?;
         let debt_liquidity_vault = TokenAccountInfo::new(debt_liquidity_vault_ai, &debt_mint_pk)?;
         let debt_mint = MintAccountInfo::new(debt_mint_ai)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        let collateral_bank = MarginfiBankInfo::new(collateral_bank_ai, marginfi_program.info.key)?;
-        // Bind both marginfi-account authorities to market_signer.
-        let borrower_marginfi_account = MarginfiAccountInfo::new_with_expected_authority(
+        // bind banks + marginfi-account authorities + `group` to
+        // MarketFixed.marginfi_group.
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let collateral_bank = MarginfiBankInfo::new_with_expected_group(
+            collateral_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let borrower_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
             borrower_mfi_ai,
             marginfi_program.info.key,
             &market_signer_pk,
+            &expected_marginfi_group,
         )?;
-        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority(
+        let lender_marginfi_account = MarginfiAccountInfo::new_with_expected_authority_and_group(
             lender_mfi_ai,
             marginfi_program.info.key,
             &market_signer_pk,
+            &expected_marginfi_group,
         )?;
         let marginfi_group = MarginfiGroupInfo::new(group_ai, marginfi_program.info.key)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
 
-        // Optional trailing `cranker_refund` account. Borrower (off-chain)
-        // reads `loan.created_by` to know who paid the original PDA rent
-        // and passes them here on a full-conversion refinance.
-        let cranker_refund: Option<&'a AccountInfo<'info>> = account_iter.next();
+        // The market's `GlobalVault` — required: the convert matcher
+        // sizes each cross against the crossed profile's live idle pool.
+        // Pinned to `global_vault_pda(debt_mint)` and validated as a
+        // yDelta-owned `GlobalVaultFixed`.
+        let global_vault_ai = next_account_info(account_iter)?;
+        let _ = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(global_vault_ai)?;
+        let (expected_global_vault, _) = crate::state::vault::global_vault_pda(&debt_mint_pk);
+        require!(
+            *global_vault_ai.key == expected_global_vault,
+            YdeltaError::IncorrectAccount,
+            "global_vault PDA does not match expected derivation from market.debt_mint"
+        )?;
+
+        // REQUIRED trailing `cranker_refund` account, bound to
+        // `loan.created_by`. `created_by` is on-chain readable, so any
+        // caller can build the correct account list; making it
+        // mandatory + pinned means a full-conversion close refunds the
+        // keeper UNCONDITIONALLY.
+        let cranker_refund_ai = next_account_info(account_iter)?;
+        let loan_created_by: Pubkey = loan.get_fixed()?.created_by;
+        require!(
+            *cranker_refund_ai.key == loan_created_by,
+            YdeltaError::IncorrectAccount,
+            "cranker_refund {} does not match loan.created_by {}",
+            cranker_refund_ai.key,
+            loan_created_by
+        )?;
+        let cranker_refund = cranker_refund_ai;
 
         Ok(Self {
             payer,
             market,
             loan,
+            system_program,
             borrower_marginfi_account,
             lender_marginfi_account,
             debt_bank,
@@ -3725,6 +3738,7 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
             token_program,
             marginfi_group,
             marginfi_program,
+            global_vault: global_vault_ai,
             cranker_refund,
         })
     }
@@ -3793,6 +3807,7 @@ impl<'a, 'info> CheckLtvLiquidatableContext<'a, 'info> {
         let debt_lending_pool: Pubkey = market_fixed.debt_lending_pool;
         let collateral_lending_pool: Pubkey = market_fixed.collateral_lending_pool;
         let borrower_integration_pk: Pubkey = market_fixed.borrower_integration_account;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         let borrower_mfi_ai = next_account_info(account_iter)?;
@@ -3819,10 +3834,22 @@ impl<'a, 'info> CheckLtvLiquidatableContext<'a, 'info> {
         let collateral_oracle_ais = MarginfiOracleAis::load(account_iter, collateral_bank_ai)?;
 
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
-        let borrower_marginfi_account =
-            MarginfiAccountInfo::new(borrower_mfi_ai, marginfi_program.info.key)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
-        let collateral_bank = MarginfiBankInfo::new(collateral_bank_ai, marginfi_program.info.key)?;
+        // bind banks + marginfi-account to MarketFixed.marginfi_group.
+        let borrower_marginfi_account = MarginfiAccountInfo::new_with_expected_group(
+            borrower_mfi_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let collateral_bank = MarginfiBankInfo::new_with_expected_group(
+            collateral_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
 
         Ok(Self {
             payer,
@@ -3880,6 +3907,7 @@ impl<'a, 'info> CheckMaturityLiquidatableContext<'a, 'info> {
         let market_fixed: Ref<MarketFixed> = market.get_fixed()?;
         let debt_lending_pool: Pubkey = market_fixed.debt_lending_pool;
         let borrower_integration_pk: Pubkey = market_fixed.borrower_integration_account;
+        let expected_marginfi_group: Pubkey = market_fixed.marginfi_group;
         drop(market_fixed);
 
         let borrower_mfi_ai = next_account_info(account_iter)?;
@@ -3897,9 +3925,17 @@ impl<'a, 'info> CheckMaturityLiquidatableContext<'a, 'info> {
         )?;
 
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
-        let borrower_marginfi_account =
-            MarginfiAccountInfo::new(borrower_mfi_ai, marginfi_program.info.key)?;
-        let debt_bank = MarginfiBankInfo::new(debt_bank_ai, marginfi_program.info.key)?;
+        // bind bank + marginfi-account to MarketFixed.marginfi_group.
+        let borrower_marginfi_account = MarginfiAccountInfo::new_with_expected_group(
+            borrower_mfi_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            marginfi_program.info.key,
+            &expected_marginfi_group,
+        )?;
 
         Ok(Self {
             payer,

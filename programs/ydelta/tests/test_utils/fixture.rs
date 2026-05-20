@@ -1,7 +1,9 @@
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
-use hypertree::{DataIndex, NIL};
+use hypertree::{
+    DataIndex, HyperTreeReadOperations, HyperTreeValueIteratorTrait, RedBlackTreeReadOnly, NIL,
+};
 use solana_program::pubkey::Pubkey;
 #[cfg(not(feature = "test-sbf"))]
 use solana_program_test::processor;
@@ -16,12 +18,12 @@ use solana_sdk::{
 use spl_token::state::{Account as TokenAccount, Mint};
 
 use ydelta::program::instruction_builders::{
-    cancel_order_instruction::cancel_order_instruction,
     claim_seat_instruction::claim_seat_instruction,
     create_market_instructions::create_market_instructions,
     place_order_instruction::place_order_instruction,
-    update_order_instruction::update_order_instruction,
 };
+use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
+use ydelta::state::market::get_mut_helper_seat;
 use ydelta::state::{ClaimedSeat, MarketFixed, MarketValue, OrderType, RestingOrder, Side};
 
 use marginfi_mocks::discriminator::BANK_DISCRIMINATOR;
@@ -460,6 +462,17 @@ impl TestFixture {
         .unwrap();
         let market_kp = self.market.insecure_clone();
         self.process(&ixs, &[&market_kp]).await.unwrap();
+        // `set_market_pause(false)` is gated on fee config having been
+        // explicitly set. Call `set_fee_config` first (buffer 0 to
+        // preserve existing LTV-math expectations across the suite).
+        {
+            let mut params = SetFeeConfigParams::default();
+            params.ltv_buffer_bps = Some(0);
+            let set_fee = ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction(
+                &self.market.pubkey(), &payer.pubkey(), params,
+            );
+            self.process(&[set_fee], &[]).await.unwrap();
+        }
         // New markets ship paused; unpause so existing test cases that
         // mutate market state through this fixture keep working.
         let unpause = ydelta::program::instruction_builders::set_market_pause_instruction::set_market_pause_instruction(
@@ -550,10 +563,6 @@ impl TestFixture {
     /// mutates the seat in place using the same RB-tree helper the
     /// program does, and writes the bytes back via `set_account`.
     pub async fn seed_seat_shares(&self, owner: &Pubkey, shares: u128, is_debt: bool) {
-        use hypertree::{HyperTreeReadOperations, RedBlackTreeReadOnly, NIL};
-        use ydelta::state::market::get_mut_helper_seat;
-        use ydelta::state::ClaimedSeat;
-
         let mut data = {
             let client: RefMut<ProgramTestContext> = self.context.borrow_mut();
             client
@@ -608,12 +617,17 @@ impl TestFixture {
             .set_account(&self.market.pubkey(), &acc.into());
     }
 
+    /// Place a borrower IOC bid.
+    ///
+    /// `place_order` is borrower-IOC-only. The `side` / `order_type`
+    /// arguments are accepted for source compatibility but ignored —
+    /// every call is a `Side::Bid` IOC.
     #[allow(clippy::too_many_arguments)]
     pub async fn place_order(
         &self,
         signer: &Keypair,
-        side: Side,
-        order_type: OrderType,
+        _side: Side,
+        _order_type: OrderType,
         rate_bps: u16,
         term_seconds: u32,
         principal_atoms: u64,
@@ -624,7 +638,7 @@ impl TestFixture {
         // Native TestFixture uses synthetic banks whose
         // `bank_liquidity_vault_authority` PDAs aren't real, so a real
         // `marginfi.borrow` CPI would fail with `ConstraintSeeds`. Set
-        // `OB_ONLY` so Bid residuals go to `Drop` instead of
+        // `OB_ONLY` so the residual goes to `Drop` instead of
         // triggering the P2Pool fallback. Tests that explicitly want
         // P2Pool live under `MarketFixture`.
         let flags = ydelta::state::market_helpers::FLAG_OB_ONLY;
@@ -642,16 +656,12 @@ impl TestFixture {
             &self.debt_mint.pubkey(),
             &spl_token::id(),
             &marginfi_mocks::ID,
-            side,
-            order_type,
             rate_bps,
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            0,
             flags,
             None,
-            None, // borrower_ltv_bps default — marginfi-init
         );
         let kp = signer.insecure_clone();
         self.process(&[ix], &[&kp]).await
@@ -665,46 +675,6 @@ impl TestFixture {
             &marginfi_mocks::ID,
         )
         .0
-    }
-
-    pub async fn cancel_order(
-        &self,
-        signer: &Keypair,
-        sequence: u64,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = cancel_order_instruction(
-            &self.market.pubkey(),
-            &signer.pubkey(),
-            sequence,
-            None,
-            None,
-            None,
-        );
-        let kp = signer.insecure_clone();
-        self.process(&[ix], &[&kp]).await
-    }
-
-    pub async fn update_order_rate(
-        &self,
-        signer: &Keypair,
-        sequence: u64,
-        new_rate_bps: u16,
-    ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = update_order_instruction(
-            &self.market.pubkey(),
-            &signer.pubkey(),
-            sequence,
-            None,
-            None,
-            Some(new_rate_bps),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        let kp = signer.insecure_clone();
-        self.process(&[ix], &[&kp]).await
     }
 
     pub async fn read_market(&self) -> MarketValue {
@@ -727,7 +697,6 @@ impl TestFixture {
     /// Walk the market's claimed_seats tree, returning the seat for `owner`
     /// (with `risk_profile_id = 0`). Panics if not present.
     pub async fn read_seat(&self, owner: &Pubkey) -> ClaimedSeat {
-        use hypertree::{HyperTreeReadOperations, RedBlackTreeReadOnly};
         let market = self.read_market().await;
         let tree: RedBlackTreeReadOnly<ClaimedSeat> =
             RedBlackTreeReadOnly::new(&market.dynamic, market.fixed.claimed_seats_root_index, NIL);
@@ -738,16 +707,19 @@ impl TestFixture {
         *node.get_value()
     }
 
-    /// Count the resting orders on a given side of the market.
+    /// Count the resting orders on a given side of the market. Only
+    /// the asks tree holds resting orders — a borrower bid never rests,
+    /// so `Side::Bid` is always 0.
     pub async fn count_orders(&self, side: Side) -> usize {
-        use hypertree::{HyperTreeValueIteratorTrait, RedBlackTreeReadOnly};
+        if side == Side::Bid {
+            return 0;
+        }
         let market = self.read_market().await;
-        let (root, best) = match side {
-            Side::Bid => (market.fixed.bids_root_index, market.fixed.bids_best_index),
-            Side::Ask => (market.fixed.asks_root_index, market.fixed.asks_best_index),
-        };
-        let tree: RedBlackTreeReadOnly<RestingOrder> =
-            RedBlackTreeReadOnly::new(&market.dynamic, root, best);
+        let tree: RedBlackTreeReadOnly<RestingOrder> = RedBlackTreeReadOnly::new(
+            &market.dynamic,
+            market.fixed.asks_root_index,
+            market.fixed.asks_best_index,
+        );
         tree.iter::<RestingOrder>().count()
     }
 
@@ -818,7 +790,6 @@ pub fn synth_program_data_account(
     context: &Rc<RefCell<ProgramTestContext>>,
     expected_authority: &Pubkey,
 ) {
-    use solana_sdk::account::Account;
     let (program_data_addr, _) = Pubkey::find_program_address(
         &[ydelta::ID.as_ref()],
         &solana_program::bpf_loader_upgradeable::id(),

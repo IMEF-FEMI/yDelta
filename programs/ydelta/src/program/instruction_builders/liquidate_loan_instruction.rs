@@ -37,6 +37,7 @@ pub fn liquidate_loan_instruction(
     marginfi_group: &Pubkey,
     marginfi_program: &Pubkey,
     repay_atoms_max: u64,
+    cranker_refund: &Pubkey,
 ) -> Instruction {
     let (loan, _) = loan_pda(market, sequence);
     let (market_debt_vault, _) = get_vault_address(market, debt_mint);
@@ -75,6 +76,7 @@ pub fn liquidate_loan_instruction(
         AccountMeta::new_readonly(*token_program, false),
         AccountMeta::new_readonly(*marginfi_group, false),
         AccountMeta::new_readonly(*marginfi_program, false),
+        AccountMeta::new(*cranker_refund, false),
     ]);
     Instruction {
         program_id: crate::id(),

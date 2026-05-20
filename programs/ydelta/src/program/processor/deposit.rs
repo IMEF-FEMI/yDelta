@@ -2,7 +2,10 @@ use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use hypertree::DataIndex;
-use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, pubkey::Pubkey};
+use solana_program::{
+    account_info::AccountInfo, entrypoint::ProgramResult, program_error::ProgramError,
+    pubkey::Pubkey,
+};
 
 use crate::logs::{emit_stack, DepositLog};
 use crate::program::YdeltaError;
@@ -62,6 +65,13 @@ pub fn process_deposit(
     // deposit CPI requires `signer_token_account.owner == authority`,
     // which is `market_signer` — so atoms must arrive in a market-signer-
     // owned account first.)
+    // Snapshot the staging vault balance around the transfer so the
+    // amount fed into marginfi and into seat accounting is what
+    // PHYSICALLY arrived — not the nominal `params.amount_atoms`. A
+    // Token-2022 transfer-fee mint delivers less than the nominal
+    // amount; crediting the nominal amount would over-size the marginfi
+    // deposit CPI and dilute existing holders.
+    let vault_before_atoms = vault.get_balance_atoms();
     transfer_user_to_vault(
         token_program.info,
         trader_token.info,
@@ -70,6 +80,15 @@ pub fn process_deposit(
         payer.info,
         params.amount_atoms,
         mint.mint.decimals,
+    )?;
+    let received_atoms = vault
+        .get_balance_atoms()
+        .checked_sub(vault_before_atoms)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    require!(
+        received_atoms > 0,
+        YdeltaError::InvalidDepositAccounts,
+        "staging vault received 0 atoms"
     )?;
 
     // Deposit from the staging vault into the
@@ -90,11 +109,8 @@ pub fn process_deposit(
         market_key.as_ref(),
         &[market_signer_bump],
     ];
-    let credited_shares: u128 = MarginfiV18Adapter.deposit(
-        &adapter_accounts,
-        params.amount_atoms,
-        &[market_signer_seeds],
-    )?;
+    let credited_shares: u128 =
+        MarginfiV18Adapter.deposit(&adapter_accounts, received_atoms, &[market_signer_seeds])?;
 
     {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
@@ -112,7 +128,7 @@ pub fn process_deposit(
         market: market_key,
         trader: *payer.info.key,
         mint: mint_key,
-        amount_atoms: params.amount_atoms,
+        amount_atoms: received_atoms,
     })?;
 
     // Sync the signer's MarketPosition mirror from the canonical

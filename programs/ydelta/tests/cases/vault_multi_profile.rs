@@ -42,7 +42,7 @@ async fn two_profiles_independent_deposit_state() {
     // Profile 0 — curator_a, 50% LTV cap, 30-day max term.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400, 1u8)
+        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400)
         .await
         .unwrap();
 
@@ -50,7 +50,7 @@ async fn two_profiles_independent_deposit_state() {
     // policy, different curator.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400, 1u8)
+        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400)
         .await
         .unwrap();
 
@@ -117,49 +117,57 @@ async fn two_profiles_independent_deposit_state() {
     assert_eq!(principal_b_after, 250_000_000);
 }
 
-/// Same vault, two profiles both opening seats in the same market.
-/// Verify market.claimed_seats has both vault-owned seats with
-/// distinct (vault, profile_id) keys.
+/// Same vault, two profiles both resting asks in the same market.
+/// Each `place_order_for_risk_profile` auto-creates a vault-owned
+/// `ClaimedSeat` with a distinct (vault, OWNER_KIND_RISK_PROFILE,
+/// profile_id) key.
 #[tokio::test]
-async fn two_profiles_claim_seats_in_same_market() {
+async fn two_profiles_rest_asks_in_same_market() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
     let curator_a = fixture.create_trader().await;
     let curator_b = fixture.create_trader().await;
 
-    fixture.refresh_blockhash().await;
-    fixture.create_vault(&admin).await.unwrap();
+    // Profile 0 funded + ask resting.
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator_a,
+            0,
+            5_000,
+            500,
+            30 * 86_400,
+            100_000_000,
+        )
+        .await;
+    // Profile 1 funded + ask resting (vault already created — the
+    // helper tolerates the second create_vault failing).
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator_b,
+            1,
+            8_000,
+            600,
+            90 * 86_400,
+            100_000_000,
+        )
+        .await;
 
-    fixture.refresh_blockhash().await;
-    fixture
-        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400, 1u8)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400, 1u8)
-        .await
-        .unwrap();
+    // Both vault seats exist with distinct (vault, profile_id) keys —
+    // read_vault_seat panics if either is missing.
+    let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
+    let seat0 = fixture.read_vault_seat(&gv, 0).await;
+    let seat1 = fixture.read_vault_seat(&gv, 1).await;
+    assert_eq!(seat0.risk_profile_id, 0);
+    assert_eq!(seat1.risk_profile_id, 1);
 
-    // Each profile's curator claims that profile's seat. Each gets
-    // its own max_exposure cap. (Curator-gated; cross-curator claim
-    // is rejected — see `cross_curator_cannot_claim_seat_for_other_profile`.)
-    fixture.refresh_blockhash().await;
-    fixture
-        .claim_seat_for_risk_profile(&curator_a, 0, 100_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .claim_seat_for_risk_profile(&curator_b, 1, 500_000_000)
-        .await
-        .unwrap();
-
-    // Each profile's market-participation counter incremented.
-    let p0 = fixture.read_risk_profile(0).await;
-    let p1 = fixture.read_risk_profile(1).await;
-    assert_eq!(p0.allowed_market_count, 1);
-    assert_eq!(p1.allowed_market_count, 1);
+    // Both asks rest on the same market's asks tree.
+    let market = fixture.read_market_fixed().await;
+    assert_ne!(market.asks_best_index, hypertree::NIL);
 }
 
 /// Profile A's curator cannot place_order_for_risk_profile for profile B.
@@ -175,31 +183,20 @@ async fn cross_curator_cannot_place_for_other_profile() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400, 1u8)
+        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400, 1u8)
+        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400)
         .await
         .unwrap();
 
-    // Both profiles claim a seat in the market. Each signs with its
-    // own curator (claim_seat is curator-gated).
-    fixture.refresh_blockhash().await;
-    fixture
-        .claim_seat_for_risk_profile(&curator_a, 0, 100_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .claim_seat_for_risk_profile(&curator_b, 1, 500_000_000)
-        .await
-        .unwrap();
-
-    // Curator A signing with profile_id = 1 (curator B's profile)
-    // must reject. The processor's `signer == profile.curator` gate
-    // catches this.
+    // Curator A signing place_order_for_risk_profile with profile_id =
+    // 1 (curator B's profile) must reject. The processor's
+    // `signer == profile.curator` gate catches this — and the vault
+    // market-seat for profile 1 must NOT be auto-created by a rejected
+    // call.
     fixture.refresh_blockhash().await;
     let result = fixture
         .place_order_for_risk_profile(
@@ -254,7 +251,6 @@ async fn profile_aggregates_dont_alias() {
                 curator.pubkey(),
                 5_000 + id as u16 * 1_000, // distinct max_ltv per profile
                 30 * 86_400,
-                1u8,
             )
             .await
             .unwrap();
@@ -290,4 +286,108 @@ async fn profile_aggregates_dont_alias() {
     assert_eq!(p0_shares, 0);
     assert_eq!(p1_shares, 50_000_000_u128);
     assert_eq!(p2_shares, 0);
+}
+
+/// Per-profile `total_shares` / `total_assets_atoms` /
+/// `total_principal_atoms` are the SOLE source of truth for vault-wide
+/// totals; there is no separate aggregate header. This test drives
+/// deposits and withdrawals across two profiles and asserts the
+/// per-profile totals move correctly and sum to the expected
+/// vault-wide figure.
+#[tokio::test]
+async fn vault_aggregate_equals_sum_of_profiles() {
+    let fixture = MarketFixture::new().await;
+    let admin = fixture.create_trader().await;
+    let depositor_a = fixture.create_trader().await;
+    let depositor_b = fixture.create_trader().await;
+    let curator_a = fixture.create_trader().await;
+    let curator_b = fixture.create_trader().await;
+
+    let token_a = fixture.signer_debt_token(&depositor_a.pubkey());
+    let token_b = fixture.signer_debt_token(&depositor_b.pubkey());
+    fixture.put_token_account(
+        token_a,
+        mainnet::usdc_mint(),
+        depositor_a.pubkey(),
+        1_000_000_000,
+    );
+    fixture.put_token_account(
+        token_b,
+        mainnet::usdc_mint(),
+        depositor_b.pubkey(),
+        1_000_000_000,
+    );
+
+    fixture.refresh_blockhash().await;
+    fixture.create_vault(&admin).await.unwrap();
+    fixture.refresh_blockhash().await;
+    fixture
+        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture
+        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400)
+        .await
+        .unwrap();
+
+    // Deposit into profile 0. No loans / orders → assets == principal,
+    // and at genesis shares == principal (1:1).
+    fixture.refresh_blockhash().await;
+    fixture
+        .global_vault_deposit(&depositor_a, token_a, 0, 100_000_000)
+        .await
+        .unwrap();
+    let p0 = fixture.read_risk_profile(0).await;
+    let p1 = fixture.read_risk_profile(1).await;
+    assert_eq!(p0.total_principal_atoms, 100_000_000);
+    assert_eq!(p0.total_shares, 100_000_000_u128);
+    assert_eq!(p1.total_principal_atoms, 0);
+
+    // Deposit into profile 1.
+    fixture.refresh_blockhash().await;
+    fixture
+        .global_vault_deposit(&depositor_b, token_b, 1, 250_000_000)
+        .await
+        .unwrap();
+    let p0 = fixture.read_risk_profile(0).await;
+    let p1 = fixture.read_risk_profile(1).await;
+    assert_eq!(p1.total_principal_atoms, 250_000_000);
+    assert_eq!(p1.total_shares, 250_000_000_u128);
+    // Vault-wide total = Σ per-profile (the per-profile fields are the
+    // sole source of truth).
+    assert_eq!(
+        p0.total_principal_atoms + p1.total_principal_atoms,
+        350_000_000
+    );
+    assert_eq!(p0.total_shares + p1.total_shares, 350_000_000_u128);
+
+    // Partial withdraw from profile 0 — only profile 0 moves.
+    fixture.refresh_blockhash().await;
+    fixture
+        .global_vault_withdraw(&depositor_a, token_a, 0, 40_000_000_u128)
+        .await
+        .unwrap();
+    let p0 = fixture.read_risk_profile(0).await;
+    let p1 = fixture.read_risk_profile(1).await;
+    assert_eq!(p0.total_shares, 60_000_000_u128);
+    assert_eq!(p0.total_principal_atoms, 60_000_000);
+    assert_eq!(
+        p1.total_principal_atoms, 250_000_000,
+        "withdraw from p0 must not touch p1",
+    );
+
+    // Full drain of profile 0 — exercises the final-burn zeroing path.
+    // No loans deployed in p0, so the last-share gate permits it.
+    fixture.refresh_blockhash().await;
+    fixture
+        .global_vault_withdraw(&depositor_a, token_a, 0, 60_000_000_u128)
+        .await
+        .unwrap();
+    let p0 = fixture.read_risk_profile(0).await;
+    let p1 = fixture.read_risk_profile(1).await;
+    // Profile 0 fully drained; vault-wide total now reflects only p1.
+    assert_eq!(p0.total_shares, 0);
+    assert_eq!(p0.total_principal_atoms, 0);
+    assert_eq!(p1.total_principal_atoms, 250_000_000);
 }

@@ -12,7 +12,8 @@ use crate::state::global_config::global_config_pda;
 use crate::state::loan::loan_pda;
 use crate::state::user_account::user_account_pda;
 use crate::validation::{
-    get_lender_integration_account_address, get_market_signer_address, get_vault_address,
+    get_borrower_integration_account_address, get_lender_integration_account_address,
+    get_market_signer_address, get_vault_address,
 };
 
 /// Build a `Repay` instruction.
@@ -32,8 +33,10 @@ pub fn repay_instruction(
     repay_atoms: u64,
     full_repay: bool,
     borrower_seat_index_hint: Option<DataIndex>,
+    cranker_refund: &Pubkey,
 ) -> Instruction {
     let marginfi_account = get_lender_integration_account_address(market).0;
+    let borrower_marginfi_account = get_borrower_integration_account_address(market).0;
     let market_signer = get_market_signer_address(market).0;
     let (loan, _) = loan_pda(market, sequence);
     let (vault, _) = get_vault_address(market, debt_mint);
@@ -60,10 +63,14 @@ pub fn repay_instruction(
         AccountMeta::new(*debt_bank, false),
         AccountMeta::new(*debt_liquidity_vault, false),
         AccountMeta::new_readonly(*collateral_bank, false),
+        // Borrower-side marginfi account — P2Pool voluntary repay
+        // retires its `liability_shares` via `marginfi.repay_atoms`.
+        AccountMeta::new(borrower_marginfi_account, false),
         AccountMeta::new_readonly(market_signer, false),
         AccountMeta::new_readonly(*marginfi_program, false),
         AccountMeta::new(user_account_pda(borrower).0, false),
         AccountMeta::new_readonly(system_program::id(), false),
+        AccountMeta::new(*cranker_refund, false),
     ];
     Instruction {
         program_id: crate::id(),

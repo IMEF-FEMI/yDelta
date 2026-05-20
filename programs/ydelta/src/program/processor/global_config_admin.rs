@@ -4,8 +4,14 @@ use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::{
-    account_info::AccountInfo, entrypoint::ProgramResult, program::invoke_signed, pubkey::Pubkey,
-    rent::Rent, system_instruction, sysvar::Sysvar,
+    account_info::AccountInfo,
+    entrypoint::ProgramResult,
+    msg,
+    program::{invoke, invoke_signed},
+    pubkey::Pubkey,
+    rent::Rent,
+    system_instruction,
+    sysvar::Sysvar,
 };
 
 use crate::program::YdeltaError;
@@ -42,23 +48,33 @@ pub fn process_create_global_config(
         "global_config already initialized"
     )?;
 
-    let lamports = Rent::get()?.minimum_balance(GLOBAL_CONFIG_SIZE);
-    let create_ix = system_instruction::create_account(
-        payer.info.key,
-        global_config.key,
-        lamports,
-        GLOBAL_CONFIG_SIZE as u64,
-        program_id,
-    );
+    // `allocate` + `assign` (rent shortfall topped up) rather than
+    // `create_account`: `global_config` is the protocol singleton at a
+    // fixed PDA. `create_account` aborts if the account already holds
+    // lamports, so anyone could front-run deployment with a 1-lamport
+    // transfer and permanently brick the entire protocol bootstrap.
+    let required = Rent::get()?.minimum_balance(GLOBAL_CONFIG_SIZE);
     let bump_arr = [bump];
     let signer_seeds: &[&[u8]] = &[GLOBAL_CONFIG_SEED, &bump_arr];
+    let current = global_config.lamports();
+    if current < required {
+        invoke(
+            &system_instruction::transfer(payer.info.key, global_config.key, required - current),
+            &[
+                payer.info.clone(),
+                global_config.clone(),
+                system_program.info.clone(),
+            ],
+        )?;
+    }
     invoke_signed(
-        &create_ix,
-        &[
-            payer.info.clone(),
-            global_config.clone(),
-            system_program.info.clone(),
-        ],
+        &system_instruction::allocate(global_config.key, GLOBAL_CONFIG_SIZE as u64),
+        &[global_config.clone(), system_program.info.clone()],
+        &[signer_seeds],
+    )?;
+    invoke_signed(
+        &system_instruction::assign(global_config.key, program_id),
+        &[global_config.clone(), system_program.info.clone()],
         &[signer_seeds],
     )?;
 
@@ -94,6 +110,10 @@ pub fn process_transfer_protocol_admin(
         "transfer_protocol_admin: signer != GlobalConfig.protocol_admin"
     )?;
     header.pending_protocol_admin = params.new_admin;
+    msg!(
+        "ydelta: protocol admin transfer initiated, pending -> {}",
+        params.new_admin
+    );
     Ok(())
 }
 
@@ -120,6 +140,7 @@ pub fn process_accept_protocol_admin(
     )?;
     header.protocol_admin = header.pending_protocol_admin;
     header.pending_protocol_admin = Pubkey::default();
+    msg!("ydelta: protocol admin accepted by {}", payer.info.key);
     Ok(())
 }
 

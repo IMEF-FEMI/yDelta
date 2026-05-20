@@ -1,141 +1,176 @@
-//! Encumbrance / cancel / match all operate on fp48 shares snapshot
-//! at place-order time. The snapshot is the placeholder 1.0, so the
-//! math is identity (atom-as-share). These tests exercise the
-//! round-trip symmetry that lets a future bank-read swap not touch
-//! the framework.
+//! Encumbrance conservation across a borrower IOC fill.
+//!
+//! Only the borrower (taker) seat carries a per-seat encumbrance —
+//! vault risk-profile asks are open-ended and tracked via
+//! `RiskProfile.encumbered_in_orders_atoms`, not per-seat shares.
+//! There is no resting-bid encumbrance.
+//!
+//! These tests pin two invariants on an IOC cross:
+//!   1. Borrower seat: the collateral encumbered by `place_order` for
+//!      the *matched* slice is released atom-for-atom at match time
+//!      (the snapshot used to encumber is the same one used to
+//!      decrement), so a fully-matched bid leaves the borrower's
+//!      `collateral_encumbered_shares` back at zero.
+//!   2. Vault side: the crossed profile's
+//!      `encumbered_in_orders_atoms` is bumped by exactly the matched
+//!      principal, and `total_principal_atoms` is untouched until the
+//!      cranker settles.
 
 use solana_sdk::signer::Signer;
 
-use ydelta::state::{OrderType, Side};
+use crate::test_utils::{mainnet, MarketFixture};
 
-use crate::test_utils::TestFixture;
-
+/// A borrower bid fully matched by a vault ask: the borrower seat's
+/// collateral encumbrance returns to zero (match-time decrement is
+/// byte-symmetric with the place-time encumber) and the vault profile
+/// records the matched principal as encumbered.
 #[tokio::test]
-async fn encumber_then_cancel_round_trips_exactly() {
-    let mut fixture = TestFixture::new().await;
-    let alice = fixture.create_trader(0, 0).await;
-    fixture.claim_seat(&alice).await.unwrap();
+async fn borrower_encumbrance_released_on_full_match() {
+    let fixture = MarketFixture::new().await;
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let borrower = fixture.create_trader().await;
 
-    let amt: u128 = 1_000;
+    let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
+    fixture.put_token_account(
+        depositor_token,
+        mainnet::usdc_mint(),
+        depositor.pubkey(),
+        1_000_000_000,
+    );
+    fixture.refresh_blockhash().await;
+    fixture.create_vault(&admin).await.unwrap();
+    fixture.refresh_blockhash().await;
     fixture
-        .seed_seat_shares(&alice.pubkey(), amt, /*is_debt=*/ true)
-        .await;
-
-    let pre = fixture.read_seat(&alice.pubkey()).await;
-
-    // Place an ask: encumbers 700 atoms of debt (which under the 1.0
-    // placeholder snapshot become 700 fp48 shares — identity).
+        .create_risk_profile(&admin, 0, curator.pubkey(), 8_000, 30 * 86_400)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
     fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            700,
-            0,
+        .global_vault_deposit(&depositor, depositor_token, 0, 100_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    // No claim-seat step — the vault market-seat is auto-created on the
+    // curator's first place_order_for_risk_profile. The ask is
+    // unbounded; each cross is capped by the profile's idle balance.
+    fixture
+        .place_order_for_risk_profile(&curator, 0, /*rate_bps=*/ 500, 30 * 86_400, 0)
+        .await
+        .unwrap();
+
+    // Borrower deposits collateral.
+    fixture.claim_seat(&borrower).await;
+    let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
+    fixture.put_wsol_token_account(borrower_wsol, borrower.pubkey(), 200_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(
+            &borrower,
+            borrower_wsol,
+            /*is_debt=*/ false,
+            100_000_000,
         )
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    let mid = fixture.read_seat(&alice.pubkey()).await;
-    assert_eq!(
-        mid.debt_withdrawable_shares,
-        pre.debt_withdrawable_shares - 700
-    );
-    assert_eq!(mid.debt_encumbered_shares, pre.debt_encumbered_shares + 700);
+    // Pre-cross borrower seat: nothing encumbered yet.
+    let pre = fixture.read_seat(&borrower.pubkey()).await;
+    assert_eq!(pre.collateral_encumbered_shares, 0);
 
-    // Cancel — the order's recorded snapshot drives the decrement.
-    let market = fixture.read_market().await;
-    let seq = market.fixed.order_sequence_number - 1;
-    fixture.cancel_order(&alice, seq).await.unwrap();
-
-    let post = fixture.read_seat(&alice.pubkey()).await;
-    assert_eq!(
-        post.debt_withdrawable_shares, pre.debt_withdrawable_shares,
-        "withdrawable shares must be byte-exact pre vs post (encumber→cancel round-trip)"
-    );
-    assert_eq!(
-        post.debt_encumbered_shares, pre.debt_encumbered_shares,
-        "encumbered shares must be byte-exact"
-    );
-    assert_eq!(post.open_lend_count, pre.open_lend_count);
-}
-
-#[tokio::test]
-async fn match_decrement_is_byte_symmetric_with_encumber() {
-    // Two traders place crossing orders; on full match, both seats'
-    // encumbered shares should drop to exactly the value they held
-    // pre-encumber (since match-time decrement uses the same snapshot
-    // recorded at place-order time).
-    let mut fixture = TestFixture::new().await;
-    let alice = fixture.create_trader(0, 0).await;
-    let bob = fixture.create_trader(0, 0).await;
-    fixture.claim_seat(&alice).await.unwrap();
-    fixture.claim_seat(&bob).await.unwrap();
-
+    // Bid fully crossed by the vault ask.
+    let principal_atoms: u64 = 1_000_000;
     fixture
-        .seed_seat_shares(&alice.pubkey(), 1_000, /*is_debt=*/ true)
-        .await;
-    fixture
-        .seed_seat_shares(&bob.pubkey(), 5_000, /*is_debt=*/ false)
-        .await;
-
-    let alice_pre = fixture.read_seat(&alice.pubkey()).await;
-    let bob_pre = fixture.read_seat(&bob.pubkey()).await;
-
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            700,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
             800,
             30 * 86_400,
-            700,
-            1_000,
+            principal_atoms,
+            /*collateral_atoms=*/ 50_000_000,
+            0,
         )
         .await
         .unwrap();
 
-    let alice_post = fixture.read_seat(&alice.pubkey()).await;
-    let bob_post = fixture.read_seat(&bob.pubkey()).await;
+    // Borrower seat: the IOC bid never rests, so the place-time
+    // collateral encumbrance is fully released by the match-time
+    // decrement — back to exactly the pre-cross value.
+    let post = fixture.read_seat(&borrower.pubkey()).await;
+    assert_eq!(
+        post.collateral_encumbered_shares, pre.collateral_encumbered_shares,
+        "fully-matched IOC bid must leave zero collateral encumbrance on the borrower seat"
+    );
 
-    // Encumbered shares back to original on both sides — the match
-    // fully drained the encumbrance both placed.
+    // Vault side: the crossed profile is encumbered by exactly the
+    // matched principal; total principal is untouched (atoms migrate
+    // only when the cranker settles).
+    let profile = fixture.read_risk_profile(0).await;
     assert_eq!(
-        alice_post.debt_encumbered_shares,
-        alice_pre.debt_encumbered_shares
+        profile.encumbered_in_orders_atoms, principal_atoms,
+        "vault profile encumbered for exactly the matched principal"
     );
     assert_eq!(
-        bob_post.collateral_encumbered_shares,
-        bob_pre.collateral_encumbered_shares
+        profile.total_principal_atoms, 100_000_000,
+        "total_principal_atoms unchanged until the cranker settles"
     );
-    // Withdrawable on alice's debt side: she encumbered 700 then the
-    // match consumed it without re-credit at this stage (the credit
-    // arrives via process_matched_loan + claim_repayment at SBF level
-    // which this native test doesn't exercise). So withdrawable
-    // dropped by 700 net.
     assert_eq!(
-        alice_post.debt_withdrawable_shares,
-        alice_pre.debt_withdrawable_shares - 700
+        profile.deployed_principal_atoms, 0,
+        "deployed_principal_atoms only bumps when the cranker settles"
     );
-    // Bob's collateral_withdrawable: dropped by 1000.
+}
+
+/// A borrower bid whose residual drops (OB_ONLY, empty book) must
+/// release the *entire* place-time collateral encumbrance — nothing
+/// rests, nothing stays encumbered.
+#[tokio::test]
+async fn dropped_residual_releases_all_borrower_encumbrance() {
+    let fixture = MarketFixture::new().await;
+    let admin = fixture.create_trader().await;
+    let borrower = fixture.create_trader().await;
+
+    fixture.refresh_blockhash().await;
+    fixture.create_vault(&admin).await.unwrap();
+
+    // Borrower seat with seeded collateral shares — no vault ask
+    // rests, so the whole bid is a residual.
+    fixture.claim_seat(&borrower).await;
+    fixture
+        .seed_seat_shares(&borrower.pubkey(), 1_000_000_000, /*is_debt=*/ false)
+        .await;
+
+    let pre = fixture.read_seat(&borrower.pubkey()).await;
+
+    fixture.refresh_blockhash().await;
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            30 * 86_400,
+            /*principal_atoms=*/ 1_000_000,
+            /*collateral_atoms=*/ 100_000_000,
+            ydelta::state::market_helpers::FLAG_OB_ONLY,
+        )
+        .await
+        .unwrap();
+
+    let post = fixture.read_seat(&borrower.pubkey()).await;
     assert_eq!(
-        bob_post.collateral_withdrawable_shares,
-        bob_pre.collateral_withdrawable_shares - 1000
+        post.collateral_encumbered_shares, pre.collateral_encumbered_shares,
+        "OB_ONLY dropped residual must release all collateral encumbrance"
     );
+    assert_eq!(
+        post.collateral_withdrawable_shares, pre.collateral_withdrawable_shares,
+        "withdrawable collateral restored — the bid neither rested nor matched"
+    );
+
+    // Nothing rested; no MatchedLoan.
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(market.asks_root_index, hypertree::NIL);
+    assert_eq!(market.matched_loan_sequence, 0);
 }

@@ -5,7 +5,8 @@ use std::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
 use hypertree::{
-    get_helper, get_mut_helper, DataIndex, Get, RBNode, RedBlackTree, RedBlackTreeReadOnly, NIL,
+    get_helper, get_mut_helper, DataIndex, FreeList, Get, HyperTreeReadOperations,
+    HyperTreeWriteOperations, RBNode, RedBlackTree, RedBlackTreeReadOnly, NIL,
 };
 use shank::{ShankAccount, ShankType};
 use solana_program::{entrypoint::ProgramResult, program_error::ProgramError, pubkey::Pubkey};
@@ -16,7 +17,8 @@ use crate::validation::YdeltaAccount;
 
 use super::constants::{
     GLOBAL_VAULT_FIXED_DISCRIMINANT, GLOBAL_VAULT_FIXED_SIZE, RISK_PROFILE_BLOCK_PAYLOAD_SIZE,
-    VAULT_CLAIMED_SEAT_SIZE, VAULT_NODE_BLOCK_PAYLOAD_SIZE, VAULT_ORDER_REF_SIZE,
+    RISK_PROFILE_BLOCK_SIZE, VAULT_CLAIMED_SEAT_SIZE, VAULT_NODE_BLOCK_PAYLOAD_SIZE,
+    VAULT_NODE_BLOCK_SIZE, VAULT_ORDER_REF_SIZE,
 };
 
 // ─────────────────── PDA seeds + derivation ───────────────────
@@ -63,6 +65,13 @@ pub fn global_vault_staging_pda(vault: &Pubkey) -> (Pubkey, u8) {
 /// Holds two free-list heads — the `RiskProfile` blocks are 512 bytes
 /// each, while the smaller `RiskProfileDepositorSeat` and
 /// `RiskProfileOrderRef` blocks share a 128-byte allocator.
+///
+/// The per-`RiskProfile` `total_shares` / `total_assets_atoms` /
+/// `total_principal_atoms` fields are the SOLE source of truth for
+/// vault-wide totals. The header carries no mirrored running sums:
+/// yield-accrual / loan-close paths mutate the per-profile fields
+/// without touching the header, so a header mirror would drift. Sum
+/// across the `risk_profiles` tree if a vault-wide total is needed.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankAccount)]
 pub struct GlobalVaultFixed {
@@ -92,9 +101,9 @@ pub struct GlobalVaultFixed {
     pub risk_profile_count: u8,       // 224..225
     pub global_vault_signer_bump: u8, // 225..226
     /// Layout version. Bumped when fields are added or repurposed so
-    /// off-chain decoders can distinguish layouts. New accounts ship
-    /// with version=0; future migrations bump in lockstep with the
-    /// schema change.
+    /// off-chain decoders can distinguish layouts and the loader can
+    /// reject a stale account. Stamped to `ACCOUNT_LAYOUT_VERSION`
+    /// at create time.
     pub version: u8, // 226..227
     _pad0: [u8; 1],                   // 227..228
     pub claimed_seat_count: u32,      // 228..232
@@ -106,11 +115,23 @@ pub struct GlobalVaultFixed {
     /// the transfer. `Pubkey::default()` means "no pending transfer".
     pub pending_global_vault_admin: Pubkey, // 240..272
 
-    /// Reserved space. Original 16 bytes plus the 64-byte header
-    /// growth (`GLOBAL_VAULT_FIXED_SIZE`: 256 → 320). After
-    /// `pending_global_vault_admin: Pubkey` (32 bytes) we have 16 + 64 − 32
-    /// = 48 bytes = 6 u64s left.
-    _reserved: [u64; 6], // 272..320
+    // Reserved padding. Vault-wide totals are derived by summing the
+    // per-profile fields (see the struct doc comment); the header
+    // holds no aggregate mirror. These 32 bytes preserve the 320-byte
+    // layout.
+    _reserved_aggregates: [u64; 4], // 272..304
+
+    /// Per-vault pause flag. `1` = paused. While paused,
+    /// every vault-scoped state-mutating ix (deposit / withdraw, the
+    /// risk-profile order ixs, claim repayment / curator fee, create /
+    /// update risk profile) rejects at the loader with `VaultPaused`.
+    /// The two-step vault-admin transfer ixs are deliberately NOT
+    /// gated, so a stuck vault can still have its admin rotated for
+    /// recovery. Set by `SetVaultPause` (vault-admin-gated).
+    pub is_paused: u8, // 304..305
+    _pad2: [u8; 7], // 305..312
+    /// Reserved space. One `u64` remains after `is_paused` + padding.
+    _reserved: [u64; 1], // 312..320
 }
 const_assert_eq!(size_of::<GlobalVaultFixed>(), GLOBAL_VAULT_FIXED_SIZE);
 const_assert_eq!(size_of::<GlobalVaultFixed>() % 8, 0);
@@ -142,14 +163,22 @@ impl GlobalVaultFixed {
             num_bytes_allocated: 0,
             risk_profile_count: 0,
             global_vault_signer_bump,
-            version: 0,
+            version: crate::state::constants::ACCOUNT_LAYOUT_VERSION,
             _pad0: [0; 1],
             claimed_seat_count: 0,
             open_order_count: 0,
             _pad1: [0; 4],
             pending_global_vault_admin: Pubkey::default(),
-            _reserved: [0; 6],
+            _reserved_aggregates: [0; 4],
+            is_paused: 0,
+            _pad2: [0; 7],
+            _reserved: [0; 1],
         }
+    }
+
+    /// True when the vault is paused.
+    pub fn is_paused(&self) -> bool {
+        self.is_paused != 0
     }
 
     pub fn has_free_profile_block(&self) -> bool {
@@ -171,6 +200,17 @@ impl YdeltaAccount for GlobalVaultFixed {
             "Invalid GlobalVault discriminant: {} (expected {})",
             self.discriminator,
             GLOBAL_VAULT_FIXED_DISCRIMINANT
+        )?;
+        Ok(())
+    }
+
+    fn verify_version(&self) -> ProgramResult {
+        require!(
+            self.version == crate::state::constants::ACCOUNT_LAYOUT_VERSION,
+            ProgramError::InvalidAccountData,
+            "Stale GlobalVaultFixed layout: version {} (expected {})",
+            self.version,
+            crate::state::constants::ACCOUNT_LAYOUT_VERSION
         )?;
         Ok(())
     }
@@ -226,12 +266,9 @@ const_assert_eq!(
 /// Updated at match (`process_matched_loan` vault path) and close
 /// (the vault branch of `process_repay`).
 ///
-/// **Markets-this-profile-can-quote-in is a counter, not a whitelist.**
-/// `allowed_market_count` = how many markets currently host a
-/// vault-owned `ClaimedSeat` for this profile; `allowed_market_max` =
-/// the cap set at profile creation. Incremented in
-/// `claim_seat_for_risk_profile`, decremented when a profile closes its
-/// market seat.
+/// **A profile may quote in any market sharing the vault's mint.**
+/// Vault market seats are auto-created on the first
+/// `place_order_for_risk_profile`.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct RiskProfile {
@@ -247,14 +284,9 @@ pub struct RiskProfile {
     pub max_ltv_bps: u16,      // 40..42
     _pad1: [u8; 2],            // 42..44
     pub max_term_seconds: u32, // 44..48
-    /// Live count of markets that hold a vault-owned `ClaimedSeat`
-    /// for this profile. Incremented on `claim_seat_for_risk_profile`,
-    /// decremented on profile-removes-seat. `< allowed_market_max`.
-    pub allowed_market_count: u8, // 48..49
-    /// Cap set at profile creation. `claim_seat_for_risk_profile` rejects
-    /// when `allowed_market_count >= allowed_market_max`.
-    pub allowed_market_max: u8, // 49..50
-    _pad2: [u8; 14],           // 50..64  (push to 16-align for u128 below)
+    /// Reserved. 16 bytes of unused padding, sized to keep the u128
+    /// below 16-aligned.
+    _pad2: [u8; 16], // 48..64
 
     // ─── Principal decomposition (running aggregates) ───
     pub total_shares: u128,              // 64..80
@@ -263,8 +295,11 @@ pub struct RiskProfile {
     pub deployed_principal_atoms: u64,   // 96..104
     pub encumbered_in_orders_atoms: u64, // 104..112
 
-    /// Aggregate weighted rate for O(1) `accrue_risk_profile`.
-    /// `Σ(loan_principal × loan_rate_bps)` across open loans.
+    /// Aggregate GROSS weighted rate for O(1) `accrue_risk_profile`.
+    /// `Σ(loan_principal × loan_lender_rate_bps)` across open loans.
+    /// Kept as the gross lender-rate aggregate for diagnostics; the
+    /// depositor-facing yield is driven by `total_weighted_net_rate_bps`
+    /// below.
     pub total_weighted_rate_bps: u128, // 112..128
 
     pub accumulated_curator_fee_atoms: u64, // 128..136
@@ -291,18 +326,23 @@ pub struct RiskProfile {
     /// `Pubkey::default()` means "no pending transfer".
     pub pending_curator: Pubkey, // 192..224
 
-    /// Markets this profile currently holds a seat in. Indexed by
-    /// `(0..allowed_market_count)`; trailing slots default-initialised.
-    /// Bounded at 8 by the design's `allowed_market_max` cap. Populated
-    /// by `claim_seat_for_risk_profile`, drained by `release_seat_for_risk_profile`.
-    /// Used by `sync_market_seats_for_risk_profile` to enumerate the
-    /// market-side seats that need re-stamping after a curator runs
-    /// `update_risk_profile` (e.g. tightens `max_ltv_bps`).
-    pub active_markets: [Pubkey; 8], // 224..480
+    /// Aggregate NET weighted rate for O(1) `accrue_risk_profile`.
+    /// `Σ(loan_principal × loan_lender_rate_bps × (10_000 −
+    /// curator_fee_bps) / 10_000)` across open loans. This is the
+    /// depositors' share of the lender-rate yield AFTER the curator's
+    /// manager fee is siphoned off. `accrue_risk_profile` credits
+    /// `total_assets_atoms` from THIS aggregate — using the gross
+    /// `total_weighted_rate_bps` would double-count the curator's slice
+    /// (it is also separately accumulated into
+    /// `accumulated_curator_fee_atoms` and paid out via
+    /// `claim_curator_fee`).
+    pub total_weighted_net_rate_bps: u128, // 224..240
 
-    /// Reserved budget. Split into chunks of ≤32 so `Default`/`Pod`
-    /// auto-derive on `[T; N]` works (the toolchain caps at N=32).
-    _reserved_a: [u64; 2], // 480..496
+    /// Reserved budget. 256 bytes of unused padding, split into chunks
+    /// of ≤32 so `Default`/`Pod` auto-derive on `[T; N]` works (the
+    /// toolchain caps at N=32).
+    _reserved_a: [u64; 30], // 240..480
+    _reserved_b: [u64; 2], // 480..496
 }
 const_assert_eq!(size_of::<RiskProfile>(), RISK_PROFILE_BLOCK_PAYLOAD_SIZE);
 const_assert_eq!(size_of::<RiskProfile>() % 16, 0);
@@ -316,14 +356,13 @@ impl RiskProfile {
 
     /// Fresh profile constructor used by `create_risk_profile`.
     /// Initializes risk policy + zeros all financial / yield-index
-    /// state. `allowed_market_max` caps how many markets this profile
-    /// can simultaneously hold seats in.
+    /// state. A profile may quote in any market sharing the vault's
+    /// mint.
     pub fn new_empty(
         profile_id: u8,
         curator: Pubkey,
         max_ltv_bps: u16,
         max_term_seconds: u32,
-        allowed_market_max: u8,
     ) -> Self {
         Self {
             profile_id,
@@ -332,9 +371,7 @@ impl RiskProfile {
             max_ltv_bps,
             _pad1: [0; 2],
             max_term_seconds,
-            allowed_market_count: 0,
-            allowed_market_max,
-            _pad2: [0; 14],
+            _pad2: [0; 16],
             total_shares: 0,
             total_assets_atoms: 0,
             total_principal_atoms: 0,
@@ -347,45 +384,9 @@ impl RiskProfile {
             cumulative_delta_yield_index_scaled: 0,
             last_supply_share_value_fp48: 0,
             pending_curator: Pubkey::default(),
-            active_markets: [Pubkey::default(); 8],
-            _reserved_a: [0; 2],
-        }
-    }
-
-    /// Hard cap on the active_markets array.
-    pub const ACTIVE_MARKETS_MAX: u8 = 8;
-
-    /// Append `market` to `active_markets`. Idempotent — a no-op if the
-    /// market is already present. Returns Err when the array is full
-    /// (`allowed_market_count == ACTIVE_MARKETS_MAX`).
-    pub fn push_active_market(&mut self, market: Pubkey) -> ProgramResult {
-        if self.active_markets[..self.allowed_market_count as usize].contains(&market) {
-            return Ok(());
-        }
-        require!(
-            self.allowed_market_count < Self::ACTIVE_MARKETS_MAX,
-            crate::program::YdeltaError::VaultProfileAllowedMarketsExceeded,
-            "risk_profile.active_markets is full ({} markets)",
-            self.allowed_market_count
-        )?;
-        self.active_markets[self.allowed_market_count as usize] = market;
-        self.allowed_market_count += 1;
-        Ok(())
-    }
-
-    /// Remove `market` from `active_markets` (swap-remove with the
-    /// trailing slot). Idempotent — a no-op if the market isn't
-    /// present.
-    pub fn remove_active_market(&mut self, market: &Pubkey) {
-        let count = self.allowed_market_count as usize;
-        if let Some(idx) = self.active_markets[..count]
-            .iter()
-            .position(|m| m == market)
-        {
-            // Swap with the last filled slot, then default the tail.
-            self.active_markets[idx] = self.active_markets[count - 1];
-            self.active_markets[count - 1] = Pubkey::default();
-            self.allowed_market_count -= 1;
+            total_weighted_net_rate_bps: 0,
+            _reserved_a: [0; 30],
+            _reserved_b: [0; 2],
         }
     }
 }
@@ -505,8 +506,8 @@ impl std::fmt::Display for RiskProfileDepositorSeat {
 pub struct RiskProfileOrderRef {
     pub market: Pubkey, // 0..32   composite key part 1
     pub profile_id: u8, // 32..33  composite key part 2
-    /// `0 = Bid, 1 = Ask`. Vaults always Ask in v1 (debt-side only),
-    /// but the field stays for forward compat / log clarity.
+    /// `0 = Bid, 1 = Ask`. Vaults always Ask (debt-side only), but the
+    /// field stays for forward compat / log clarity.
     pub side: u8, // 33..34
     _pad0: [u8; 2],     // 34..36
     pub rate_bps: u16,  // 36..38
@@ -664,24 +665,28 @@ pub fn read_bank_asset_share_value_fp48(
 ///
 /// Math:
 /// ```text
-/// idle = total_principal - deployed - encumbered_in_orders
+/// idle = total_principal - deployed   // encumbered stays on marginfi
 ///
 /// // Supply yield (only if snapshot exists; first call seeds it).
 /// growth_fp48 = (current_share_value_fp48 << 48) / snapshot - SCALE
 /// idle_yield = idle × growth_fp48 / SCALE
 ///
-/// // Lender-rate yield: O(1) via running aggregate.
-/// loan_yield = total_weighted_rate_bps × elapsed / SECONDS_PER_YEAR / 10_000
+/// // Lender-rate yield: O(1) via running aggregate. Driven by the
+/// // NET aggregate so the curator's manager-fee slice is not credited
+/// // to depositors' share price (it is separately accumulated into
+/// // `accumulated_curator_fee_atoms`).
+/// loan_yield = total_weighted_net_rate_bps × elapsed / SECONDS_PER_YEAR / 10_000
 ///
-/// total_assets += idle_yield + loan_yield
+/// total_assets += idle_delta + loan_yield   // loan_yield rounded DOWN
+/// total_principal += idle_delta             // physical idle-side drift
 /// supply_index += (idle_yield × SCALE) / total_shares
 /// delta_index  += (loan_yield × SCALE) / total_shares
 /// ```
 ///
-/// **Loan-iteration-free.** `total_weighted_rate_bps` already captures
-/// `Σ(P_i × R_i)` across all open loans (updated at match / close
-/// events), so a single multiply yields the entire book's per-second
-/// lender-rate atoms.
+/// **Loan-iteration-free.** `total_weighted_net_rate_bps` already
+/// captures `Σ(P_i × R_i × (10_000 − curator_fee_bps_i) / 10_000)`
+/// across all open loans (updated at match / close events), so a single
+/// multiply yields the entire book's per-second NET lender-rate atoms.
 ///
 /// No-op when `now <= profile.last_accrue_unix` or
 /// `total_principal_atoms == 0`.
@@ -714,55 +719,95 @@ pub fn accrue_risk_profile(
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     // ─── Stream 1: supply yield from marginfi share-value delta ───
+    //
+    // The supply-yield base is `idle = total_principal − deployed`.
+    //
+    // `encumbered_in_orders_atoms` is deliberately NOT subtracted:
+    // encumbered atoms are pure on-book bookkeeping — committing them to
+    // a resting order does NOT move them off the vault's marginfi
+    // integration account (no CPI), so they keep physically earning
+    // marginfi supply yield. Only `deployed_principal_atoms` has actually
+    // left marginfi (migrated to the borrower side at match). Excluding
+    // encumbered would credit that earned yield to nobody.
+    //
+    // `checked_sub`, not `saturating_sub`: a broken
+    // `total_principal ≥ deployed` invariant is a real accounting fault
+    // and must hard-fail rather than be silently masked as `idle = 0`.
+    // `global_vault_withdraw` caps the proportional principal decrement
+    // at the profile's idle, and the last-share burn is forbidden while
+    // capital is deployed, so this `checked_sub` never fires in
+    // practice — it is a tripwire, not an expected path.
     let idle: u64 = profile
         .total_principal_atoms
-        .saturating_sub(profile.deployed_principal_atoms)
-        .saturating_sub(profile.encumbered_in_orders_atoms);
-    let idle_yield_atoms: u128 = if idle > 0 && current_share_value_fp48 > 0 {
+        .checked_sub(profile.deployed_principal_atoms)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let idle_delta_atoms: i128 = if idle > 0 && current_share_value_fp48 > 0 {
         let snapshot = profile.last_supply_share_value_fp48;
         if snapshot == 0 {
             // First call with a real share value — seed the snapshot,
             // skip yield (no baseline to diff against).
             0
-        } else if current_share_value_fp48 <= snapshot {
-            // Share value didn't grow (or briefly retraced via marginfi
-            // bank state). Don't credit negative yield.
-            0
         } else {
-            // growth_fp48 = (current * SCALE) / snapshot - SCALE.
-            let scale: u128 = ACCRUE_INDEX_SCALE;
-            let ratio_fp48 = current_share_value_fp48
-                .checked_mul(scale)
+            // Mark the physically-idle slice to the bank's current share
+            // value. This lets supply yield compound on prior supply
+            // yield, and if the bank share value ever retraces it socialises
+            // the loss through the profile NAV instead of leaving the vault
+            // overstated.
+            let current_idle_value = (idle as u128)
+                .checked_mul(current_share_value_fp48)
                 .and_then(|x| x.checked_div(snapshot))
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            let growth_fp48 = ratio_fp48.saturating_sub(scale);
-            (idle as u128)
-                .checked_mul(growth_fp48)
-                .and_then(|x| x.checked_div(scale))
-                .ok_or(ProgramError::ArithmeticOverflow)?
+            if current_idle_value > u64::MAX as u128 {
+                return Err(ProgramError::ArithmeticOverflow);
+            }
+            (current_idle_value as i128) - (idle as i128)
         }
     } else {
         0
     };
 
     // ─── Stream 2: lender-rate yield on the entire deployed book ───
-    // `total_weighted_rate_bps` = Σ(loan_principal × loan_rate_bps).
-    // Period yield = total_weighted_rate × elapsed / (BPS × YEAR).
+    // Driven by `total_weighted_net_rate_bps` = Σ(loan_principal ×
+    // loan_lender_rate_bps × (10_000 − curator_fee_bps) / 10_000), i.e.
+    // the depositors' share AFTER the curator manager fee. Crediting
+    // the gross `total_weighted_rate_bps` here would double-count the
+    // curator's slice — it is also accumulated into
+    // `accumulated_curator_fee_atoms` and withdrawn via
+    // `claim_curator_fee`. The supply-yield stream above is
+    // NOT subject to the curator fee — it stays gross. The `checked_div`
+    // rounds the net-yield credit DOWN, the conservative direction.
     let loan_yield_atoms: u128 = profile
-        .total_weighted_rate_bps
+        .total_weighted_net_rate_bps
         .checked_mul(elapsed)
         .and_then(|x| x.checked_div(denom))
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    let total_yield_atoms = idle_yield_atoms
-        .checked_add(loan_yield_atoms)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-    if total_yield_atoms > u64::MAX as u128 {
+    // Supply-side share-value drift is physically realised on the
+    // integration account, so it must move BOTH `total_assets_atoms`
+    // and the withdrawable principal basis. Loan-rate yield is only an
+    // asset-side estimate while the loan is open; it stays off principal
+    // until claim/settlement realises it.
+    if idle_delta_atoms >= 0 {
+        let idle_gain = idle_delta_atoms as u64;
+        profile.total_assets_atoms = profile
+            .total_assets_atoms
+            .checked_add(idle_gain)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+        profile.total_principal_atoms = profile
+            .total_principal_atoms
+            .checked_add(idle_gain)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+    } else {
+        let idle_loss = (-idle_delta_atoms) as u64;
+        profile.total_assets_atoms = profile.total_assets_atoms.saturating_sub(idle_loss);
+        profile.total_principal_atoms = profile.total_principal_atoms.saturating_sub(idle_loss);
+    }
+    if loan_yield_atoms > u64::MAX as u128 {
         return Err(ProgramError::ArithmeticOverflow);
     }
     profile.total_assets_atoms = profile
         .total_assets_atoms
-        .checked_add(total_yield_atoms as u64)
+        .checked_add(loan_yield_atoms as u64)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     // ─── Update cumulative indices for per-depositor crystallisation ───
@@ -770,14 +815,17 @@ pub fn accrue_risk_profile(
     // index growth — under-crediting depositors is a load-bearing
     // accounting failure.
     if profile.total_shares > 0 {
-        let supply_growth = idle_yield_atoms
-            .checked_mul(ACCRUE_INDEX_SCALE)
-            .ok_or(ProgramError::ArithmeticOverflow)?
-            .checked_div(profile.total_shares)
-            .ok_or(ProgramError::ArithmeticOverflow)?;
-        profile.cumulative_supply_yield_index_scaled = profile
-            .cumulative_supply_yield_index_scaled
-            .saturating_add(supply_growth);
+        if idle_delta_atoms > 0 {
+            let supply_growth = (idle_delta_atoms as u128)
+                .checked_mul(ACCRUE_INDEX_SCALE)
+                .ok_or(ProgramError::ArithmeticOverflow)?
+                .checked_div(profile.total_shares)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            profile.cumulative_supply_yield_index_scaled = profile
+                .cumulative_supply_yield_index_scaled
+                .checked_add(supply_growth)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
 
         let delta_growth = loan_yield_atoms
             .checked_mul(ACCRUE_INDEX_SCALE)
@@ -786,7 +834,8 @@ pub fn accrue_risk_profile(
             .ok_or(ProgramError::ArithmeticOverflow)?;
         profile.cumulative_delta_yield_index_scaled = profile
             .cumulative_delta_yield_index_scaled
-            .saturating_add(delta_growth);
+            .checked_add(delta_growth)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
     }
 
     profile.last_accrue_unix = now;
@@ -797,10 +846,6 @@ pub fn accrue_risk_profile(
 }
 
 // ─────────────────── Free-list management ───────────────────
-
-use hypertree::FreeList;
-
-use super::constants::{RISK_PROFILE_BLOCK_SIZE, VAULT_NODE_BLOCK_SIZE};
 
 // Compile-time invariants — fail fast if anyone touches the constants
 // without re-checking the layout below.
@@ -910,7 +955,6 @@ pub fn upsert_risk_profile_depositor_seat(
     owner: Pubkey,
     profile_id: u8,
 ) -> Result<DataIndex, ProgramError> {
-    use hypertree::{HyperTreeReadOperations, HyperTreeWriteOperations};
     let probe = RiskProfileDepositorSeat::probe(owner, profile_id);
     let existing_idx = {
         let tree =
@@ -944,7 +988,6 @@ pub fn remove_risk_profile_depositor_seat(
     owner: Pubkey,
     profile_id: u8,
 ) -> DataIndex {
-    use hypertree::{HyperTreeReadOperations, HyperTreeWriteOperations};
     let probe = RiskProfileDepositorSeat::probe(owner, profile_id);
     let existing_idx = {
         let tree =
@@ -977,8 +1020,6 @@ pub fn insert_risk_profile_order_ref(
     order_sequence_in_market: u64,
     placed_at_unix: i64,
 ) -> Result<DataIndex, ProgramError> {
-    use hypertree::{HyperTreeReadOperations, HyperTreeWriteOperations};
-
     let probe = RiskProfileOrderRef {
         market,
         profile_id,
@@ -1033,8 +1074,6 @@ pub fn remove_risk_profile_order_ref(
     market: Pubkey,
     profile_id: u8,
 ) -> DataIndex {
-    use hypertree::{HyperTreeReadOperations, HyperTreeWriteOperations};
-
     let probe = RiskProfileOrderRef {
         market,
         profile_id,
@@ -1096,7 +1135,7 @@ mod tests {
     }
 
     fn fresh_profile() -> RiskProfile {
-        RiskProfile::new_empty(7, Pubkey::default(), 5_000, 30 * 86_400, 8)
+        RiskProfile::new_empty(7, Pubkey::default(), 5_000, 30 * 86_400)
     }
 
     /// fp48 representation of 1.0 — marginfi's `asset_share_value` at
@@ -1130,22 +1169,87 @@ mod tests {
         // 1% growth on 1M idle = ~10_000 atoms.
         let yield_atoms = p.total_assets_atoms - 1_000_000;
         assert!(yield_atoms >= 9_990 && yield_atoms <= 10_010);
+        assert_eq!(
+            p.total_principal_atoms - 1_000_000,
+            yield_atoms,
+            "idle supply yield must lift the withdrawable principal basis too"
+        );
     }
 
     #[test]
-    fn accrue_loan_yield_uses_total_weighted_rate_aggregate() {
-        // 1M total, 100k deployed at 8%. Pass 0 share value to skip
-        // supply stream — only test the lender-rate aggregate.
+    fn accrue_supply_value_retrace_marks_down_assets_and_principal() {
+        // 1M idle, share value falls 1% over the period → ~10k atoms
+        // should come OUT of both NAV and the withdrawable basis.
+        let mut p = fresh_profile();
+        p.total_shares = 1_000_000;
+        p.total_principal_atoms = 1_000_000;
+        p.total_assets_atoms = 1_000_000;
+        p.last_accrue_unix = 0;
+        p.last_supply_share_value_fp48 = SHARE_VALUE_ONE;
+        let current = SHARE_VALUE_ONE - (SHARE_VALUE_ONE / 100);
+        accrue_risk_profile(&mut p, 86_400, current).unwrap();
+        let loss_atoms = 1_000_000 - p.total_assets_atoms;
+        assert!(loss_atoms >= 9_990 && loss_atoms <= 10_010);
+        assert_eq!(
+            1_000_000 - p.total_principal_atoms,
+            loss_atoms,
+            "idle share-value losses must hit the withdrawable principal basis too"
+        );
+    }
+
+    #[test]
+    fn accrue_loan_yield_uses_total_weighted_net_rate_aggregate() {
+        // 1M total, 100k deployed at 8%, no curator fee. Pass 0 share
+        // value to skip supply stream — only test the lender-rate
+        // aggregate. With curator_fee_bps = 0 the net aggregate equals
+        // the gross one.
         let mut p = fresh_profile();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
         p.deployed_principal_atoms = 100_000;
         p.total_weighted_rate_bps = 100_000u128 * 800;
+        p.total_weighted_net_rate_bps = 100_000u128 * 800;
         p.total_assets_atoms = 1_000_000;
         p.last_accrue_unix = 0;
         accrue_risk_profile(&mut p, 86_400, 0).unwrap();
         let expected = (100_000u128 * 800 * 86_400) / (10_000 * 31_536_000);
         assert_eq!(p.total_assets_atoms - 1_000_000, expected as u64);
+    }
+
+    #[test]
+    fn accrue_loan_yield_is_net_of_curator_fee_not_double_counted() {
+        // 100k deployed at 8% lender rate, with a
+        // 2_000-bps (20%) curator manager fee. `accrue_risk_profile`
+        // must credit depositors only the NET 80% — the curator's 20%
+        // slice is accounted separately in `accumulated_curator_fee_atoms`
+        // and must NOT also land in `total_assets_atoms` (share price).
+        let curator_fee_bps: u128 = 2_000;
+        let gross_weighted: u128 = 100_000u128 * 800;
+        let net_weighted: u128 = gross_weighted * (10_000 - curator_fee_bps) / 10_000;
+
+        let mut p = fresh_profile();
+        p.total_shares = 1_000_000;
+        p.total_principal_atoms = 1_000_000;
+        p.deployed_principal_atoms = 100_000;
+        p.total_weighted_rate_bps = gross_weighted;
+        p.total_weighted_net_rate_bps = net_weighted;
+        p.total_assets_atoms = 1_000_000;
+        p.last_accrue_unix = 0;
+        accrue_risk_profile(&mut p, 86_400, 0).unwrap();
+
+        let credited = p.total_assets_atoms - 1_000_000;
+        let expected_net = (net_weighted * 86_400) / (10_000 * 31_536_000);
+        assert_eq!(credited as u128, expected_net);
+
+        // The credited yield must be strictly less than the gross —
+        // the curator's slice is excluded from share price.
+        let gross_yield = (gross_weighted * 86_400) / (10_000 * 31_536_000);
+        assert!(
+            (credited as u128) < gross_yield,
+            "net loan-yield {} should be < gross {} (curator fee excluded)",
+            credited,
+            gross_yield
+        );
     }
 
     #[test]
@@ -1155,6 +1259,7 @@ mod tests {
         p.total_principal_atoms = 1_000_000;
         p.deployed_principal_atoms = 100_000;
         p.total_weighted_rate_bps = 100_000u128 * 800;
+        p.total_weighted_net_rate_bps = 100_000u128 * 800;
         p.total_assets_atoms = 1_000_000;
         p.last_accrue_unix = 0;
         p.last_supply_share_value_fp48 = SHARE_VALUE_ONE;
@@ -1175,6 +1280,7 @@ mod tests {
         a.total_principal_atoms = 1_000_000;
         a.deployed_principal_atoms = 100_000;
         a.total_weighted_rate_bps = 100_000u128 * 800;
+        a.total_weighted_net_rate_bps = 100_000u128 * 800;
         a.total_assets_atoms = 1_000_000;
         a.last_accrue_unix = 0;
         a.last_supply_share_value_fp48 = SHARE_VALUE_ONE;
@@ -1187,6 +1293,58 @@ mod tests {
             diff <= 1,
             "single-call vs two-call diverge by {} atoms",
             diff
+        );
+    }
+
+    /// Encumbered atoms physically stay on the vault's marginfi
+    /// account and must keep earning supply yield. The idle base is
+    /// `total_principal − deployed` — encumbered is NOT subtracted.
+    #[test]
+    fn accrue_supply_yield_includes_encumbered_atoms() {
+        // 1M principal, 0 deployed, 400k encumbered in orders. If the
+        // base subtracted encumbered, idle would be 600k; the correct
+        // base is the full 1M. Share value grows 1% → expect ~10k atoms,
+        // not ~6k.
+        let mut p = fresh_profile();
+        p.total_shares = 1_000_000;
+        p.total_principal_atoms = 1_000_000;
+        p.deployed_principal_atoms = 0;
+        p.encumbered_in_orders_atoms = 400_000;
+        p.total_assets_atoms = 1_000_000;
+        p.last_accrue_unix = 0;
+        p.last_supply_share_value_fp48 = SHARE_VALUE_ONE;
+        let current = SHARE_VALUE_ONE + (SHARE_VALUE_ONE / 100);
+        accrue_risk_profile(&mut p, 86_400, current).unwrap();
+        let yield_atoms = p.total_assets_atoms - 1_000_000;
+        assert!(
+            yield_atoms >= 9_990 && yield_atoms <= 10_010,
+            "encumbered atoms must earn supply yield: idle base should be \
+             total_principal − deployed (1M), got yield {}",
+            yield_atoms
+        );
+        assert_eq!(
+            p.total_principal_atoms - 1_000_000,
+            yield_atoms,
+            "encumbered idle-side yield must stay withdrawable by the profile"
+        );
+    }
+
+    /// A broken `total_principal ≥ deployed` invariant must
+    /// hard-fail via `checked_sub`, not be silently masked as idle = 0.
+    #[test]
+    fn accrue_hard_fails_when_deployed_exceeds_principal() {
+        let mut p = fresh_profile();
+        p.total_shares = 1_000_000;
+        p.total_principal_atoms = 1_000_000;
+        // Invariant violation: deployed > principal.
+        p.deployed_principal_atoms = 1_500_000;
+        p.total_assets_atoms = 1_000_000;
+        p.last_accrue_unix = 0;
+        p.last_supply_share_value_fp48 = SHARE_VALUE_ONE;
+        let result = accrue_risk_profile(&mut p, 86_400, SHARE_VALUE_ONE);
+        assert!(
+            result.is_err(),
+            "accrue_risk_profile must hard-fail when deployed > total_principal"
         );
     }
 

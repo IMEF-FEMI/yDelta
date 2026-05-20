@@ -22,12 +22,8 @@ pub const OWNER_KIND_RISK_PROFILE: u8 = 1;
 ///   encumbered bucket holds shares pinned to open orders / active loans.
 /// - **Risk-profile seats** (`OWNER_KIND_RISK_PROFILE`) represent a `(global_vault, profile_id)`
 ///   pair's position in this market. Vaults are debt-side only — the
-///   `collateral_*_shares` u128 slots are repurposed to carry the
-///   per-(profile, market) cap data: `max_exposure_atoms` (the
-///   write-once cap from `claim_seat_for_risk_profile`) and `deployed_atoms`
-///   (the running tally of in-flight loan principal). Use the
-///   `*_atoms()` accessors below — never read those fields directly on
-///   a vault seat.
+///   `collateral_*_shares` u128 slots simply stay zero. Deployed
+///   principal is tracked solely on `RiskProfile.deployed_principal_atoms`.
 ///
 /// Composite tree key: `(owner, risk_profile_id)`. User seats always
 /// carry `risk_profile_id = 0`; vault seats vary it. Markets hold
@@ -47,17 +43,8 @@ pub struct ClaimedSeat {
 
     pub owner_kind: u8,
     pub risk_profile_id: u8,
-    /// Vault-seat cache of `RiskProfile.max_ltv_bps`. Lets the
-    /// matching loop run the borrower-LTV risk-tier gate against
-    /// market state alone, without reading vault state mid-loop.
-    /// Zero on user seats. Stamped at
-    /// `claim_seat_for_risk_profile`; re-stamped by the cranker
-    /// `SyncMarketSeatsForRiskProfile` (tag 38) after any
-    /// `UpdateRiskProfile` (tag 36) tightening, and re-stamped
-    /// opportunistically at the top of every profile-affecting ix via
-    /// `shared::sync_vault_seat_from_profile`.
-    pub risk_profile_max_ltv_bps: u16,
-    _padding: [u8; 4],
+    /// Reserved. 6 bytes of unused padding.
+    _padding: [u8; 6],
     /// Reserved budget. 32 bytes of headroom from the 144-byte payload.
     _reserved: [u64; 4],
 }
@@ -65,7 +52,7 @@ pub struct ClaimedSeat {
 // following u128 has no implicit padding) +
 // 4 × u128 64 (32..96) +
 // 2 × u32 8 (96..104) +
-// owner_kind + risk_profile_id + risk_profile_max_ltv_bps + _padding 8 (104..112) +
+// owner_kind + risk_profile_id + _padding 8 (104..112) +
 // _reserved 32 (112..144) = 144
 const_assert_eq!(size_of::<ClaimedSeat>(), CLAIMED_SEAT_SIZE);
 const_assert_eq!(size_of::<ClaimedSeat>() % 8, 0);
@@ -79,40 +66,20 @@ impl ClaimedSeat {
             ..Default::default()
         }
     }
-
-    // ─── Vault-seat cap accessors ───
-    //
-    // For `owner_kind = OWNER_KIND_RISK_PROFILE`, the unused `collateral_*_shares`
-    // slots carry per-(vault, profile, market) bookkeeping. The cap
-    // (`max_exposure_atoms`) is set once at `claim_seat_for_risk_profile`;
-    // `deployed_atoms` runs from 0 up to that cap as loans match and
-    // back down on close. Both are u64 atoms stored in u128 slots —
-    // calling these on a user seat is a logical bug; debug builds panic.
-    pub fn max_exposure_atoms(&self) -> u64 {
-        debug_assert_eq!(self.owner_kind, OWNER_KIND_RISK_PROFILE);
-        self.collateral_withdrawable_shares as u64
-    }
-
-    pub fn set_max_exposure_atoms(&mut self, atoms: u64) {
-        debug_assert_eq!(self.owner_kind, OWNER_KIND_RISK_PROFILE);
-        self.collateral_withdrawable_shares = atoms as u128;
-    }
-
-    pub fn deployed_atoms(&self) -> u64 {
-        debug_assert_eq!(self.owner_kind, OWNER_KIND_RISK_PROFILE);
-        self.collateral_encumbered_shares as u64
-    }
-
-    pub fn set_deployed_atoms(&mut self, atoms: u64) {
-        debug_assert_eq!(self.owner_kind, OWNER_KIND_RISK_PROFILE);
-        self.collateral_encumbered_shares = atoms as u128;
-    }
 }
 
 impl Ord for ClaimedSeat {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.owner.cmp(&other.owner) {
-            Ordering::Equal => self.risk_profile_id.cmp(&other.risk_profile_id),
+        // `owner_kind` is the PRIMARY key. User seats and risk-profile
+        // seats share the `claimed_seats` tree; a risk-profile seat with
+        // `risk_profile_id == 0` would otherwise alias a user seat that
+        // owns the same pubkey. Sorting on `owner_kind` first keeps the
+        // two flavours in disjoint key spaces.
+        match self.owner_kind.cmp(&other.owner_kind) {
+            Ordering::Equal => match self.owner.cmp(&other.owner) {
+                Ordering::Equal => self.risk_profile_id.cmp(&other.risk_profile_id),
+                ord => ord,
+            },
             ord => ord,
         }
     }
@@ -126,7 +93,9 @@ impl PartialOrd for ClaimedSeat {
 
 impl PartialEq for ClaimedSeat {
     fn eq(&self, other: &Self) -> bool {
-        self.owner == other.owner && self.risk_profile_id == other.risk_profile_id
+        self.owner_kind == other.owner_kind
+            && self.owner == other.owner
+            && self.risk_profile_id == other.risk_profile_id
     }
 }
 

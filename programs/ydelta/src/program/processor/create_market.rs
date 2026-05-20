@@ -8,10 +8,9 @@ use solana_program::{
 use spl_token_2022::extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions};
 
 use crate::logs::{emit_stack, CreateMarketLog};
-use crate::market_vault_seeds_with_bump;
 use crate::program::YdeltaError;
 use crate::require;
-use crate::state::{MarketFixed, MARKET_FIXED_SIZE};
+use crate::state::MarketFixed;
 use crate::utils::create_account;
 use crate::validation::loaders::CreateMarketContext;
 use crate::validation::{
@@ -22,7 +21,7 @@ use crate::validation::{
 use super::shared::{expand_market, invoke};
 
 pub fn process_create_market(
-    program_id: &Pubkey,
+    _program_id: &Pubkey,
     accounts: &[AccountInfo],
     _data: &[u8],
 ) -> ProgramResult {
@@ -47,7 +46,6 @@ pub fn process_create_market(
         market_signer_bump,
         marginfi_program,
     } = CreateMarketContext::load(accounts)?;
-    let _ = program_id;
 
     // Business-rule check: the two mints must differ. Account/pubkey
     // validations on the marginfi side were already enforced by the
@@ -282,7 +280,6 @@ fn create_vault_pda<'a, 'info>(
         )?
     };
 
-    let _ = market_vault_seeds_with_bump!(market_key, mint.info.key, bump);
     invoke(
         &init_ix,
         &[
@@ -292,6 +289,5 @@ fn create_vault_pda<'a, 'info>(
         ],
     )?;
 
-    let _ = MARKET_FIXED_SIZE;
     Ok::<_, ProgramError>(())
 }

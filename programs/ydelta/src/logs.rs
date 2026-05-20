@@ -10,6 +10,14 @@ use crate::utils::get_discriminant;
 /// account in every ix that emits.
 #[inline(never)]
 pub fn emit_stack<T: bytemuck::Pod + Discriminant>(e: T) -> Result<(), ProgramError> {
+    // Compile-time guard: an oversized log struct would overrun the
+    // fixed stack buffer below. Fail the build, not at runtime.
+    const {
+        assert!(
+            std::mem::size_of::<T>() + 8 <= 3000,
+            "log struct exceeds emit_stack buffer",
+        )
+    };
     let mut buffer: [u8; 3000] = [0u8; 3000];
     buffer[..8].copy_from_slice(&T::discriminant());
     *bytemuck::from_bytes_mut::<T>(&mut buffer[8..8 + std::mem::size_of::<T>()]) = e;
@@ -26,9 +34,9 @@ macro_rules! impl_discriminant {
     ($t:ident) => {
         impl Discriminant for $t {
             fn discriminant() -> [u8; 8] {
-                u64::to_le_bytes(
-                    get_discriminant::<$t>().expect("discriminant hash always produces 8 bytes"),
-                )
+                // `stringify!` yields a stable source-level string,
+                // unlike `std::any::type_name`.
+                u64::to_le_bytes(get_discriminant(stringify!($t)))
             }
         }
     };
@@ -79,7 +87,8 @@ pub struct OrderPlacedLog {
     pub trader: Pubkey,
     pub trader_seat_index: DataIndex,
     pub side: u8,
-    pub kind: u8,
+    /// Reserved byte. Always 0.
+    pub _reserved_kind: u8,
     pub order_type: u8,
     pub _padding1: u8,
     pub rate_bps: u16,
@@ -94,10 +103,9 @@ impl_discriminant!(OrderPlacedLog);
 
 /// Emitted per match. `loan_pda` is `Pubkey::default()` until the
 /// cranker promotes the queue node into a `LoanFixed` PDA. `flags`
-/// carries the queue node's `MATCHED_LOAN_FLAG_*` bits (SECONDARY,
-/// SECONDARY_SPLIT, VAULT_LENDER, VAULT_MAKER_FULLY_FILLED) so
-/// off-chain indexers can distinguish primary / secondary / split /
-/// vault-maker-fully-filled events without re-reading the queue node.
+/// carries the queue node's `MATCHED_LOAN_FLAG_*` bits (`VAULT_LENDER`,
+/// `VAULT_PRESETTLED`) so off-chain indexers can classify the match
+/// without re-reading the queue node.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct MatchedLoanCreatedLog {
@@ -254,69 +262,6 @@ pub struct RepaymentClaimedForRiskProfileLog {
 }
 impl_discriminant!(RepaymentClaimedForRiskProfileLog);
 
-/// Emitted by `place_order` when a `SecondaryLoanSale` bid is
-/// inserted into the bids tree. The bid carries a snapshot of the
-/// referenced loan's rate / term / principal at placement time; the
-/// matching engine works off the snapshot until cross.
-#[repr(C)]
-#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct SecondaryBidPlacedLog {
-    pub market: Pubkey,
-    pub loan_pda: Pubkey,
-    pub seller: Pubkey,
-    pub seller_seat_index: DataIndex,
-    pub _pad0: [u8; 4],
-    pub sequence: u64,
-    pub asking_price_atoms: u64,
-    pub snapshot_principal_atoms: u64,
-    pub snapshot_term_seconds: u32,
-    pub snapshot_rate_bps: u16,
-    pub _padding: [u8; 2],
-}
-impl_discriminant!(SecondaryBidPlacedLog);
-
-/// Emitted by `process_matched_loan` when a `SECONDARY` queue node
-/// is finalized (loan ownership transfer, optionally with a split).
-/// `was_split = 0` for a full transfer, `1` for a split where a new
-/// Loan PDA was allocated for the buyer's portion.
-/// `seized_accrued_atoms` = the lender_claimable_atoms taken to the
-/// protocol fee accumulator (Option A — fresh start for the new
-/// lender). `new_loan_pda` is `Pubkey::default()` when `was_split =
-/// 0`.
-#[repr(C)]
-#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct LoanTransferredLog {
-    pub market: Pubkey,
-    pub loan_pda: Pubkey,
-    pub new_loan_pda: Pubkey,
-    pub old_lender_seat_index: DataIndex,
-    pub new_lender_seat_index: DataIndex,
-    pub matched_principal_atoms: u64,
-    pub cash_paid_atoms: u64,
-    pub seized_accrued_atoms: u64,
-    pub new_lender_rate_bps: u16,
-    pub was_split: u8,
-    pub _padding: [u8; 5],
-}
-impl_discriminant!(LoanTransferredLog);
-
-/// Emitted when a stale `SecondaryLoanSale` bid is swept from the
-/// bids tree because the underlying loan was repaid in full. Either
-/// `process_repay`'s full-repay path or the cranker's
-/// defense-in-depth staleness check can fire this. `swept_by`
-/// distinguishes: `0` = process_repay sweep, `1` = cranker drop.
-#[repr(C)]
-#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct SecondaryStaleBidDroppedLog {
-    pub market: Pubkey,
-    pub loan_pda: Pubkey,
-    pub bid_sequence: u64,
-    pub seller_seat_index: DataIndex,
-    pub swept_by: u8,
-    pub _padding: [u8; 3],
-}
-impl_discriminant!(SecondaryStaleBidDroppedLog);
-
 // ─────────────────── `GlobalVault` ───────────────────
 
 /// Emitted by `create_vault`. Carries the new vault PDA, the mint it
@@ -337,15 +282,15 @@ impl_discriminant!(VaultCreatedLog);
 
 /// Emitted by `create_risk_profile`. Carries the vault, the new
 /// profile_id, curator pubkey, and the risk policy admin set at
-/// creation. `allowed_market_count` is the in-use length of the
-/// inline `[Pubkey; 8]` array on `RiskProfile`.
+/// creation.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct RiskProfileCreatedLog {
     pub global_vault: Pubkey,
     pub curator: Pubkey,
     pub profile_id: u8,
-    pub allowed_market_count: u8,
+    /// Reserved. Always zero.
+    pub _reserved0: u8,
     pub _pad0: [u8; 2],
     pub max_ltv_bps: u16,
     pub _pad1: [u8; 2],
@@ -373,39 +318,6 @@ pub struct GlobalVaultDepositLog {
     pub _padding: [u8; 7],               // 121..128
 }
 impl_discriminant!(GlobalVaultDepositLog);
-
-/// Emitted by `claim_seat_for_risk_profile`. Records the new
-/// `(vault, profile_id, market)` seat with its admin-set exposure cap
-/// and the `seat_index_in_market` back-ref for off-chain indexers.
-#[repr(C)]
-#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct ClaimSeatForRiskProfileLog {
-    pub global_vault: Pubkey,
-    pub market: Pubkey,
-    pub profile_id: u8,
-    pub _pad0: [u8; 7],
-    pub max_exposure_atoms: u64,
-    pub seat_index_in_market: DataIndex,
-    pub _pad1: [u8; 4],
-}
-impl_discriminant!(ClaimSeatForRiskProfileLog);
-
-/// Emitted by `set_seat_max_exposure_for_risk_profile`. Records the
-/// before/after cap so off-chain consumers can audit cranker-driven
-/// resizes.
-#[repr(C)]
-#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct SetSeatMaxExposureForRiskProfileLog {
-    pub global_vault: Pubkey,
-    pub market: Pubkey,
-    pub profile_id: u8,
-    pub _pad0: [u8; 7],
-    pub previous_max_exposure_atoms: u64,
-    pub new_max_exposure_atoms: u64,
-    pub seat_index_in_market: DataIndex,
-    pub _pad1: [u8; 4],
-}
-impl_discriminant!(SetSeatMaxExposureForRiskProfileLog);
 
 /// Emitted by `place_order_for_risk_profile`. Records the resting
 /// order's market sequence number, rate, and term.

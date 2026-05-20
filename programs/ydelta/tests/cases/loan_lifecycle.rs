@@ -1,100 +1,81 @@
-//! Step 10 — end-to-end smoke + multi-loan isolation.
+//! End-to-end smoke + multi-loan isolation for the quote-only model.
 //!
 //! `lifecycle_smoke` runs the entire happy path top-to-bottom in one
-//! test (create_market → deposits → match → crank → repay → claim)
-//! and asserts the share/atom-conservation invariant: post-flow the
-//! lender has back roughly what they deposited (within ±1 share),
-//! the loan PDA is closed, and protocol fees are zero
-//! (origination_bps = 0 by default).
+//! test (create_vault → fund profile → rest ask → borrower bid →
+//! crank → repay → claim) and asserts that the vault profile recovers
+//! its principal (plus realised lender interest) and the loan PDA is
+//! closed.
 //!
-//! `two_independent_loans` exercises cross-loan isolation: two
-//! disjoint matches in one fixture, both cranked + repaid + claimed
-//! independently. Tests that the matched-loan tree, the Loan PDAs,
-//! and the seat bookkeeping all stay disjoint per loan.
+//! `two_independent_loans` exercises cross-loan isolation: one funded
+//! vault profile rests a single unbounded ask, two borrowers each
+//! cross it into a distinct Fixed loan, both cranked + repaid +
+//! claimed independently. Tests that the matched-loan tree, the Loan
+//! PDAs, and the seat bookkeeping all stay disjoint per loan.
 
 use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 
-use marginfi_mocks::state::Bank;
-use ydelta::math::{div_scale, to_scaled};
-use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
-use ydelta::state::{loan::LoanState, OrderType, Side};
+use ydelta::state::loan::LoanState;
 
 use crate::test_utils::marginfi_fixture::mainnet;
 use crate::test_utils::market_fixture::MarketFixture;
 
-fn amount_to_shares_against(bank_data: &[u8], amount_atoms: u64) -> u128 {
-    let bank = Bank::try_from_account_data(bank_data).unwrap();
-    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value);
-    let amount_fp48 = to_scaled(amount_atoms as u128).unwrap();
-    div_scale(amount_fp48, asv_u128).unwrap()
-}
-
 #[tokio::test]
 async fn lifecycle_smoke_create_match_crank_repay_claim() {
     let fixture = MarketFixture::new().await;
-    let alice = fixture.create_trader().await;
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
 
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    let bob_usdc = Pubkey::new_unique();
-    fixture.put_token_account(bob_usdc, mainnet::usdc_mint(), bob.pubkey(), 100_000_000);
-    fixture.refresh_blockhash().await;
-
+    // Lender side: a vault profile funded with 10 USDC, resting an
+    // unbounded ask at 600 bps / 30d.
     let lender_deposit_atoms: u64 = 10_000_000;
     fixture
-        .deposit(
-            &alice,
-            alice_usdc,
-            /*is_debt=*/ true,
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            /*term_seconds=*/ 30 * 86_400,
             lender_deposit_atoms,
         )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
+        .await;
+
+    fixture.claim_seat(&bob).await;
+    let bob_usdc = Pubkey::new_unique();
+    fixture.put_token_account(bob_usdc, mainnet::usdc_mint(), bob.pubkey(), 100_000_000);
     fixture
         .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
         .await;
+    fixture.refresh_blockhash().await;
 
     let principal_atoms: u64 = 1_000_000;
     let collateral_atoms: u64 = 100_000_000;
+    // Borrower IOC bid crosses the vault ask.
     fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal_atoms,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
+        .place_order_with_flags(
             &bob,
-            Side::Bid,
-            OrderType::Limit,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
             800,
             30 * 86_400,
             principal_atoms,
             collateral_atoms,
+            /*flags=*/ 0,
         )
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
+    fixture
+        .crank_matched_loan_for_risk_profile(0)
+        .await
+        .unwrap();
     fixture.refresh_blockhash().await;
 
+    // Borrower repays full.
     fixture
         .repay(&bob, 0, bob_usdc, 0, /*full_repay=*/ true)
         .await
@@ -106,24 +87,39 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
         .set_clock_unix_timestamp(loan_pre_claim.matures_at_unix + 1)
         .await;
     fixture.refresh_blockhash().await;
+
+    // Profile principal pre-claim — holds the original deposit (within
+    // ±1 atom of marginfi share-rounding); the realised loan interest
+    // is folded in by the claim.
+    let profile_pre_claim = fixture.read_risk_profile(0).await;
+    let pre_drift =
+        (profile_pre_claim.total_principal_atoms as i128 - lender_deposit_atoms as i128).abs();
+    assert!(
+        pre_drift <= 1,
+        "profile total_principal {} drifted > 1 atom from the deposit {}",
+        profile_pre_claim.total_principal_atoms,
+        lender_deposit_atoms,
+    );
+
+    let stranger = fixture.create_trader().await;
+    fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment(&alice, 0, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
         .await
         .unwrap();
 
-    // Sanity: lender ended with at least their initial deposit
-    // shares worth on the withdrawable side (the loan principal came
-    // back through the claim path). Strict share conservation is
-    // loose because encumbrance/match bookkeeping carries
-    // atom-as-share semantics under the placeholder fp48 share-price.
-    let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
-    let initial_shares = amount_to_shares_against(&bank_data, lender_deposit_atoms);
-    let alice_seat = fixture.read_seat(&alice.pubkey()).await;
+    // Vault profile recovered its principal plus realised lender
+    // interest, and the active-loan tracking zeroed out.
+    let profile_post = fixture.read_risk_profile(0).await;
     assert!(
-        alice_seat.debt_withdrawable_shares >= initial_shares.saturating_sub(1u128 << 48),
-        "lender withdrawable={} fell below initial deposit {} after lifecycle",
-        alice_seat.debt_withdrawable_shares,
-        initial_shares
+        profile_post.total_principal_atoms + 2 >= lender_deposit_atoms,
+        "profile total_principal {} fell below initial deposit {} after lifecycle",
+        profile_post.total_principal_atoms,
+        lender_deposit_atoms,
+    );
+    assert_eq!(
+        profile_post.deployed_principal_atoms, 0,
+        "all loans repaid → deployed_principal must be 0",
     );
 
     // Loan PDA is gone.
@@ -134,33 +130,36 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
     };
     assert!(post_account.is_none(), "loan PDA should be collected");
 
-    // Both seats are at zero open positions.
+    // Borrower seat at zero open positions.
     let bob_seat = fixture.read_seat(&bob.pubkey()).await;
-    assert_eq!(alice_seat.open_lend_count, 0);
     assert_eq!(bob_seat.open_borrow_count, 0);
-
-    // No protocol fee accrued (origination_bps = 0 by default).
-    let market = fixture.read_market_fixed().await;
-    assert_eq!(market.accumulated_protocol_fee_shares, 0);
 }
 
 #[tokio::test]
 async fn two_independent_loans_remain_disjoint() {
     let fixture = MarketFixture::new().await;
-    let alice = fixture.create_trader().await;
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await;
     let carol = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
+
+    // One vault profile funds both loans (unbounded ask, 20 USDC idle).
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            /*term_seconds=*/ 30 * 86_400,
+            /*deposit_atoms=*/ 20_000_000,
+        )
+        .await;
+
     fixture.claim_seat(&bob).await;
     fixture.claim_seat(&carol).await;
-
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
     let bob_usdc = Pubkey::new_unique();
     fixture.put_token_account(bob_usdc, mainnet::usdc_mint(), bob.pubkey(), 100_000_000);
     let carol_usdc = Pubkey::new_unique();
@@ -170,60 +169,35 @@ async fn two_independent_loans_remain_disjoint() {
         carol.pubkey(),
         100_000_000,
     );
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 20_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
     fixture
         .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
         .await;
     fixture
         .seed_seat_shares(&carol.pubkey(), 1_000_000_000, /*is_debt=*/ false)
         .await;
+    fixture.refresh_blockhash().await;
 
     let principal: u64 = 1_000_000;
     let coll: u64 = 100_000_000;
 
-    // Loan 0: alice ↔ bob.
+    // Loan 0: bob's IOC bid crosses the vault ask.
     fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
+        .place_order_with_flags(
+            &bob,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
             30 * 86_400,
             principal,
+            coll,
             0,
         )
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            principal,
-            coll,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
 
-    // Loan 1: alice ↔ carol.
-    //
-    // `solana-program-test` deduplicates transactions by signature.
-    // Alice's first and second ASK have identical instruction bytes
-    // (same signer, same params); back-to-back `refresh_blockhash`
-    // calls within the same slot return the same blockhash, so the
-    // second tx ends up with the same signature as the first and is
-    // silently dropped. Advance the slot to force a new blockhash
-    // before alice's second placement.
+    // Loan 1: carol's IOC bid crosses the (still-resting) vault ask.
+    // Advance the slot so the second bid gets a distinct blockhash.
     {
         let cur = fixture
             .context
@@ -235,30 +209,16 @@ async fn two_independent_loans_remain_disjoint() {
         fixture.context.borrow_mut().warp_to_slot(cur + 1).unwrap();
     }
     fixture.refresh_blockhash().await;
-
     fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .place_order(
+        .place_order_with_flags(
             &carol,
-            Side::Bid,
-            OrderType::Limit,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
             800,
             30 * 86_400,
             principal,
             coll,
+            0,
         )
         .await
         .unwrap();
@@ -269,12 +229,18 @@ async fn two_independent_loans_remain_disjoint() {
     assert_eq!(market.matched_loan_sequence, 2);
 
     // Crank both.
-    fixture.crank_matched_loan(0).await.unwrap();
+    fixture
+        .crank_matched_loan_for_risk_profile(0)
+        .await
+        .unwrap();
     fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(1).await.unwrap();
+    fixture
+        .crank_matched_loan_for_risk_profile(1)
+        .await
+        .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Both loans exist, are Active, with the right borrowers.
+    // Both loans exist, are Active, with distinct borrowers.
     let loan0 = fixture.read_loan(0).await;
     let loan1 = fixture.read_loan(1).await;
     assert_eq!(loan0.state, LoanState::Active as u8);
@@ -290,14 +256,13 @@ async fn two_independent_loans_remain_disjoint() {
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
-    // Advance past loan 0's maturity for the lock-up gate. Both
-    // loans share the same term in this test so a single advance
-    // covers both claims below.
     let max_matures = loan0.matures_at_unix.max(loan1.matures_at_unix);
     fixture.set_clock_unix_timestamp(max_matures + 1).await;
     fixture.refresh_blockhash().await;
+    let stranger = fixture.create_trader().await;
+    fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment(&alice, 0, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -310,14 +275,14 @@ async fn two_independent_loans_remain_disjoint() {
         loan1.outstanding_debt_atoms
     );
 
-    // Carol can repay + Alice claim independently.
+    // Carol repays + the loan-1 claim runs independently.
     fixture
         .repay(&carol, 1, carol_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment(&alice, 1, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, 1, Some(fixture.payer.pubkey()))
         .await
         .unwrap();
 
@@ -330,4 +295,8 @@ async fn two_independent_loans_remain_disjoint() {
         };
         assert!(acc.is_none(), "loan {} should be collected", seq);
     }
+
+    // Profile fully settled.
+    let profile_final = fixture.read_risk_profile(0).await;
+    assert_eq!(profile_final.deployed_principal_atoms, 0);
 }

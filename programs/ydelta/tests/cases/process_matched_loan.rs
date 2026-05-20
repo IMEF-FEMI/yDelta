@@ -1,29 +1,30 @@
-//! Step 7 — end-to-end test for the `ProcessMatchedLoan` cranker.
+//! End-to-end test for the `ProcessMatchedLoan` cranker (quote-only).
 //!
 //! Flow:
-//! 1. Two traders deposit (Alice → debt, Bob → collateral).
-//! 2. Alice rests an ask; Bob's bid crosses + matches.
-//! 3. The matching engine inserts a `MatchedLoan` node into the
-//!    market's queue. Borrower (Bob)'s seat shouldn't see the credit
-//!    yet — that's the cranker's job.
-//! 4. Anyone (here, the fixture payer) calls `process_matched_loan`.
-//!    Assert the `LoanFixed` PDA exists with the expected fields,
-//!    Bob's seat got credited with `amount_to_shares(net_principal)`,
-//!    the `matched_loans_root_index` advances back to NIL, and the
+//! 1. A vault risk profile is funded and rests an unbounded ask.
+//! 2. Bob (borrower) deposits collateral and crosses the ask with an
+//!    IOC bid → the matching engine inserts a `MatchedLoan` node.
+//! 3. Bob's seat shouldn't see the credit yet — that's the cranker's
+//!    job.
+//! 4. The risk-profile cranker (`process_matched_loan` with the
+//!    vault-settle accounts) promotes the queued match. Assert the
+//!    `LoanFixed` PDA exists with the expected fields, Bob's seat got
+//!    credited with `amount_to_shares(net_principal)`, the
+//!    `matched_loans_root_index` advances back to NIL, and the
 //!    market's `accumulated_protocol_fee_shares` picked up the
-//!    origination split (zero in this test — `origination_bps = 0`
-//!    by default).
+//!    origination split (zero — `origination_bps = 0` by default).
 
 use hypertree::NIL;
-use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 
-use marginfi_mocks::state::Bank;
+use marginfi_mocks::state::{Bank, MarginfiAccount};
 use ydelta::math::{div_scale, to_scaled};
+use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
+use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
 use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
 use ydelta::state::{
     loan::{loan_pda, LoanFixed, LoanState, LoanType, LOAN_FIXED_SIZE},
-    MarketFixed, OrderType, Side,
+    MarketFixed,
 };
 
 use crate::test_utils::marginfi_fixture::mainnet;
@@ -36,75 +37,62 @@ fn amount_to_shares_against(bank_data: &[u8], amount_atoms: u64) -> u128 {
     div_scale(amount_fp48, asv_u128).unwrap()
 }
 
+async fn lender_asset_shares(fixture: &MarketFixture) -> u128 {
+    let data = fixture
+        .account_data(fixture.lender_marginfi_account_pubkey())
+        .await;
+    let mfi = MarginfiAccount::try_from_account_data(&data).unwrap();
+    mfi.find_balance(&mainnet::usdc_bank())
+        .map(|b| wrapped_i80f48_to_u128(b.asset_shares))
+        .unwrap_or(0)
+}
+
 #[tokio::test]
 async fn promote_matched_loan_credits_borrower_and_frees_node() {
     let fixture = MarketFixture::new().await;
 
-    // ─── Alice = lender (debt-side / USDC), Bob = borrower (collateral / wSOL) ───
-    let alice = fixture.create_trader().await;
-    let bob = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let bob = fixture.create_trader().await; // borrower
 
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    fixture.refresh_blockhash().await;
-
-    // Alice deposits 10 USDC of debt-side liquidity through the real
-    // marginfi adapter — that's the side `process_matched_loan` reads
-    // (debt bank) for `amount_to_shares`.
-    let alice_deposit_atoms: u64 = 10_000_000;
+    // Lender side: a vault profile funded with 10 USDC, resting an
+    // unbounded ask at 600bps / 30d.
     fixture
-        .deposit(
-            &alice,
-            alice_usdc,
-            /*is_debt=*/ true,
-            alice_deposit_atoms,
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            /*term_seconds=*/ 30 * 86_400,
+            /*deposit_atoms=*/ 10_000_000,
         )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
+        .await;
 
+    fixture.claim_seat(&bob).await;
     // Bob's collateral-side balance is seeded directly into the seat —
     // matching only reads encumbered shares, so we skip the round-trip
     // through the SOL bank for this test.
     fixture
         .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
         .await;
+    fixture.refresh_blockhash().await;
 
-    // ─── Build a crossable book: Alice asks 1_000_000 atoms @ 6% / 30d.
-    // (Asks lend the debt-side, encumbering debt-side shares.) Bob bids
-    // the same principal @ 8% / 30d, posting the necessary collateral.
+    // Bob bids 1_000_000 atoms @ 8% / 30d, crossing the vault ask.
     let principal_atoms: u64 = 1_000_000;
     let collateral_atoms: u64 = 100_000_000;
     fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal_atoms,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .place_order(
+        .place_order_with_flags(
             &bob,
-            Side::Bid,
-            OrderType::Limit,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
             800,
             30 * 86_400,
             principal_atoms,
             collateral_atoms,
+            /*flags=*/ 0,
         )
         .await
         .unwrap();
@@ -131,8 +119,11 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
     let bob_seat_pre = fixture.read_seat(&bob.pubkey()).await;
     assert_eq!(bob_seat_pre.debt_withdrawable_shares, 0);
 
-    // ─── Crank.
-    fixture.crank_matched_loan(cranking_sequence).await.unwrap();
+    // ─── Crank (vault-funded loan → risk-profile cranker).
+    fixture
+        .crank_matched_loan_for_risk_profile(cranking_sequence)
+        .await
+        .unwrap();
 
     // Loan PDA exists with expected values.
     let (loan_addr, loan_bump) = loan_pda(&fixture.market.pubkey(), cranking_sequence);
@@ -173,4 +164,90 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
 
     // origination_bps defaulted to 0, so no fee accrued.
     assert_eq!(header_post.accumulated_protocol_fee_shares, 0);
+}
+
+#[tokio::test]
+async fn promote_matched_loan_keeps_borrower_and_fee_claims_backed() {
+    let fixture = MarketFixture::new().await;
+    let mut fee_params = SetFeeConfigParams::default();
+    fee_params.origination_bps = Some(100);
+    let cfg_ix = set_fee_config_instruction(
+        &fixture.market.pubkey(),
+        &fixture.payer.pubkey(),
+        fee_params,
+    );
+    let payer_kp = fixture.payer.insecure_clone();
+    fixture.process(cfg_ix, &[&payer_kp]).await.unwrap();
+
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let bob = fixture.create_trader().await;
+
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            /*term_seconds=*/ 30 * 86_400,
+            /*deposit_atoms=*/ 10_000_000,
+        )
+        .await;
+
+    fixture.claim_seat(&bob).await;
+    fixture
+        .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
+        .await;
+    fixture.refresh_blockhash().await;
+
+    let principal_atoms: u64 = 1_333_337;
+    fixture
+        .place_order_with_flags(
+            &bob,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            30 * 86_400,
+            principal_atoms,
+            100_000_000,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    fixture
+        .crank_matched_loan_for_risk_profile(0)
+        .await
+        .unwrap();
+
+    let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
+    let gross_shares = amount_to_shares_against(&bank_data, principal_atoms);
+    let market_shares = lender_asset_shares(&fixture).await;
+    let bob_seat = fixture.read_seat(&bob.pubkey()).await;
+    let market_data = fixture.account_data(fixture.market.pubkey()).await;
+    let header: &MarketFixed =
+        bytemuck::from_bytes(&market_data[..std::mem::size_of::<MarketFixed>()]);
+    let claimed_shares = bob_seat
+        .debt_withdrawable_shares
+        .checked_add(header.accumulated_protocol_fee_shares)
+        .unwrap();
+
+    assert_eq!(
+        market_shares, gross_shares,
+        "market lender integration should be funded with exactly the matched principal's share value"
+    );
+    assert!(
+        header.accumulated_protocol_fee_shares > 0,
+        "non-zero origination_bps should accrue protocol fee shares"
+    );
+    assert!(
+        claimed_shares <= market_shares,
+        "borrower + protocol share claims ({}) must stay backed by market integration shares ({})",
+        claimed_shares,
+        market_shares
+    );
 }

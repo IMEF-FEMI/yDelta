@@ -12,11 +12,13 @@
 //! `amount_to_shares` (same truncation rule, same bank state) gives an
 //! exact match.
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 
 use marginfi_mocks::state::{Bank, MarginfiAccount};
 use ydelta::math::{div_scale, to_scaled};
+use ydelta::program::processor::withdraw::WithdrawParams;
 use ydelta::program::YdeltaError;
 use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
 
@@ -193,4 +195,177 @@ async fn withdraw_above_balance_fails() {
         .withdraw(&trader, trader_usdc, true, deposit_atoms * 2)
         .await;
     assert_custom_error!(result, YdeltaError::InsufficientWithdrawableBalance);
+}
+
+/// `WithdrawParams` must round-trip through borsh including the
+/// `withdraw_all` flag. Pure (de)serialization — no fixture.
+#[test]
+fn withdraw_params_borsh_round_trip() {
+    for &(amount, hint, all) in &[
+        (5_000_000u64, None, false),
+        (0u64, Some(7i32 as hypertree::DataIndex), true),
+        (123u64, Some(0), false),
+    ] {
+        let original = WithdrawParams {
+            amount_atoms: amount,
+            trader_index_hint: hint,
+            withdraw_all: all,
+        };
+        let mut data = Vec::new();
+        original.serialize(&mut data).unwrap();
+        let decoded = WithdrawParams::try_from_slice(&data).unwrap();
+        assert_eq!(decoded.amount_atoms, original.amount_atoms);
+        assert_eq!(decoded.trader_index_hint, original.trader_index_hint);
+        assert_eq!(decoded.withdraw_all, original.withdraw_all);
+    }
+}
+
+/// `withdraw_all` drains the seat's entire withdrawable balance on
+/// the selected side. After the call the seat's `debt_withdrawable_shares`
+/// must be exactly 0, and the wallet must have received the full deposited
+/// balance back (within marginfi's ±1-atom rounding tolerance, and never
+/// *more* than the deposit).
+#[tokio::test]
+#[cfg(feature = "test-sbf")]
+async fn withdraw_all_drains_seat_to_zero() {
+    let fixture = MarketFixture::new().await;
+    let trader = fixture.create_trader().await;
+    fixture.claim_seat(&trader).await;
+
+    let trader_usdc = Pubkey::new_unique();
+    fixture.put_token_account(
+        trader_usdc,
+        mainnet::usdc_mint(),
+        trader.pubkey(),
+        10_000_000,
+    );
+    fixture.refresh_blockhash().await;
+
+    let deposit_atoms: u64 = 5_000_000;
+    fixture
+        .deposit(&trader, trader_usdc, true, deposit_atoms)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    let seat_after_deposit = fixture.read_seat(&trader.pubkey()).await;
+    assert!(
+        seat_after_deposit.debt_withdrawable_shares > 0,
+        "deposit should have credited withdrawable shares"
+    );
+    let post_deposit_balance = fixture.token_balance(trader_usdc).await;
+
+    // Drain everything — amount is ignored under withdraw_all.
+    fixture
+        .withdraw_all(&trader, trader_usdc, true)
+        .await
+        .unwrap();
+
+    // Seat's debt side is fully burned to 0.
+    let seat_after_withdraw = fixture.read_seat(&trader.pubkey()).await;
+    assert_eq!(
+        seat_after_withdraw.debt_withdrawable_shares, 0,
+        "withdraw_all must burn the seat's entire debt_withdrawable_shares"
+    );
+    assert_eq!(seat_after_withdraw.collateral_withdrawable_shares, 0);
+
+    // Wallet got the full balance back, never more than deposited.
+    let post_withdraw_balance = fixture.token_balance(trader_usdc).await;
+    let received = post_withdraw_balance - post_deposit_balance;
+    assert!(
+        received <= deposit_atoms,
+        "withdraw_all paid {} > deposited {} — rounding leak",
+        received,
+        deposit_atoms
+    );
+    let drift = (received as i128 - deposit_atoms as i128).abs();
+    assert!(
+        drift <= 1,
+        "withdraw_all received {} atoms, expected ~{} (drift {})",
+        received,
+        deposit_atoms,
+        drift
+    );
+}
+
+/// `withdraw_all` on a seat with nothing withdrawable is a clean
+/// error (`InsufficientWithdrawableBalance`), consistent with the
+/// explicit-amount path's `amount > 0` guard.
+#[tokio::test]
+#[cfg(feature = "test-sbf")]
+async fn withdraw_all_empty_seat_errors() {
+    let fixture = MarketFixture::new().await;
+    let trader = fixture.create_trader().await;
+    fixture.claim_seat(&trader).await;
+
+    let trader_usdc = Pubkey::new_unique();
+    fixture.put_token_account(
+        trader_usdc,
+        mainnet::usdc_mint(),
+        trader.pubkey(),
+        10_000_000,
+    );
+    fixture.refresh_blockhash().await;
+
+    // No deposit — the seat carries 0 withdrawable shares.
+    let result = fixture.withdraw_all(&trader, trader_usdc, true).await;
+    assert_custom_error!(result, YdeltaError::InsufficientWithdrawableBalance);
+}
+
+/// The seat-share debit and the atoms paid must agree in the
+/// protocol's favour: the user is paid `min(actual_atoms, expected_atoms)`,
+/// where `expected_atoms` is what the *debited* shares are worth. The
+/// adapter's ±1-atom drift therefore can never overpay the user. We pin
+/// the direction: across a deposit + explicit withdraw, the wallet never
+/// receives more atoms than the shares burned off the seat are worth.
+#[tokio::test]
+#[cfg(feature = "test-sbf")]
+async fn withdraw_never_overpays_debited_shares() {
+    let fixture = MarketFixture::new().await;
+    let trader = fixture.create_trader().await;
+    fixture.claim_seat(&trader).await;
+
+    let trader_usdc = Pubkey::new_unique();
+    fixture.put_token_account(
+        trader_usdc,
+        mainnet::usdc_mint(),
+        trader.pubkey(),
+        10_000_000,
+    );
+    fixture.refresh_blockhash().await;
+
+    let deposit_atoms: u64 = 5_000_000;
+    fixture
+        .deposit(&trader, trader_usdc, true, deposit_atoms)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    let post_deposit_balance = fixture.token_balance(trader_usdc).await;
+
+    // Withdraw an odd amount that is unlikely to be share-exact, so the
+    // floor/round behaviour is exercised.
+    let withdraw_atoms: u64 = 1_333_337;
+    let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
+    let shares_burned = amount_to_shares_against(&bank_data, withdraw_atoms);
+
+    fixture
+        .withdraw(&trader, trader_usdc, true, withdraw_atoms)
+        .await
+        .unwrap();
+
+    // `expected_atoms` = what the floored shares are worth: shares * ASV,
+    // floored. The payout must never exceed this.
+    let bank = Bank::try_from_account_data(&bank_data).unwrap();
+    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value);
+    let expected_atoms_fp = ydelta::math::mul_scale(shares_burned, asv_u128).unwrap();
+    let expected_atoms = ydelta::math::from_scaled_floor(expected_atoms_fp) as u64;
+
+    let received = fixture.token_balance(trader_usdc).await - post_deposit_balance;
+    assert!(
+        received <= expected_atoms,
+        "paid {} atoms but debited shares are only worth {} — rounding leak",
+        received,
+        expected_atoms
+    );
 }

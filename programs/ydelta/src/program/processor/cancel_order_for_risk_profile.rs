@@ -10,7 +10,7 @@ use crate::logs::{emit_stack, CancelOrderForRiskProfileLog};
 use crate::program::YdeltaError;
 use crate::require;
 use crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
-use crate::state::market::{get_helper_seat, ClaimedSeatTreeReadOnly};
+use crate::state::market::ClaimedSeatTreeReadOnly;
 use crate::state::market_helpers::cancel_order_by_index;
 use crate::state::vault::{
     remove_risk_profile_order_ref, GlobalVaultFixed, RiskProfile, RiskProfileOrderRef,
@@ -44,18 +44,13 @@ pub fn process_cancel_order_for_risk_profile(
     let vault_key = *vault.info.key;
     let market_key = *market.info.key;
 
-    // Re-stamp the market-side vault seat's
-    // risk_profile_max_ltv_bps from the live RiskProfile so any
-    // policy change via update_risk_profile takes effect immediately.
-    super::shared::sync_vault_seat_from_profile(market.info, vault.info, params.profile_id)?;
-
     // ─── Curator gate + locate the vault order ───
     let order_sequence: u64 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
 
-        let profile_probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+        let profile_probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
         let profile_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
             tree.lookup_index(&profile_probe)
@@ -103,7 +98,6 @@ pub fn process_cancel_order_for_risk_profile(
             YdeltaError::IncorrectAccount,
             "no vault-owned ClaimedSeat for (vault, profile_id) — invariant violation"
         )?;
-        let _ = get_helper_seat(dynamic, idx).get_value();
         idx
     };
 
@@ -118,10 +112,7 @@ pub fn process_cancel_order_for_risk_profile(
             order_sequence,
             None,
         )?;
-        // Vault-funded loans cannot be sold on the secondary book
-        // (PlaceOrderContext::load enforces this), so vault orders are
-        // always primary — discard the secondary-loan-pda return value.
-        let _ = cancel_order_by_index(
+        cancel_order_by_index(
             da.fixed,
             da.dynamic,
             taker_seat_index,

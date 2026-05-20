@@ -315,7 +315,7 @@ impl LendingProtocol for MarginfiV18Adapter {
             let bank_view = borrow_bank(&data)?;
             let lsv_u128 = wrapped_i80f48_to_u128(bank_view.liability_share_value);
             let atoms = crate::math::mul_scale(shares, lsv_u128)?;
-            crate::math::from_scaled_ceil(atoms)
+            crate::math::from_scaled_ceil(atoms)?
         };
         if expected_atoms_u128 > u64::MAX as u128 {
             return Err(ProgramError::ArithmeticOverflow);
@@ -476,6 +476,127 @@ impl MarginfiV18Adapter {
             /*repay_all=*/ true,
             signer_seeds,
         )
+    }
+
+    /// CEIL variant of `amount_to_asset_shares` — converts `amount_atoms`
+    /// to asset shares rounding the share count UP whenever the division
+    /// leaves a fractional remainder.
+    ///
+    /// `convert_p2pool_to_fixed` withdraws asset shares from the
+    /// lender vault and repays the borrower's P2Pool liability with the
+    /// resulting atoms, while the new fixed loans are sized from
+    /// `total_filled_principal`. The floor-rounding `amount_to_asset_shares`
+    /// can yield a share count whose atom value is `total_filled_principal
+    /// − 1` (or −2 with the `withdraw` drift band), so the borrower would
+    /// end up owing MORE fixed debt than the variable debt actually
+    /// retired. Rounding the withdraw shares UP guarantees the withdrawn
+    /// atoms (hence the repaid variable debt) is `>= total_filled_principal`
+    /// — the borrower never owes phantom debt. The worst-case over-withdraw
+    /// is a sub-atom-scale dust amount.
+    pub fn amount_to_asset_shares_ceil<'info>(
+        &self,
+        accounts: &[AccountInfo<'info>],
+        amount_atoms: u64,
+    ) -> Result<u128, ProgramError> {
+        let bank_info = accounts
+            .first()
+            .ok_or(AdapterError::InvalidIntegrationAccount)?;
+        let data = bank_info.try_borrow_data()?;
+        let bank = borrow_bank(&data)?;
+        let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value);
+        let amount_fp48 = crate::math::to_scaled(amount_atoms as u128)?;
+        let shares_floor = crate::math::div_scale(amount_fp48, asv_u128)?;
+        // Round up iff the floor-rounded shares convert back to fewer
+        // atoms than requested. `mul_scale` floors, mirroring the
+        // bank's own share→atom conversion in `withdraw`, so this test
+        // detects exactly the rounding loss that would shortchange the
+        // borrower-side liability retirement.
+        let atoms_back =
+            crate::math::from_scaled_floor(crate::math::mul_scale(shares_floor, asv_u128)?);
+        if atoms_back < amount_atoms as u128 {
+            shares_floor
+                .checked_add(1)
+                .ok_or(ProgramError::ArithmeticOverflow)
+        } else {
+            Ok(shares_floor)
+        }
+    }
+
+    /// The atom amount to pass to `repay_atoms` so the borrower's
+    /// retired marginfi LIABILITY is `>= target_liability_atoms`.
+    ///
+    /// marginfi's repay processor floor/round-down-converts atoms →
+    /// liability shares (it rounds in the protocol's favour), so
+    /// repaying exactly `target_liability_atoms` can retire a share
+    /// count whose atom value is `target_liability_atoms − 1` (or −2).
+    /// `convert_p2pool_to_fixed` sizes the borrower's NEW fixed debt
+    /// from `total_filled_principal`, so an under-retired liability
+    /// would leave the borrower owing more fixed debt than the variable
+    /// debt destroyed.
+    ///
+    /// This helper rounds `target_liability_atoms` UP to a whole number
+    /// of liability shares and adds a small fixed cushion to absorb
+    /// marginfi's internal repay-rounding (its exact rounding mode is
+    /// an implementation detail of the dumped v0.1.8 program — the
+    /// cushion bounds the residual without depending on it). The
+    /// over-repay is a sub-atom-scale dust amount; marginfi clamps the
+    /// repay at the borrower's live liability, so a padded amount can
+    /// never over-burn — at worst it retires the whole liability and
+    /// the unspent cushion stays in the staging vault.
+    pub fn liability_atoms_to_fully_cover<'info>(
+        &self,
+        accounts: &[AccountInfo<'info>],
+        target_liability_atoms: u64,
+    ) -> Result<u64, ProgramError> {
+        /// Atoms of cushion added on top of the share-boundary
+        /// round-up — bounds marginfi's internal repay-rounding loss.
+        /// 8 atoms is economically negligible (e.g. 8e-6 USDC).
+        const REPAY_ROUNDING_CUSHION_ATOMS: u64 = 8;
+
+        let bank_info = accounts
+            .first()
+            .ok_or(AdapterError::InvalidIntegrationAccount)?;
+        let data = bank_info.try_borrow_data()?;
+        let bank = borrow_bank(&data)?;
+        let lsv_u128 = wrapped_i80f48_to_u128(bank.liability_share_value);
+        // shares = ceil(target / lsv) = ceil((target << 48) / lsv).
+        let target_fp48 = crate::math::to_scaled(target_liability_atoms as u128)?;
+        let shares_floor = crate::math::div_scale(target_fp48, lsv_u128)?;
+        let shares_back =
+            crate::math::from_scaled_floor(crate::math::mul_scale(shares_floor, lsv_u128)?);
+        let shares_ceil = if shares_back < target_liability_atoms as u128 {
+            shares_floor
+                .checked_add(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?
+        } else {
+            shares_floor
+        };
+        // atoms = ceil(shares_ceil × lsv) + cushion.
+        let atoms = crate::math::from_scaled_ceil(crate::math::mul_scale(shares_ceil, lsv_u128)?)?;
+        let atoms = atoms
+            .checked_add(REPAY_ROUNDING_CUSHION_ATOMS as u128)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+        u64::try_from(atoms).map_err(|_| ProgramError::ArithmeticOverflow)
+    }
+
+    /// Atom value of a LIABILITY share count, floored —
+    /// `floor(shares × liability_share_value)`. The `shares_to_amount`
+    /// trait method uses `asset_share_value`; this is its liability-side
+    /// counterpart. Used to measure the variable debt actually
+    /// retired by a `repay_atoms` CPI.
+    pub fn liability_shares_to_atoms_floor<'info>(
+        &self,
+        accounts: &[AccountInfo<'info>],
+        shares: u128,
+    ) -> Result<u64, ProgramError> {
+        let bank_info = accounts
+            .first()
+            .ok_or(AdapterError::InvalidIntegrationAccount)?;
+        let data = bank_info.try_borrow_data()?;
+        let bank = borrow_bank(&data)?;
+        let lsv_u128 = wrapped_i80f48_to_u128(bank.liability_share_value);
+        let atoms = crate::math::from_scaled_floor(crate::math::mul_scale(shares, lsv_u128)?);
+        u64::try_from(atoms).map_err(|_| ProgramError::ArithmeticOverflow)
     }
 }
 

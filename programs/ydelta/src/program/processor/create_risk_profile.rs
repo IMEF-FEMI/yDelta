@@ -16,9 +16,7 @@ use crate::state::vault::{
     get_free_profile_address_on_vault_fixed, vault_expand_profile_block, GlobalVaultFixed,
     RiskProfile, RiskProfileTree, RiskProfileTreeReadOnly,
 };
-use crate::state::{
-    GLOBAL_VAULT_FIXED_SIZE, RISK_PROFILE_ALLOWED_MARKETS_CAP, RISK_PROFILE_BLOCK_SIZE,
-};
+use crate::state::{GLOBAL_VAULT_FIXED_SIZE, RISK_PROFILE_BLOCK_SIZE};
 use crate::validation::loaders::CreateRiskProfileContext;
 
 #[derive(BorshDeserialize, BorshSerialize, Clone)]
@@ -27,9 +25,6 @@ pub struct CreateRiskProfileParams {
     pub curator: Pubkey,
     pub max_ltv_bps: u16,
     pub max_term_seconds: u32,
-    /// Maximum number of markets this profile can simultaneously hold
-    /// vault-owned `ClaimedSeat`s in. Must be in `1..=RISK_PROFILE_ALLOWED_MARKETS_CAP`.
-    pub allowed_market_max: u8,
 }
 
 pub fn process_create_risk_profile(
@@ -46,14 +41,6 @@ pub fn process_create_risk_profile(
 
     // ─── Param validation ───
     require!(
-        params.allowed_market_max >= 1
-            && params.allowed_market_max <= RISK_PROFILE_ALLOWED_MARKETS_CAP,
-        YdeltaError::VaultProfileAllowedMarketsExceeded,
-        "allowed_market_max {} must be in 1..={}",
-        params.allowed_market_max,
-        RISK_PROFILE_ALLOWED_MARKETS_CAP
-    )?;
-    require!(
         params.max_ltv_bps > 0 && params.max_ltv_bps < 10_000,
         YdeltaError::VaultProfileLtvOutOfRange,
         "max_ltv_bps {} must be in (0, 10_000)",
@@ -66,8 +53,7 @@ pub fn process_create_risk_profile(
     )?;
     // Pubkey::default() is unsignable, so a profile stamped with that
     // curator can't be operated on or transferred — it would be a
-    // permanent dead slot eating against allowed_market_count. Reject
-    // at create time.
+    // permanent dead slot. Reject at create time.
     require!(
         params.curator != Pubkey::default(),
         YdeltaError::InvalidArgument,
@@ -116,7 +102,7 @@ pub fn process_create_risk_profile(
         // Reject duplicate profile_id.
         let existing_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
-            let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+            let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
             tree.lookup_index(&probe)
         };
         require!(
@@ -139,7 +125,6 @@ pub fn process_create_risk_profile(
             params.curator,
             params.max_ltv_bps,
             params.max_term_seconds,
-            params.allowed_market_max,
         );
 
         let mut tree = RiskProfileTree::new(dynamic, header.risk_profiles_root_index, NIL);
@@ -154,7 +139,7 @@ pub fn process_create_risk_profile(
         global_vault: vault_key,
         curator: params.curator,
         profile_id: params.profile_id,
-        allowed_market_count: params.allowed_market_max,
+        _reserved0: 0,
         _pad0: [0; 2],
         max_ltv_bps: params.max_ltv_bps,
         _pad1: [0; 2],

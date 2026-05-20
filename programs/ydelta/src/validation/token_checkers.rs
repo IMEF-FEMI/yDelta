@@ -1,7 +1,9 @@
 use crate::require;
 use solana_program::{account_info::AccountInfo, program_error::ProgramError, pubkey::Pubkey};
 use spl_token_2022::{
-    check_spl_token_program_account, extension::StateWithExtensions, state::Mint,
+    check_spl_token_program_account,
+    extension::StateWithExtensions,
+    state::{Account as TokenAccount, AccountState, Mint},
 };
 use std::ops::Deref;
 
@@ -16,6 +18,11 @@ impl<'a, 'info> MintAccountInfo<'a, 'info> {
         check_spl_token_program_account(info.owner)?;
 
         let mint: Mint = StateWithExtensions::<Mint>::unpack(&info.data.borrow())?.base;
+        require!(
+            mint.is_initialized,
+            ProgramError::InvalidAccountData,
+            "Mint account is not initialized",
+        )?;
 
         Ok(Self { mint, info })
     }
@@ -42,8 +49,26 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
             ProgramError::IllegalOwner,
             "Token account must be owned by the Token Program",
         )?;
+        // Decode via `StateWithExtensions` rather than slicing raw bytes:
+        // this validates the SPL / Token-2022 account layout, so a
+        // too-short or non-token account is rejected cleanly instead of
+        // panicking on an out-of-bounds `[0..32]` slice.
+        let data = info.try_borrow_data()?;
+        let token_account = StateWithExtensions::<TokenAccount>::unpack(&data)?.base;
+        // Reject uninitialized AND frozen accounts — the program never
+        // wants to transfer into or out of either. `delegate` /
+        // `close_authority` are intentionally NOT rejected here: a
+        // user-supplied source account may legitimately carry a delegate,
+        // and the program's own vault accounts are PDA-owned and created
+        // fresh, so they cannot carry a delegate or a non-program close
+        // authority unless the owning PDA itself signed for it.
         require!(
-            &info.try_borrow_data()?[0..32] == mint.as_ref(),
+            token_account.state == AccountState::Initialized,
+            ProgramError::InvalidAccountData,
+            "Token account is uninitialized or frozen",
+        )?;
+        require!(
+            token_account.mint == *mint,
             ProgramError::InvalidAccountData,
             "Token account mint mismatch",
         )?;
@@ -72,8 +97,10 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
         owner: &Pubkey,
     ) -> Result<TokenAccountInfo<'a, 'info>, ProgramError> {
         let token_account_info = Self::new(info, mint)?;
+        let data = info.try_borrow_data()?;
+        let token_account = StateWithExtensions::<TokenAccount>::unpack(&data)?.base;
         require!(
-            &info.try_borrow_data()?[32..64] == owner.as_ref(),
+            token_account.owner == *owner,
             ProgramError::IllegalOwner,
             "Token account owner mismatch",
         )?;

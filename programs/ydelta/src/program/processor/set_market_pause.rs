@@ -30,6 +30,18 @@ pub fn process_set_market_pause(
         YdeltaError::MarketAdminRequired,
         "set_market_pause: signer != MarketFixed.admin"
     )?;
+    // A market may not be UNpaused until `set_fee_config` has been
+    // explicitly called. A fresh `FeeConfig` defaults every bps
+    // field — including `ltv_buffer_bps` — to 0, so an un-configured
+    // live market would run zero-margin LTV checks. Pausing (or a
+    // no-op re-pause) is always allowed.
+    if params.paused == 0 {
+        require!(
+            header.fee_config_set != 0,
+            YdeltaError::InvalidArgument,
+            "set_market_pause: cannot unpause before set_fee_config has been called"
+        )?;
+    }
     header.is_paused = if params.paused != 0 { 1 } else { 0 };
     Ok(())
 }

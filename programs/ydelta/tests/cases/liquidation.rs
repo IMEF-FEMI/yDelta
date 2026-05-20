@@ -7,20 +7,117 @@
 
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 
+use ydelta::program::instruction_builders::check_liquidatable_instruction::{
+    check_ltv_liquidatable_instruction, check_maturity_liquidatable_instruction,
+};
+use ydelta::program::instruction_builders::protocol_fee_claim_instruction::protocol_fee_claim_instruction;
 use ydelta::program::instruction_builders::{
     liquidate_loan_instruction::liquidate_loan_instruction,
     settle_matured_loan_instruction::settle_matured_loan_instruction,
 };
+use ydelta::program::YdeltaInstruction;
 #[cfg(feature = "test-sbf")]
-use ydelta::state::{loan::LoanState, OrderType, Side};
+use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
+#[cfg(feature = "test-sbf")]
+use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
+#[cfg(feature = "test-sbf")]
+use ydelta::state::loan::LoanState;
 
 #[cfg(feature = "test-sbf")]
 use crate::test_utils::marginfi_fixture::mainnet;
 #[cfg(feature = "test-sbf")]
 use crate::test_utils::market_fixture::MarketFixture;
 
+/// Stand up a vault-funded loan for the liquidation/settlement tests.
+/// The lender is a vault risk profile resting an unbounded ask; the
+/// borrower deposits wSOL collateral and crosses the ask with an IOC
+/// bid; the cranker promotes the matched loan. Returns
+/// `(keeper, keeper_usdc, keeper_wsol)`.
+#[cfg(feature = "test-sbf")]
+async fn setup_vault_funded_loan(
+    fixture: &MarketFixture,
+    principal: u64,
+    collateral: u64,
+    term_seconds: u32,
+) -> (Keypair, Pubkey, Pubkey) {
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let bob = fixture.create_trader().await; // borrower
+    let keeper = fixture.create_trader().await; // liquidator / cranker
+
+    // Lender side: vault profile, unbounded ask at 600bps.
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            term_seconds,
+            /*deposit_atoms=*/ 10_000_000,
+        )
+        .await;
+
+    fixture.claim_seat(&bob).await;
+    let bob_wsol = Pubkey::new_unique();
+    // Fund the borrower's wSOL ATA with enough to deposit the full
+    // `collateral` amount into marginfi (plus headroom). The collateral
+    // figure is denominated in wSOL lamports, so these tests pass
+    // realistic (millions-of-lamports) amounts.
+    fixture.put_wsol_token_account(
+        bob_wsol,
+        bob.pubkey(),
+        collateral.saturating_mul(2).max(10_000_000),
+    );
+    let keeper_usdc = Pubkey::new_unique();
+    fixture.put_token_account(
+        keeper_usdc,
+        mainnet::usdc_mint(),
+        keeper.pubkey(),
+        100_000_000,
+    );
+    let keeper_wsol = Pubkey::new_unique();
+    fixture.put_wsol_token_account(keeper_wsol, keeper.pubkey(), 0);
+    fixture.refresh_blockhash().await;
+
+    // Borrower collateral deposit (real marginfi wSOL bank). Deposit
+    // the full `collateral` amount so the IOC bid below can encumber
+    // it (the bid's collateral can't exceed the deposited balance).
+    fixture
+        .deposit(&bob, bob_wsol, /*is_debt=*/ false, collateral)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Borrower IOC bid crosses the vault ask.
+    fixture
+        .place_order_with_flags(
+            &bob,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            term_seconds,
+            principal,
+            collateral,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture
+        .crank_matched_loan_for_risk_profile(0)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture.refresh_oracle_freshness().await;
+
+    (keeper, keeper_usdc, keeper_wsol)
+}
+
 #[test]
-fn settle_matured_loan_ix_has_twenty_two_accounts() {
+fn settle_matured_loan_ix_has_twenty_four_accounts() {
     let market = Pubkey::new_unique();
     let payer = Keypair::new();
     let ix = settle_matured_loan_instruction(
@@ -42,12 +139,13 @@ fn settle_matured_loan_ix_has_twenty_two_accounts() {
         &Pubkey::new_unique(),   // marginfi_group
         &Pubkey::new_unique(),   // marginfi_program
         0,                       // repay_atoms_max = 0 → full repay
+        &Pubkey::new_unique(),   // cranker_refund
     );
-    assert_eq!(ix.accounts.len(), 23);
+    assert_eq!(ix.accounts.len(), 24);
 }
 
 #[test]
-fn liquidate_loan_ix_has_twenty_two_accounts() {
+fn liquidate_loan_ix_has_twenty_four_accounts() {
     let market = Pubkey::new_unique();
     let payer = Keypair::new();
     let ix = liquidate_loan_instruction(
@@ -69,28 +167,23 @@ fn liquidate_loan_ix_has_twenty_two_accounts() {
         &Pubkey::new_unique(),
         &Pubkey::new_unique(),
         0, // repay_atoms_max = 0 → full repay
+        &Pubkey::new_unique(),
     );
     // Same shape as settle_matured_loan — both ixs share the loader.
-    assert_eq!(ix.accounts.len(), 23);
+    assert_eq!(ix.accounts.len(), 24);
 }
 
 #[test]
 fn liquidation_ix_tags_distinct_from_settle() {
-    use ydelta::program::YdeltaInstruction;
-    assert_eq!(YdeltaInstruction::SettleMaturedLoan as u8, 20);
-    assert_eq!(YdeltaInstruction::LiquidateLoan as u8, 21);
+    assert_eq!(YdeltaInstruction::SettleMaturedLoan as u8, 16);
+    assert_eq!(YdeltaInstruction::LiquidateLoan as u8, 17);
 }
 
 #[test]
 fn check_liquidatable_ix_tags_and_shapes() {
-    use ydelta::program::instruction_builders::check_liquidatable_instruction::{
-        check_ltv_liquidatable_instruction, check_maturity_liquidatable_instruction,
-    };
-    use ydelta::program::YdeltaInstruction;
-
     // Tag stability — these are user-facing simulation entry points.
-    assert_eq!(YdeltaInstruction::CheckLtvLiquidatable as u8, 40);
-    assert_eq!(YdeltaInstruction::CheckMaturityLiquidatable as u8, 41);
+    assert_eq!(YdeltaInstruction::CheckLtvLiquidatable as u8, 34);
+    assert_eq!(YdeltaInstruction::CheckMaturityLiquidatable as u8, 35);
 
     let market = Pubkey::new_unique();
     let payer = Keypair::new();
@@ -132,7 +225,6 @@ fn check_liquidatable_ix_tags_and_shapes() {
 
 #[test]
 fn protocol_fee_claim_ix_has_fourteen_accounts() {
-    use ydelta::program::instruction_builders::protocol_fee_claim_instruction::protocol_fee_claim_instruction;
     let market = Pubkey::new_unique();
     let admin = Keypair::new();
     let ix = protocol_fee_claim_instruction(
@@ -155,15 +247,11 @@ fn protocol_fee_claim_ix_has_fourteen_accounts() {
     assert_eq!(ix.accounts.len(), 15);
     // Tag-only payload (no trailing data).
     assert_eq!(ix.data.len(), 1);
-    assert_eq!(ix.data[0], 23);
+    assert_eq!(ix.data[0], 19);
 }
 
 #[test]
 fn partial_repay_payload_round_trips() {
-    use ydelta::program::instruction_builders::{
-        liquidate_loan_instruction::liquidate_loan_instruction,
-        settle_matured_loan_instruction::settle_matured_loan_instruction,
-    };
     let market = Pubkey::new_unique();
     let payer = Keypair::new();
     let mk = |repay_max: u64| {
@@ -186,6 +274,7 @@ fn partial_repay_payload_round_trips() {
             &Pubkey::new_unique(),
             &Pubkey::new_unique(),
             repay_max,
+            &Pubkey::new_unique(),
         )
     };
     // Tag (1 byte) + u64 (8 bytes) = 9.
@@ -215,6 +304,7 @@ fn partial_repay_payload_round_trips() {
         &Pubkey::new_unique(),
         &Pubkey::new_unique(),
         999,
+        &Pubkey::new_unique(),
     );
     assert_eq!(liq.data.len(), 9);
     assert_eq!(&liq.data[1..], &999u64.to_le_bytes());
@@ -235,79 +325,12 @@ fn partial_repay_payload_round_trips() {
 async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
     let fixture = MarketFixture::new().await;
 
-    let alice = fixture.create_trader().await; // lender (USDC)
-    let bob = fixture.create_trader().await; // borrower (wSOL collateral)
-    let keeper = fixture.create_trader().await; // liquidator
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
-
-    // Fund alice's USDC + bob's wSOL.
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    let bob_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), 10_000_000);
-    let keeper_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        keeper_usdc,
-        mainnet::usdc_mint(),
-        keeper.pubkey(),
-        100_000_000,
-    );
-    let keeper_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(keeper_wsol, keeper.pubkey(), 0);
-    fixture.refresh_blockhash().await;
-
-    // Lender deposit + borrower collateral deposit.
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&bob, bob_wsol, /*is_debt=*/ false, 1_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    // Match: alice ASK 1M USDC, bob BID with 800k wSOL collateral
-    // (~$0.067 SOL × $84 = ~$5.6 of value backing $1 USDC, sits well
-    // above maint requirement at mainnet wSOL price).
+    // Match: vault ASK 1M USDC, borrower BID with 800k wSOL collateral
+    // (sits well above maint requirement at mainnet wSOL price).
     let principal: u64 = 1_000_000;
-    let collateral: u64 = 800_000;
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            principal,
-            collateral,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.refresh_oracle_freshness().await;
+    let collateral: u64 = 50_000_000;
+    let (keeper, keeper_usdc, keeper_wsol) =
+        setup_vault_funded_loan(&fixture, principal, collateral, 30 * 86_400).await;
 
     let loan = fixture.read_loan(0).await;
     assert_eq!(
@@ -326,8 +349,8 @@ async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
         .expect_err("liquidate_loan must reject while loan is solvent at mainnet wSOL price");
     let err_str = format!("{:?}", err);
     assert!(
-        err_str.contains("Custom(49)"),
-        "expected LoanStillSolvent (Custom 49), got: {}",
+        err_str.contains("Custom(40)"),
+        "expected LoanStillSolvent (Custom 40), got: {}",
         err_str
     );
 
@@ -393,74 +416,11 @@ async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
 async fn settle_matured_loan_after_grace_seizes_collateral() {
     let fixture = MarketFixture::new().await;
 
-    let alice = fixture.create_trader().await; // lender
-    let bob = fixture.create_trader().await; // borrower (defaults)
-    let keeper = fixture.create_trader().await; // permissionless cranker
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
-
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    let bob_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), 10_000_000);
-    let keeper_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        keeper_usdc,
-        mainnet::usdc_mint(),
-        keeper.pubkey(),
-        100_000_000,
-    );
-    let keeper_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(keeper_wsol, keeper.pubkey(), 0);
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&bob, bob_wsol, /*is_debt=*/ false, 1_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
     let principal: u64 = 1_000_000;
-    let collateral: u64 = 800_000;
+    let collateral: u64 = 50_000_000;
     let term_seconds: u32 = 30 * 86_400;
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            term_seconds,
-            principal,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            term_seconds,
-            principal,
-            collateral,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
-    fixture.refresh_blockhash().await;
+    let (keeper, keeper_usdc, keeper_wsol) =
+        setup_vault_funded_loan(&fixture, principal, collateral, term_seconds).await;
 
     let loan_pre = fixture.read_loan(0).await;
     assert_eq!(loan_pre.state, LoanState::Active as u8);
@@ -512,74 +472,10 @@ async fn settle_matured_loan_after_grace_seizes_collateral() {
 async fn partial_liquidation_leaves_loan_active_with_reduced_balances() {
     let fixture = MarketFixture::new().await;
 
-    let alice = fixture.create_trader().await; // lender
-    let bob = fixture.create_trader().await; // borrower
-    let keeper = fixture.create_trader().await; // liquidator
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
-
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    let bob_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), 10_000_000);
-    let keeper_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        keeper_usdc,
-        mainnet::usdc_mint(),
-        keeper.pubkey(),
-        100_000_000,
-    );
-    let keeper_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(keeper_wsol, keeper.pubkey(), 0);
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&bob, bob_wsol, /*is_debt=*/ false, 1_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
     let principal: u64 = 1_000_000;
-    let collateral: u64 = 800_000;
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            principal,
-            collateral,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.refresh_oracle_freshness().await;
+    let collateral: u64 = 50_000_000;
+    let (keeper, keeper_usdc, keeper_wsol) =
+        setup_vault_funded_loan(&fixture, principal, collateral, 30 * 86_400).await;
 
     let loan_pre = fixture.read_loan(0).await;
     let outstanding_pre = loan_pre.outstanding_debt_atoms;
@@ -669,9 +565,6 @@ async fn partial_liquidation_leaves_loan_active_with_reduced_balances() {
 #[cfg(feature = "test-sbf")]
 #[tokio::test]
 async fn liquidator_keeper_balance_grows_after_settlement() {
-    use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
-    use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
-
     let fixture = MarketFixture::new().await;
 
     // Set a meaningful keeper bonus so the receipt is observable above
@@ -684,73 +577,10 @@ async fn liquidator_keeper_balance_grows_after_settlement() {
     fixture.process(cfg_ix, &[&payer_kp]).await.unwrap();
     fixture.refresh_blockhash().await;
 
-    let alice = fixture.create_trader().await;
-    let bob = fixture.create_trader().await;
-    let keeper = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
-
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    let bob_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), 10_000_000);
-    let keeper_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        keeper_usdc,
-        mainnet::usdc_mint(),
-        keeper.pubkey(),
-        100_000_000,
-    );
-    let keeper_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(keeper_wsol, keeper.pubkey(), 0);
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&bob, bob_wsol, /*is_debt=*/ false, 1_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
     let principal: u64 = 1_000_000;
-    let collateral: u64 = 800_000;
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            principal,
-            collateral,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
-    fixture.refresh_blockhash().await;
+    let collateral: u64 = 50_000_000;
+    let (keeper, keeper_usdc, keeper_wsol) =
+        setup_vault_funded_loan(&fixture, principal, collateral, 30 * 86_400).await;
 
     let loan_pre = fixture.read_loan(0).await;
 
@@ -798,9 +628,6 @@ async fn liquidator_keeper_balance_grows_after_settlement() {
 #[cfg(feature = "test-sbf")]
 #[tokio::test]
 async fn protocol_accrues_fee_on_liquidate_loan() {
-    use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
-    use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
-
     let fixture = MarketFixture::new().await;
 
     // 2% liquidation protocol fee (on top of the 5% keeper bonus).
@@ -813,74 +640,10 @@ async fn protocol_accrues_fee_on_liquidate_loan() {
     fixture.process(cfg_ix, &[&payer_kp]).await.unwrap();
     fixture.refresh_blockhash().await;
 
-    let alice = fixture.create_trader().await;
-    let bob = fixture.create_trader().await;
-    let keeper = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
-
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    let bob_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), 10_000_000);
-    let keeper_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        keeper_usdc,
-        mainnet::usdc_mint(),
-        keeper.pubkey(),
-        100_000_000,
-    );
-    let keeper_wsol = Pubkey::new_unique();
-    fixture.put_wsol_token_account(keeper_wsol, keeper.pubkey(), 0);
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&bob, bob_wsol, /*is_debt=*/ false, 1_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
     let principal: u64 = 1_000_000;
-    let collateral: u64 = 800_000;
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            principal,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            principal,
-            collateral,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.refresh_oracle_freshness().await;
+    let collateral: u64 = 50_000_000;
+    let (keeper, keeper_usdc, keeper_wsol) =
+        setup_vault_funded_loan(&fixture, principal, collateral, 30 * 86_400).await;
 
     let loan_pre = fixture.read_loan(0).await;
     let lender_claimable_pre = loan_pre.lender_claimable_atoms;

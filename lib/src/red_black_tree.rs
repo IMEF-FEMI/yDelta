@@ -124,6 +124,8 @@ impl<'a, V: Payload> RedBlackTreeReadOnly<'a, V> {
     ///
     /// root!=NIL max!=NIL: initializes an existing tree, get_max() is defined
     pub fn new(data: &'a [u8], root_index: DataIndex, max_index: DataIndex) -> Self {
+        // Evaluate the compile-time payload-layout assertion.
+        RBNode::<V>::assert_node_layout();
         RedBlackTreeReadOnly::<V> {
             root_index,
             data,
@@ -564,50 +566,60 @@ where
     T: GetRedBlackTreeReadOnlyData<'a>,
 {
     /// Lookup the index of a given value.
+    ///
+    /// Fully iterative. The BST `Ord` key only orders
+    /// *distinct* keys; a cluster of nodes with the same `Ord` key (e.g.
+    /// resting orders sharing a rate+sequence, or seats sharing a
+    /// pubkey) can be scattered across both subtrees at an equal node.
+    /// Recursing into both sub-trees on every equal-key node would fan a
+    /// cluster of N equal-keyed nodes out to O(N) stack frames — a
+    /// stack-overflow DoS on untrusted input. This walks the equal-key
+    /// region with an explicit work stack instead: stack depth is
+    /// bounded by the tree height O(log n), never by the equal-key
+    /// cluster size.
     fn lookup_index<V: Payload>(&'a self, value: &V) -> DataIndex {
-        if self.root_index() == NIL {
+        let root: DataIndex = self.root_index();
+        if root == NIL {
             return NIL;
         }
 
-        let mut current_index: DataIndex = self.root_index();
+        // Explicit DFS stack over candidate node indices. We only ever
+        // push children of nodes we have already visited, so the stack
+        // never exceeds the tree height.
+        let mut stack: Vec<DataIndex> = Vec::new();
+        stack.push(root);
 
-        while self.get_value::<V>(current_index) != value {
-            if self.get_value::<V>(current_index) > value {
-                if self.has_left::<V>(current_index) {
-                    current_index = self.get_left_index::<V>(current_index);
-                } else {
-                    return NIL;
+        while let Some(current_index) = stack.pop() {
+            if current_index == NIL {
+                continue;
+            }
+            let current_value: &V = self.get_value::<V>(current_index);
+            match current_value.cmp(value) {
+                Ordering::Equal => {
+                    // Exact `Ord`-equal node. `PartialEq` is the real
+                    // identity comparator (it can be stricter than the
+                    // sort key — e.g. `RestingOrder` orders by
+                    // rate+sequence but identifies by seat+sequence), so
+                    // only return on a true equality match. Otherwise
+                    // keep scanning the equal-key region: equal keys can
+                    // sit in either subtree of an equal node.
+                    if current_value == value {
+                        return current_index;
+                    }
+                    stack.push(self.get_left_index::<V>(current_index));
+                    stack.push(self.get_right_index::<V>(current_index));
                 }
-            } else if self.get_value::<V>(current_index) < value {
-                if self.has_right::<V>(current_index) {
-                    current_index = self.get_right_index::<V>(current_index);
-                } else {
-                    return NIL;
+                Ordering::Greater => {
+                    // current > value: descend left only.
+                    stack.push(self.get_left_index::<V>(current_index));
                 }
-            } else {
-                // Check both subtrees for equal keys.
-                let left_lookup: DataIndex = RedBlackTreeReadOnly::<V>::new(
-                    self.data(),
-                    self.get_left_index::<V>(current_index),
-                    NIL,
-                )
-                .lookup_index(value);
-                if left_lookup != NIL {
-                    return left_lookup;
+                Ordering::Less => {
+                    // current < value: descend right only.
+                    stack.push(self.get_right_index::<V>(current_index));
                 }
-                let right_lookup: DataIndex = RedBlackTreeReadOnly::<V>::new(
-                    self.data(),
-                    self.get_right_index::<V>(current_index),
-                    NIL,
-                )
-                .lookup_index(value);
-                if right_lookup != NIL {
-                    return right_lookup;
-                }
-                return NIL;
             }
         }
-        current_index
+        NIL
     }
 
     fn lookup_max_index<V: Payload>(&'a self) -> DataIndex {
@@ -1016,6 +1028,45 @@ impl<V: Payload> std::fmt::Display for RBNode<V> {
 }
 
 impl<V: Payload> RBNode<V> {
+    /// Compile-time layout guard.
+    ///
+    /// `RBNode<V>`'s manual `unsafe impl Pod` is only sound if the node
+    /// has no interior or trailing padding — every byte must be covered
+    /// by a field. The 16-byte header (`left`/`right`/`parent` 4 each +
+    /// `color`/`payload_type` 1 each + `_unused_padding` 2) is exactly
+    /// `RBTREE_OVERHEAD_BYTES` (16).
+    ///
+    /// The soundness condition for the manual `unsafe impl Pod for
+    /// RBNode<V>` and the `RBTREE_OVERHEAD_BYTES`-based block-stride math
+    /// in the program's `constants.rs` is:
+    ///
+    ///   `size_of::<RBNode<V>>() == RBTREE_OVERHEAD_BYTES + size_of::<V>()`
+    ///
+    /// — i.e. no padding is inserted between the header and `value`, and
+    /// none trails the struct. Because the header is exactly 16 bytes (a
+    /// multiple of 8), a payload `V` with alignment 8 (the usual case —
+    /// `u64`/`u128` fields) slots in at offset 16 with NO padding, so an
+    /// 8-aligned payload is perfectly fine. This single size check is the
+    /// real invariant; it catches any payload whose layout would
+    /// actually break the stride math. A violating payload fails the
+    /// build here instead of silently corrupting block arithmetic at
+    /// runtime. `assert_node_layout` forces evaluation for each `V`.
+    const LAYOUT_OK: () = {
+        assert!(
+            core::mem::size_of::<RBNode<V>>() == RBTREE_OVERHEAD_BYTES + core::mem::size_of::<V>(),
+            "RBNode<V> must be exactly RBTREE_OVERHEAD_BYTES + size_of::<V>() \
+             with no interior/trailing padding",
+        );
+    };
+
+    /// Forces `LAYOUT_OK`'s `const` assertions to be evaluated for the
+    /// concrete payload type `V`. Call sites (the tree constructors)
+    /// invoke this so that an ill-laid-out payload fails the build.
+    #[inline(always)]
+    pub fn assert_node_layout() {
+        let () = Self::LAYOUT_OK;
+    }
+
     fn get_left_index(&self) -> DataIndex {
         self.left
     }
@@ -1156,6 +1207,8 @@ impl<'a, V: Payload> RedBlackTree<'a, V> {
     /// Creates a new RedBlackTree. Does not mutate data yet. Assumes the actual
     /// data in data is already well formed as a red black tree.
     pub fn new(data: &'a mut [u8], root_index: DataIndex, max_index: DataIndex) -> Self {
+        // Evaluate the compile-time payload-layout assertion.
+        RBNode::<V>::assert_node_layout();
         RedBlackTree::<V> {
             root_index,
             data,
@@ -1250,7 +1303,16 @@ impl<'a, V: Payload> RedBlackTree<'a, V> {
                 self.rotate_left::<V>(parent_index);
                 return (NIL, NIL);
             }
-            unreachable!();
+            // In a well-formed red-black tree one of the four
+            // sibling-red-child cases above always fires when
+            // `sibling_has_red_child` is true. Reaching here means the
+            // tree's invariants are already violated (corrupted account
+            // bytes). Panicking (`unreachable!()`) would abort the whole
+            // transaction and brick the instruction. Instead fail closed:
+            // return `(NIL, NIL)` so the caller's fix-up loop terminates
+            // gracefully and the corruption degrades into a stuck node
+            // rather than a hard panic.
+            return (NIL, NIL);
         }
 
         // 3b

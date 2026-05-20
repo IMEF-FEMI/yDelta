@@ -19,15 +19,21 @@
 use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 
+use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
+use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
 use ydelta::state::loan::loan_pda;
+use ydelta::state::Side;
 
 use crate::test_utils::{mainnet, MarketFixture};
 
 const PROFILE_ID: u8 = 0;
 const VAULT_DEPOSIT_ATOMS: u64 = 100_000_000;
-const MAX_EXPOSURE_ATOMS: u64 = 50_000_000;
 const PRINCIPAL_ATOMS: u64 = 1_000_000;
-const COLLATERAL_ATOMS: u64 = 100_000;
+// The match-time LTV gate normalizes for the USDC(6-dec) /
+// wSOL(9-dec) decimal gap: backing $1 of USDC debt against ~$100-200
+// SOL requires tens of millions of wSOL lamports. 50M lamports
+// (~0.05 SOL) clears the init-weight requirement comfortably.
+const COLLATERAL_ATOMS: u64 = 50_000_000;
 const VAULT_RATE_BPS: u16 = 500;
 const BORROWER_RATE_BPS: u16 = 800;
 const TERM_SECONDS: u32 = 30 * 86_400;
@@ -60,14 +66,7 @@ async fn setup_through_promote(
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(
-            &admin,
-            PROFILE_ID,
-            curator.pubkey(),
-            8_000,
-            TERM_SECONDS,
-            1u8,
-        )
+        .create_risk_profile(&admin, PROFILE_ID, curator.pubkey(), 8_000, TERM_SECONDS)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -76,11 +75,9 @@ async fn setup_through_promote(
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
-    fixture
-        .claim_seat_for_risk_profile(&curator, PROFILE_ID, MAX_EXPOSURE_ATOMS)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
+    // No claim-seat step — the vault market-seat is auto-created on the
+    // curator's first place_order_for_risk_profile. The ask is
+    // unbounded; the cross is capped by the profile's idle balance.
     fixture
         .place_order_for_risk_profile(&curator, PROFILE_ID, VAULT_RATE_BPS, TERM_SECONDS, 0)
         .await
@@ -213,15 +210,6 @@ async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
         VAULT_DEPOSIT_ATOMS,
     );
 
-    // Market-side seat's per-market exposure usage cleared.
-    let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
-    let seat = fixture.read_vault_seat(&gv, PROFILE_ID).await;
-    assert_eq!(
-        seat.deployed_atoms(),
-        0,
-        "seat.deployed_atoms must drop to zero so the per-market cap headroom is recovered",
-    );
-
     // Loan PDA closed.
     let (loan_addr, _) = loan_pda(&fixture.market.pubkey(), 0);
     let post_account = {
@@ -257,6 +245,71 @@ async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
         gained > 1_000_000,
         "cranker rent refund too small — got {}, expected > 1M lamports for a 256-byte LoanFixed",
         gained,
+    );
+}
+
+/// Burning the LAST vault share while a loan is still
+/// deployed must be rejected. Otherwise the final-burn reconciliation
+/// would zero `total_principal_atoms` while `deployed_principal_atoms`
+/// is still non-zero — orphaning real atoms and breaking the invariant
+/// `total_principal ≥ deployed + encumbered`.
+#[tokio::test]
+async fn last_share_burn_rejected_while_loan_deployed() {
+    let fixture = MarketFixture::new().await;
+    let (_admin, depositor, _curator, _borrower, _borrower_usdc) =
+        setup_through_promote(&fixture).await;
+
+    // A loan is deployed (setup_through_promote cranks the match).
+    let profile = fixture.read_risk_profile(PROFILE_ID).await;
+    assert_eq!(
+        profile.deployed_principal_atoms, PRINCIPAL_ATOMS,
+        "test invariant: a loan must be deployed before this check"
+    );
+    // Genesis 1:1 mint — the sole depositor holds every share.
+    assert_eq!(
+        profile.total_shares, VAULT_DEPOSIT_ATOMS as u128,
+        "test invariant: depositor holds the entire share supply"
+    );
+
+    let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
+
+    // Attempt to burn ALL shares — the last-share burn. Must reject:
+    // capital is in flight.
+    fixture.refresh_blockhash().await;
+    let result = fixture
+        .global_vault_withdraw(
+            &depositor,
+            depositor_token,
+            PROFILE_ID,
+            profile.total_shares,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "burning the last vault share while a loan is deployed must reject",
+    );
+
+    // The profile state must be untouched — the rejection reverts the tx.
+    let profile_after = fixture.read_risk_profile(PROFILE_ID).await;
+    assert_eq!(
+        profile_after.total_shares, profile.total_shares,
+        "rejected last-share burn must not mutate total_shares",
+    );
+    assert_eq!(
+        profile_after.total_principal_atoms, profile.total_principal_atoms,
+        "rejected last-share burn must not orphan deployed principal",
+    );
+
+    // A PARTIAL withdraw within the profile's idle still works — only the
+    // LAST share is gated. Idle = total_principal − deployed = ~99M atoms.
+    fixture.refresh_blockhash().await;
+    let partial = fixture
+        .global_vault_withdraw(&depositor, depositor_token, PROFILE_ID, 1_000_000_u128)
+        .await;
+    assert!(
+        partial.is_ok(),
+        "a partial withdraw within idle must still succeed; got {:?}",
+        partial,
     );
 }
 
@@ -307,94 +360,6 @@ async fn claim_rejected_when_outstanding_nonzero() {
     assert!(
         result.is_err(),
         "claim must reject when outstanding_debt_atoms > 0; got {:?}",
-        result,
-    );
-}
-
-#[tokio::test]
-async fn claim_rejected_for_wallet_funded_loan() {
-    // Build a wallet-funded loan: lender Alice posts an Ask, borrower
-    // Bob bids. Loan promotes with `lender_kind = User`. Try to call
-    // `claim_repayment_for_risk_profile` on it — should reject because
-    // the ix gates on `loan.lender_kind == OWNER_KIND_RISK_PROFILE`.
-    let fixture = MarketFixture::new().await;
-
-    let alice = fixture.create_trader().await;
-    let bob = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
-
-    let alice_usdc = fixture.signer_debt_token(&alice.pubkey());
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    let bob_usdc = fixture.signer_debt_token(&bob.pubkey());
-    fixture.put_token_account(bob_usdc, mainnet::usdc_mint(), bob.pubkey(), 100_000_000);
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
-        .await;
-
-    fixture
-        .place_order(
-            &alice,
-            ydelta::state::Side::Ask,
-            ydelta::state::OrderType::Limit,
-            VAULT_RATE_BPS,
-            TERM_SECONDS,
-            PRINCIPAL_ATOMS,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .place_order(
-            &bob,
-            ydelta::state::Side::Bid,
-            ydelta::state::OrderType::Limit,
-            BORROWER_RATE_BPS,
-            TERM_SECONDS,
-            PRINCIPAL_ATOMS,
-            COLLATERAL_ATOMS,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
-    fixture.refresh_blockhash().await;
-
-    fixture
-        .repay(&bob, 0, bob_usdc, 0, /*full_repay=*/ true)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    let loan = fixture.read_loan(0).await;
-    fixture
-        .set_clock_unix_timestamp(loan.matures_at_unix + 1)
-        .await;
-    fixture.refresh_blockhash().await;
-
-    // Wallet-funded loan: lender_kind = User. The risk-profile claim
-    // must reject (use `claim_repayment` instead).
-    let stranger = fixture.create_trader().await;
-    fixture.refresh_blockhash().await;
-    let result = fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, None)
-        .await;
-    assert!(
-        result.is_err(),
-        "risk-profile claim must reject wallet-funded loan; got {:?}",
         result,
     );
 }
@@ -466,11 +431,11 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     );
 
     let profile_post_claim = fixture.read_risk_profile(PROFILE_ID).await;
-    // total_principal_atoms grew by realized lender interest from the
-    // matched loan. (total_assets_atoms grows by MORE than that —
-    // marginfi accrues yield on the idle pool over the 30-day clock
-    // advance — but we assert only the principal-basis growth here
-    // because that's what's tied to the realized loan settlement.)
+    // total_principal_atoms now carries BOTH:
+    //   - realized lender interest from the matched loan
+    //   - physically accrued supply yield on the idle pool
+    //
+    // The realized loan interest must still be present inside that gain.
     let total_principal_gain = profile_post_claim
         .total_principal_atoms
         .saturating_sub(VAULT_DEPOSIT_ATOMS);
@@ -498,17 +463,152 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
         profile_post_claim.total_shares
     );
 
-    // Note: a full-shares withdraw at this point would fail the
-    // `idle_principal >= atoms_out` gate. The marginfi-yield drift on
-    // the idle pool grows total_assets faster than total_principal, so
-    // burning all shares would request more atoms than the principal
-    // basis can pay. That's a real protocol property — the depositor
-    // receives proportional withdrawals up to their principal share;
-    // realised loan yield accrues to the principal basis on each
-    // claim_repayment_for_risk_profile call. Withdrawing partial
-    // shares (≤ idle_principal / atoms_per_share) works fine — see
-    // `vault_genesis_round_trip` for the basic withdraw flow.
-    let _ = depositor;
+    // Full-shares withdrawal must now succeed: idle-side supply yield is
+    // part of the profile's withdrawable basis, not just its displayed
+    // NAV.
+    let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
+    let balance_pre = fixture.token_balance(depositor_token).await;
+    fixture.refresh_blockhash().await;
+    fixture
+        .global_vault_withdraw(
+            &depositor,
+            depositor_token,
+            PROFILE_ID,
+            profile_post_claim.total_shares,
+        )
+        .await
+        .unwrap();
+    let balance_post = fixture.token_balance(depositor_token).await;
+    let received = balance_post.saturating_sub(balance_pre);
+    assert!(
+        received > VAULT_DEPOSIT_ATOMS,
+        "full-shares withdraw should redeem the accrued yield too (received {}, deposit {})",
+        received,
+        VAULT_DEPOSIT_ATOMS
+    );
+}
+
+/// At loan close `claim_repayment_for_risk_profile` must reconcile
+/// `total_assets_atoms` to REALIZED loan economics.
+///
+/// While the loan is open, `accrue_risk_profile` continuously credits an
+/// ESTIMATED loan yield into `total_assets_atoms`; the realized lender
+/// interest only lands in `total_principal_atoms` at claim. Supply yield
+/// on idle atoms is a separate stream and is stripped out below via the
+/// cumulative supply index. After removing that supply component, the
+/// claim true-up (`total_assets += realized − estimated`) must reconcile
+/// the loan-rate component of both `total_assets` and `total_principal`
+/// back to realized cash. Without it, `total_assets` carries the stale
+/// estimate while `total_principal` carries the realized figure, and
+/// depositors exiting between default and claim redeem phantom yield.
+#[tokio::test]
+async fn claim_reconciles_total_assets_to_realized_interest() {
+    let fixture = MarketFixture::new().await;
+    let (_admin, _depositor, _curator, borrower, borrower_usdc) =
+        setup_through_promote(&fixture).await;
+
+    let loan_post_promote = fixture.read_loan(0).await;
+    fixture
+        .set_clock_unix_timestamp(loan_post_promote.matures_at_unix)
+        .await;
+    fixture.refresh_blockhash().await;
+    fixture
+        .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Claim a full extra term past maturity: the loan's weighted-rate
+    // contribution lingers in `total_weighted_net_rate_bps` until the
+    // claim unwinds it, so `accrue_risk_profile` over-credits the
+    // ESTIMATED loan yield (≈ 2 terms' worth) into `total_assets`. The
+    // borrower only ever owed ONE term. The claim true-up must reconcile
+    // `total_assets` back to the realized one-term figure.
+    let claim_at = loan_post_promote.matures_at_unix + TERM_SECONDS as i64;
+    fixture.set_clock_unix_timestamp(claim_at).await;
+    fixture.refresh_blockhash().await;
+    let stranger = fixture.create_trader().await;
+    fixture.refresh_blockhash().await;
+    fixture
+        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    const SECONDS_PER_YEAR: u128 = 365 * 24 * 60 * 60;
+    let realized_interest: u128 =
+        PRINCIPAL_ATOMS as u128 * VAULT_RATE_BPS as u128 * TERM_SECONDS as u128
+            / (10_000u128 * SECONDS_PER_YEAR);
+
+    let profile_post = fixture.read_risk_profile(PROFILE_ID).await;
+
+    // total_principal grew from two streams:
+    //   - supply yield on idle atoms
+    //   - realized lender interest from the loan close
+    //
+    // Strip the supply-yield component to isolate the loan-close effect.
+    let principal_gain = profile_post
+        .total_principal_atoms
+        .saturating_sub(VAULT_DEPOSIT_ATOMS);
+    const INDEX_SCALE: u128 = 1u128 << 48;
+    let supply_yield_atoms: u128 =
+        profile_post.cumulative_supply_yield_index_scaled * profile_post.total_shares / INDEX_SCALE;
+    let principal_loan_component: i128 = principal_gain as i128 - supply_yield_atoms as i128;
+    assert!(
+        (principal_loan_component - realized_interest as i128).abs() <= 16,
+        "loan component of total_principal growth ({}) must match realized interest (~{}) \
+         after removing supply yield ({})",
+        principal_loan_component,
+        realized_interest,
+        supply_yield_atoms,
+    );
+
+    // `total_assets_atoms` grew from two independent streams:
+    //   - supply yield (marginfi share-value drift on idle atoms)
+    //   - loan-rate yield (this loan's contribution)
+    // Supply yield is genuine NAV growth and is tracked separately by
+    // `cumulative_supply_yield_index_scaled`. The supply-yield atoms
+    // credited = index × total_shares / 2^48 (the index accumulates
+    // `idle_yield × 2^48 / total_shares`, and total_shares is constant
+    // here — no deposits/withdraws). Subtracting the supply-yield
+    // component isolates the loan-rate contribution to `total_assets`.
+    //
+    // After the claim true-up, that loan-rate contribution must equal the
+    // REALIZED one-term interest — NOT the ~2-term estimate
+    // `accrue_risk_profile` credited while the loan lingered open past
+    // maturity. Without reconciliation the loan-rate component would be
+    // ~2× realized.
+    let supply_yield_atoms: u128 =
+        profile_post.cumulative_supply_yield_index_scaled * profile_post.total_shares / INDEX_SCALE;
+    let assets_gain: u128 =
+        (profile_post.total_assets_atoms as u128).saturating_sub(VAULT_DEPOSIT_ATOMS as u128);
+    let loan_rate_component: i128 = assets_gain as i128 - supply_yield_atoms as i128;
+    // The loan-rate component of total_assets growth must track realized
+    // interest within marginfi share-rounding + per-call index flooring.
+    assert!(
+        (loan_rate_component - realized_interest as i128).abs() <= 16,
+        "loan-rate component of total_assets growth ({}) must be \
+         reconciled to realized interest ({}) — not the stale ~2-term \
+         estimate (assets_gain {}, supply_yield {})",
+        loan_rate_component,
+        realized_interest,
+        assets_gain,
+        supply_yield_atoms,
+    );
+    // The loan was claimed a full extra term late; the un-reconciled
+    // estimate would have been ~2× realized — assert we're well under it.
+    assert!(
+        (loan_rate_component as u128) < realized_interest + realized_interest / 2,
+        "loan-rate component ({}) still carries the stale over-estimate \
+         (realized {})",
+        loan_rate_component,
+        realized_interest,
+    );
+    // And yield realization is real: total_assets did grow.
+    assert!(
+        profile_post.total_assets_atoms > VAULT_DEPOSIT_ATOMS,
+        "total_assets must reflect realized yield growth",
+    );
 }
 
 /// Curator earns a manager fee on vault-funded lender interest.
@@ -527,9 +627,6 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
 ///      USDC ATA — curator's wallet balance strictly grows
 #[tokio::test]
 async fn curator_accrues_and_claims_fee_end_to_end() {
-    use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
-    use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
-
     let fixture = MarketFixture::new().await;
 
     // ── Set curator_fee_bps = 1000 (10%) BEFORE matching, so the
@@ -674,11 +771,20 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
         expected_curator_take
     );
 
-    // Profile counter zeroed after claim.
+    // Profile accumulator after claim. `claim_curator_fee` decrements the
+    // accumulator by the marginfi-reported `actual_atoms`
+    // (`accumulator' = fee_atoms.saturating_sub(actual_atoms)`), NOT a
+    // blanket zero. When marginfi's withdraw returns the full requested
+    // amount the accumulator lands at 0; when the ±1-atom drift gate
+    // makes marginfi return one atom short, that 1-atom un-realised
+    // remainder stays on the accumulator (claimable on a later call)
+    // rather than being silently lost. Allow that sub-atom residual.
     let profile_final = fixture.read_risk_profile(PROFILE_ID).await;
-    assert_eq!(
-        profile_final.accumulated_curator_fee_atoms, 0,
-        "claim_curator_fee must zero the profile's accumulator"
+    assert!(
+        profile_final.accumulated_curator_fee_atoms <= 1,
+        "claim_curator_fee must drain the accumulator to <= a 1-atom \
+         marginfi-drift residual; got {}",
+        profile_final.accumulated_curator_fee_atoms
     );
 }
 
@@ -702,35 +808,18 @@ async fn risk_profile_earns_yield_from_two_markets() {
     // a single matched loan is open, borrower funded.
     let (admin, _depositor, curator, borrower1, borrower1_usdc) =
         setup_through_promote(&fixture).await;
-    let market1_pk = fixture.market.pubkey();
+    let _market1_pk = fixture.market.pubkey();
 
     // ── Stand up market 2 (same USDC/wSOL pair, separate orderbook). ──
     fixture.refresh_blockhash().await;
     fixture.create_second_market().await;
     let market2_pk = fixture.second_market_pubkey();
 
-    // Profile claims a seat in market 2. Re-uses the same MAX_EXPOSURE
-    // — the profile's allowed_market_max was set to 1 at creation
-    // (setup_through_promote uses 1u8). Bump it via update_risk_profile
-    // before claiming the second seat.
-    fixture
-        .update_risk_profile(
-            &admin,
-            PROFILE_ID,
-            None,
-            None,
-            /*allowed_market_max=*/ Some(2),
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture
-        .claim_seat_for_risk_profile_in_market(&curator, PROFILE_ID, market2_pk, MAX_EXPOSURE_ATOMS)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    // Curator places an ask in market 2.
+    // Curator places an ask in market 2. No claim-seat step and no
+    // market cap — the quote-only model auto-creates the vault seat on
+    // the first place_order_for_risk_profile, and a profile may quote
+    // any market sharing the vault's mint.
+    let _ = admin;
     fixture
         .place_order_for_risk_profile_in_market(
             &curator,
@@ -770,7 +859,6 @@ async fn risk_profile_earns_yield_from_two_markets() {
     // routes through market 2's borrower_marginfi PDA — separate from
     // market 1's, so this borrower's collateral is independent of
     // borrower1's.
-    use ydelta::state::Side;
     fixture
         .deposit_in_market(
             &borrower2,

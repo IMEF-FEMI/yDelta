@@ -1,53 +1,13 @@
 //! Self-match prevention.
-
-use solana_sdk::signer::Signer;
-
-use ydelta::program::YdeltaError;
-use ydelta::state::{OrderType, Side};
-
-use crate::assert_custom_error;
-use crate::test_utils::TestFixture;
-
-#[tokio::test]
-async fn self_match_rejected() {
-    // Trader places an ask, then a bid that crosses it. The bid's
-    // taker-side match should reject with `SelfMatchForbidden` rather
-    // than wash the trader's encumbered balances.
-    let mut fixture = TestFixture::new().await;
-    let alice = fixture.create_trader(0, 0).await;
-    fixture.claim_seat(&alice).await.unwrap();
-
-    fixture
-        .seed_seat_shares(&alice.pubkey(), 1_000, /*is_debt=*/ true)
-        .await;
-    fixture
-        .seed_seat_shares(&alice.pubkey(), 5_000, /*is_debt=*/ false)
-        .await;
-
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            700,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    let result = fixture
-        .place_order(
-            &alice,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            700,
-            1_000,
-        )
-        .await;
-    assert_custom_error!(result, YdeltaError::SelfMatchForbidden);
-}
+//!
+//! A literal self-match is not expressible: the only resting orders
+//! are vault risk-profile asks (seat owner = the vault PDA,
+//! `OWNER_KIND_RISK_PROFILE`); the only takers are borrower IOC bids
+//! (seat owner = a borrower wallet, `OWNER_KIND_USER`). A maker seat
+//! and a taker seat can therefore never be the same `ClaimedSeat`, so
+//! the `SelfMatchForbidden` guard in `match_order` is unreachable from
+//! any instruction.
+//!
+//! The guard is kept in the matching engine as defense-in-depth
+//! against future state corruption, but there is no integration test
+//! that can exercise it.

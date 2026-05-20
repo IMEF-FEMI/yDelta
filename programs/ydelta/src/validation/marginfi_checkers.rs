@@ -69,6 +69,36 @@ impl<'a, 'info> MarginfiBankInfo<'a, 'info> {
         drop(data);
         Ok(Self { info })
     }
+
+    /// Like `new`, plus binds the bank's on-disk `group` field to a
+    /// caller-supplied expected marginfi-group pubkey. Without this a
+    /// caller could substitute any well-formed marginfi group account,
+    /// since the loader otherwise only owner/discriminator-checks the
+    /// group. The expected group is the one pinned on
+    /// `MarketFixed.marginfi_group` / `GlobalVaultFixed.integration_pool`.
+    pub fn new_with_expected_group(
+        info: &'a AccountInfo<'info>,
+        marginfi_program_id: &Pubkey,
+        expected_group: &Pubkey,
+    ) -> Result<Self, ProgramError> {
+        require!(
+            info.owner == marginfi_program_id,
+            YdeltaError::IncorrectAccount,
+            "Bank not owned by marginfi program (owner={:?})",
+            info.owner
+        )?;
+        let data = info.try_borrow_data()?;
+        let bank = Bank::try_from_account_data(&data).map_err(|_| YdeltaError::IncorrectAccount)?;
+        require!(
+            bank.group == *expected_group,
+            YdeltaError::IncorrectAccount,
+            "bank.group {} does not match expected marginfi_group {}",
+            bank.group,
+            expected_group
+        )?;
+        drop(data);
+        Ok(Self { info })
+    }
 }
 
 impl<'a, 'info> Deref for MarginfiBankInfo<'a, 'info> {
@@ -114,18 +144,69 @@ impl<'a, 'info> MarginfiAccountInfo<'a, 'info> {
         expected_authority: &Pubkey,
     ) -> Result<Self, ProgramError> {
         let validated = Self::new(info, marginfi_program_id)?;
+        Self::assert_fields(info, Some(expected_authority), None)?;
+        Ok(validated)
+    }
+
+    /// Like `new`, plus binds the on-disk `group` field to a
+    /// caller-supplied expected marginfi-group pubkey, the same binding
+    /// `MarginfiBankInfo::new_with_expected_group` performs for banks.
+    pub fn new_with_expected_group(
+        info: &'a AccountInfo<'info>,
+        marginfi_program_id: &Pubkey,
+        expected_group: &Pubkey,
+    ) -> Result<Self, ProgramError> {
+        let validated = Self::new(info, marginfi_program_id)?;
+        Self::assert_fields(info, None, Some(expected_group))?;
+        Ok(validated)
+    }
+
+    /// Like `new_with_expected_authority`, plus binds `group`. Used by
+    /// loaders that have both a vault/market signer and a pinned group
+    /// in scope. Decodes the account body once for both checks.
+    pub fn new_with_expected_authority_and_group(
+        info: &'a AccountInfo<'info>,
+        marginfi_program_id: &Pubkey,
+        expected_authority: &Pubkey,
+        expected_group: &Pubkey,
+    ) -> Result<Self, ProgramError> {
+        let validated = Self::new(info, marginfi_program_id)?;
+        Self::assert_fields(info, Some(expected_authority), Some(expected_group))?;
+        Ok(validated)
+    }
+
+    /// Single-borrow check of the marginfi account's `authority` and/or
+    /// `group` fields against caller expectations. Decodes the body
+    /// once so callers that need both checks don't pay two borrows
+    /// (compute matters on the hot CPI paths).
+    fn assert_fields(
+        info: &'a AccountInfo<'info>,
+        expected_authority: Option<&Pubkey>,
+        expected_group: Option<&Pubkey>,
+    ) -> Result<(), ProgramError> {
         let data = info.try_borrow_data()?;
         let mfi = marginfi_mocks::state::MarginfiAccount::try_from_account_data(&data)
             .map_err(|_| YdeltaError::IncorrectAccount)?;
-        require!(
-            mfi.authority == *expected_authority,
-            YdeltaError::IncorrectAccount,
-            "marginfi_account.authority {} does not match expected signer {}",
-            mfi.authority,
-            expected_authority
-        )?;
+        if let Some(authority) = expected_authority {
+            require!(
+                mfi.authority == *authority,
+                YdeltaError::IncorrectAccount,
+                "marginfi_account.authority {} does not match expected signer {}",
+                mfi.authority,
+                authority
+            )?;
+        }
+        if let Some(group) = expected_group {
+            require!(
+                mfi.group == *group,
+                YdeltaError::IncorrectAccount,
+                "marginfi_account.group {} does not match expected marginfi_group {}",
+                mfi.group,
+                group
+            )?;
+        }
         drop(data);
-        Ok(validated)
+        Ok(())
     }
 }
 

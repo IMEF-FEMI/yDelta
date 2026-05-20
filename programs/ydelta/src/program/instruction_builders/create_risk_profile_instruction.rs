@@ -18,7 +18,6 @@ pub fn create_risk_profile_instruction(
     curator: &Pubkey,
     max_ltv_bps: u16,
     max_term_seconds: u32,
-    allowed_market_max: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
 
@@ -28,7 +27,6 @@ pub fn create_risk_profile_instruction(
         curator: *curator,
         max_ltv_bps,
         max_term_seconds,
-        allowed_market_max,
     }
     .serialize(&mut data)
     .unwrap();

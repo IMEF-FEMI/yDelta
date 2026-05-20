@@ -13,17 +13,15 @@ use crate::logs::{emit_stack, CancelOrderForRiskProfileLog, PlaceOrderForRiskPro
 use crate::program::YdeltaError;
 use crate::require;
 use crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
-use crate::state::market::{get_helper_seat, ClaimedSeatTreeReadOnly};
-use crate::state::market_helpers::{cancel_order_by_index, place_order_inner};
+use crate::state::market::ClaimedSeatTreeReadOnly;
+use crate::state::market_helpers::{cancel_order_by_index, rest_vault_ask, RestVaultAskArgs};
 use crate::state::vault::{
     insert_risk_profile_order_ref, remove_risk_profile_order_ref, vault_expand_node_block,
     GlobalVaultFixed, RiskProfile, RiskProfileOrderRef, RiskProfileOrderRefTreeReadOnly,
     RiskProfileTreeReadOnly,
 };
 use crate::state::ClaimedSeat;
-use crate::state::{
-    MarketFixed, OrderKind, OrderType, Side, GLOBAL_VAULT_FIXED_SIZE, VAULT_NODE_BLOCK_SIZE,
-};
+use crate::state::{MarketFixed, Side, GLOBAL_VAULT_FIXED_SIZE, VAULT_NODE_BLOCK_SIZE};
 use crate::validation::loaders::CancelOrderForRiskProfileContext;
 
 use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
@@ -54,18 +52,13 @@ pub fn process_update_order_for_risk_profile(
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    // Re-stamp the market-side vault seat's risk_profile_max_ltv_bps
-    // from the live RiskProfile so the borrower-LTV gate uses the
-    // current cap.
-    super::shared::sync_vault_seat_from_profile(market.info, vault.info, params.profile_id)?;
-
     // Validate curator, profile, and the existing vault order.
     let old_order_sequence: u64 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
 
-        let profile_probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+        let profile_probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
         let profile_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
             tree.lookup_index(&profile_probe)
@@ -109,8 +102,9 @@ pub fn process_update_order_for_risk_profile(
             .order_sequence_in_market
     };
 
-    // Read the per-market cap from the market-side vault ClaimedSeat.
-    let (max_exposure_atoms, taker_seat_index): (u64, hypertree::DataIndex) = {
+    // Resolve the market-side vault ClaimedSeat. The vault ask is
+    // unbounded ("quote all idle") — there is no per-market cap to read.
+    let taker_seat_index: hypertree::DataIndex = {
         let market_data: &std::cell::Ref<&mut [u8]> = &market.info.try_borrow_data()?;
         let market_dyn_offset = std::mem::size_of::<MarketFixed>();
         let header: &MarketFixed = bytemuck::from_bytes(&market_data[..market_dyn_offset]);
@@ -125,8 +119,7 @@ pub fn process_update_order_for_risk_profile(
             YdeltaError::IncorrectAccount,
             "no vault-owned ClaimedSeat for (vault, profile_id)"
         )?;
-        let seat = get_helper_seat(dynamic, seat_idx).get_value();
-        (seat.max_exposure_atoms(), seat_idx)
+        seat_idx
     };
 
     // Cancel and replace on the market side.
@@ -142,51 +135,27 @@ pub fn process_update_order_for_risk_profile(
             old_order_sequence,
             None,
         )?;
-        // Vault orders are always primary — discard the
-        // secondary-loan-pda return value.
-        let _ = cancel_order_by_index(
+        cancel_order_by_index(
             da.fixed,
             da.dynamic,
             taker_seat_index,
             order_index_in_market,
         )?;
 
-        let args = crate::state::market_helpers::PlaceOrderArgs {
-            market_pubkey: market_key,
-            taker_seat_index,
-            side: Side::Ask,
-            kind: OrderKind::Primary,
-            // Risk-profile orders are makers by design — never takers.
-            // PostOnly mirrors `place_order_for_risk_profile`'s placement.
-            order_type: OrderType::PostOnly,
-            rate_bps: params.new_rate_bps,
-            term_seconds: params.new_term_seconds,
-            principal_atoms: max_exposure_atoms,
-            collateral_atoms: 0,
-            // Risk-profile orders are non-expiring; only the curator
-            // removes them via cancel_order_for_risk_profile.
-            last_valid_unix_ts: crate::state::constants::NO_EXPIRATION_LAST_VALID_UNIX_TS,
-            flags: params.new_flags,
-            now_unix_ts: now,
-            // Unused on the vault path (see place_order_for_risk_profile).
-            share_price_snapshot_fp48: 0,
-            debt_oracle_price_fp48: 0,
-            collateral_oracle_price_fp48: 0,
-            debt_liability_weight_init_fp48: 0,
-            collateral_asset_weight_init_fp48: 0,
-            enforce_ltv: false,
-            is_vault_lender: true,
-            borrower_ltv_bps: 0,
-        };
-        // Vault asks rest as makers — they don't take. No vault-side
-        // matching to gate, None is fine.
-        let result = place_order_inner(da.fixed, da.dynamic, args, None)?;
-        require!(
-            result.rested,
-            YdeltaError::InvalidArgument,
-            "vault update did not rest"
-        )?;
-        result.sequence
+        // Re-rest the vault ask. `rest_vault_ask` is a pure insert —
+        // vault asks are PostOnly makers and never take.
+        rest_vault_ask(
+            da.fixed,
+            da.dynamic,
+            RestVaultAskArgs {
+                market_pubkey: market_key,
+                maker_seat_index: taker_seat_index,
+                rate_bps: params.new_rate_bps,
+                term_seconds: params.new_term_seconds,
+                flags: params.new_flags,
+                now_unix_ts: now,
+            },
+        )?
     };
 
     // Rebuild the RiskProfileOrderRef.

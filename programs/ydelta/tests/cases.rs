@@ -19,6 +19,9 @@ mod cases {
 
     mod claim_seat;
     mod create_market;
+    // Encumbrance-conservation now exercises vault-ask makers, which
+    // need real marginfi banks (MarketFixture) — SBF-only.
+    #[cfg(feature = "test-sbf")]
     mod encumbrance_conservation;
     mod liquidation;
     mod self_match;
@@ -28,17 +31,23 @@ mod cases {
     // marginfi.so + mainnet bank fixtures, so they're SBF-only.
     #[cfg(feature = "test-sbf")]
     mod deposit_withdraw;
+    // Matching-mechanics tests use vault-ask makers (MarketFixture +
+    // real marginfi banks) — SBF-only.
+    #[cfg(feature = "test-sbf")]
     mod r#match;
     mod place_order;
     // process_matched_loan also CPIs into marginfi (amount_to_shares
     // reads from the live bank); SBF-only.
     #[cfg(feature = "test-sbf")]
     mod bank_config_view;
-    mod borrower_ltv;
-    #[cfg(feature = "test-sbf")]
-    mod claim_repayment;
+    // Every loan's lender is a vault risk profile, so claims go through
+    // the risk-profile claim path.
     #[cfg(feature = "test-sbf")]
     mod claim_repayment_for_risk_profile;
+    // `convert_p2pool_to_fixed`: the matcher
+    // (`match_p2pool_residual_against_asks`) crosses vault risk-profile
+    // asks under the unbounded-vault-ask model, so the variable→fixed
+    // refinance works.
     #[cfg(feature = "test-sbf")]
     mod convert_p2pool_to_fixed;
     #[cfg(feature = "test-sbf")]
@@ -57,14 +66,6 @@ mod cases {
     mod process_matched_loan;
     #[cfg(feature = "test-sbf")]
     mod repay;
-    #[cfg(feature = "test-sbf")]
-    mod secondary_cross_to_risk_profile;
-    #[cfg(feature = "test-sbf")]
-    mod secondary_lifecycle;
-    #[cfg(feature = "test-sbf")]
-    mod secondary_orders;
-    #[cfg(feature = "test-sbf")]
-    mod sync_market_seats_for_risk_profile;
     #[cfg(feature = "test-sbf")]
     mod vault_e2e;
     #[cfg(feature = "test-sbf")]

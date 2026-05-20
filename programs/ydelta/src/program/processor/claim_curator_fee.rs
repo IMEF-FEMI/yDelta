@@ -54,7 +54,7 @@ pub fn process_claim_curator_fee(
         let vault_data = vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
         let profile_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
             tree.lookup_index(&probe)
@@ -107,6 +107,16 @@ pub fn process_claim_curator_fee(
         withdraw_shares,
         &[global_vault_signer_seeds],
     )?;
+    // Never pay the curator more than the accumulator owed. The
+    // ±1-atom marginfi drift gate can return `actual_atoms` slightly
+    // above `fee_atoms`; transferring that surplus would draw
+    // depositor-backed atoms to the curator. Cap the payout at
+    // `fee_atoms`. The accumulator decrement below uses
+    // `fee_atoms.saturating_sub(actual_atoms)` so a marginfi *under*-pay
+    // (`actual_atoms < fee_atoms`) leaves the un-realised remainder on
+    // the accumulator for a later claim rather than silently zeroing it.
+    let payout_atoms: u64 = actual_atoms.min(fee_atoms);
+    let surplus_atoms: u64 = actual_atoms.saturating_sub(payout_atoms);
 
     // Transfer from global_vault_staging to curator_token.
     // Token-2022 mints require `transfer_checked`; the legacy SPL
@@ -120,7 +130,7 @@ pub fn process_claim_curator_fee(
             curator_token.info.key,
             global_vault_signer.key,
             &[],
-            actual_atoms,
+            payout_atoms,
             mint.mint.decimals,
         )?;
         invoke_signed(
@@ -142,7 +152,7 @@ pub fn process_claim_curator_fee(
                 curator_token.info.key,
                 global_vault_signer.key,
                 &[],
-                actual_atoms,
+                payout_atoms,
             )?,
             &[
                 global_vault_staging.info.clone(),
@@ -154,19 +164,47 @@ pub fn process_claim_curator_fee(
         )?;
     }
 
-    // Zero accumulated_curator_fee_atoms on the profile.
+    if surplus_atoms > 0 {
+        let deposit_accounts: Vec<AccountInfo> = vec![
+            marginfi_group.info.clone(),
+            global_vault_integration_account.info.clone(),
+            global_vault_signer.clone(),
+            debt_bank.info.clone(),
+            global_vault_staging.info.clone(),
+            liquidity_vault.info.clone(),
+            token_program.info.clone(),
+            marginfi_program.info.clone(),
+        ];
+        let _credited_shares: u128 = MarginfiV18Adapter.deposit(
+            &deposit_accounts,
+            surplus_atoms,
+            &[global_vault_signer_seeds],
+        )?;
+    }
+
+    // Decrement `accumulated_curator_fee_atoms` by the atoms actually
+    // paid to the curator. If marginfi under-pays (`actual_atoms <
+    // fee_atoms`), the remainder stays claimable on the accumulator.
+    // If marginfi over-pays by 1 atom inside the drift gate, that dust
+    // was just redeposited back into `vault.integration`, so the
+    // accumulator should still only move by the curator's real payout.
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
         let profile_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
             tree.lookup_index(&probe)
         };
         if profile_idx != NIL {
             let profile_node = get_mut_helper_risk_profile(dynamic, profile_idx);
-            profile_node.get_mut_value().accumulated_curator_fee_atoms = 0;
+            let acc = &mut profile_node.get_mut_value().accumulated_curator_fee_atoms;
+            // Subtract from the CURRENT accumulator value rather than
+            // overwriting with `fee_atoms - actual_atoms`. Equivalent
+            // today (nothing mutates the accumulator between the read and
+            // here), but robust if a future edit touches it in between.
+            *acc = acc.saturating_sub(payout_atoms);
         }
     }
 

@@ -32,7 +32,11 @@ pub fn convert_p2pool_to_fixed_instruction(
     marginfi_group: &Pubkey,
     marginfi_program: &Pubkey,
     max_acceptable_rate_bps: u16,
-    cranker_refund: Option<&Pubkey>,
+    // Rent-refund target for the P2Pool loan PDA on full conversion.
+    // REQUIRED — the loader binds it to the loan's `created_by` (the
+    // cranker who paid the PDA rent), so rent reimbursement is reliable
+    // rather than caller-discretionary.
+    cranker_refund: &Pubkey,
 ) -> Instruction {
     let borrower_marginfi_account = get_borrower_integration_account_address(market).0;
     let lender_marginfi_account = get_lender_integration_account_address(market).0;
@@ -52,6 +56,10 @@ pub fn convert_p2pool_to_fixed_instruction(
         AccountMeta::new_readonly(global_config_pda().0, false),
         AccountMeta::new(*market, false),
         AccountMeta::new(loan, false),
+        // System program — the convert processor pre-expands the market
+        // account (one MatchedLoan block per crossable ask), which CPIs
+        // a `system_program::transfer` rent top-up before `realloc`.
+        AccountMeta::new_readonly(solana_program::system_program::id(), false),
         AccountMeta::new(borrower_marginfi_account, false),
         AccountMeta::new(lender_marginfi_account, false),
         AccountMeta::new(*debt_bank, false),
@@ -65,6 +73,7 @@ pub fn convert_p2pool_to_fixed_instruction(
     for o in collateral_oracles {
         accounts.push(AccountMeta::new_readonly(*o, false));
     }
+    let (global_vault, _) = crate::state::vault::global_vault_pda(debt_mint);
     accounts.extend([
         AccountMeta::new(market_debt_vault, false),
         AccountMeta::new_readonly(*debt_mint, false),
@@ -72,10 +81,12 @@ pub fn convert_p2pool_to_fixed_instruction(
         AccountMeta::new_readonly(*token_program, false),
         AccountMeta::new_readonly(*marginfi_group, false),
         AccountMeta::new_readonly(*marginfi_program, false),
+        // GlobalVault — the convert matcher sizes each cross against
+        // the crossed profile's live idle pool.
+        AccountMeta::new(global_vault, false),
     ]);
-    if let Some(refund) = cranker_refund {
-        accounts.push(AccountMeta::new(*refund, false));
-    }
+    // cranker_refund is a required trailing account.
+    accounts.push(AccountMeta::new(*cranker_refund, false));
     Instruction {
         program_id: crate::id(),
         accounts,

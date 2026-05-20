@@ -10,14 +10,17 @@ use crate::program::processor::place_order::PlaceOrderParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::user_account::user_account_pda;
-use crate::state::{OrderKind, OrderType, Side};
 use crate::validation::token_checkers::get_vault_address;
 use crate::validation::{
     get_borrower_integration_account_address, get_lender_integration_account_address,
     get_market_signer_address,
 };
 
-/// Build a primary `PlaceOrder` instruction.
+/// Build a `PlaceOrder` instruction — a borrower IOC bid.
+///
+/// `place_order` is borrower-IOC-only: the bid crosses resting vault
+/// risk-profile asks and any residual either fires the P2Pool fallback
+/// or drops. It never rests.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_instruction(
     market: &Pubkey,
@@ -33,129 +36,12 @@ pub fn place_order_instruction(
     debt_mint: &Pubkey,
     token_program: &Pubkey,
     marginfi_program: &Pubkey,
-    side: Side,
-    order_type: OrderType,
     rate_bps: u16,
     term_seconds: u32,
     principal_atoms: u64,
     collateral_atoms: u64,
-    last_valid_unix_ts: i64,
     flags: u8,
     seat_index_hint: Option<DataIndex>,
-    // Borrower-side LTV cap (Bids only; ignored for Asks). `None` →
-    // processor defaults to marginfi's init-LTV ceiling so existing
-    // callers see no behavior change.
-    borrower_ltv_bps: Option<u16>,
-) -> Instruction {
-    place_order_instruction_full(
-        market,
-        payer,
-        marginfi_group,
-        debt_bank,
-        collateral_bank,
-        debt_oracles,
-        collateral_oracles,
-        debt_liquidity_vault,
-        debt_bank_liquidity_vault_authority,
-        borrower_debt_token,
-        debt_mint,
-        token_program,
-        marginfi_program,
-        side,
-        order_type,
-        OrderKind::Primary,
-        rate_bps,
-        term_seconds,
-        principal_atoms,
-        collateral_atoms,
-        /*asking_price_atoms=*/ 0,
-        last_valid_unix_ts,
-        flags,
-        seat_index_hint,
-        /*secondary_loan=*/ None,
-        borrower_ltv_bps,
-    )
-}
-
-/// Build a secondary-loan sale order. Pricing is fixed at par.
-#[allow(clippy::too_many_arguments)]
-pub fn secondary_place_order_instruction(
-    market: &Pubkey,
-    seller: &Pubkey,
-    marginfi_group: &Pubkey,
-    debt_bank: &Pubkey,
-    collateral_bank: &Pubkey,
-    debt_oracles: &[Pubkey],
-    collateral_oracles: &[Pubkey],
-    debt_liquidity_vault: &Pubkey,
-    debt_bank_liquidity_vault_authority: &Pubkey,
-    borrower_debt_token: &Pubkey,
-    debt_mint: &Pubkey,
-    token_program: &Pubkey,
-    marginfi_program: &Pubkey,
-    loan_pda: &Pubkey,
-    last_valid_unix_ts: i64,
-    flags: u8,
-    seat_index_hint: Option<DataIndex>,
-) -> Instruction {
-    place_order_instruction_full(
-        market,
-        seller,
-        marginfi_group,
-        debt_bank,
-        collateral_bank,
-        debt_oracles,
-        collateral_oracles,
-        debt_liquidity_vault,
-        debt_bank_liquidity_vault_authority,
-        borrower_debt_token,
-        debt_mint,
-        token_program,
-        marginfi_program,
-        Side::Bid,
-        OrderType::Limit,
-        OrderKind::SecondaryLoanSale,
-        /*rate_bps=*/ 0,
-        /*term_seconds=*/ 0,
-        /*principal_atoms=*/ 0,
-        /*collateral_atoms=*/ 0,
-        /*asking_price_atoms=*/ 0, // engine overrides to principal at placement
-        last_valid_unix_ts,
-        flags,
-        seat_index_hint,
-        Some(*loan_pda),
-        /*borrower_ltv_bps=*/ None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn place_order_instruction_full(
-    market: &Pubkey,
-    payer: &Pubkey,
-    marginfi_group: &Pubkey,
-    debt_bank: &Pubkey,
-    collateral_bank: &Pubkey,
-    debt_oracles: &[Pubkey],
-    collateral_oracles: &[Pubkey],
-    debt_liquidity_vault: &Pubkey,
-    debt_bank_liquidity_vault_authority: &Pubkey,
-    borrower_debt_token: &Pubkey,
-    debt_mint: &Pubkey,
-    token_program: &Pubkey,
-    marginfi_program: &Pubkey,
-    side: Side,
-    order_type: OrderType,
-    kind: OrderKind,
-    rate_bps: u16,
-    term_seconds: u32,
-    principal_atoms: u64,
-    collateral_atoms: u64,
-    asking_price_atoms: u64,
-    last_valid_unix_ts: i64,
-    flags: u8,
-    seat_index_hint: Option<DataIndex>,
-    secondary_loan: Option<Pubkey>,
-    borrower_ltv_bps: Option<u16>,
 ) -> Instruction {
     let marginfi_account = get_borrower_integration_account_address(market).0;
     let lender_marginfi_account = get_lender_integration_account_address(market).0;
@@ -165,17 +51,11 @@ fn place_order_instruction_full(
     let mut data = YdeltaInstruction::PlaceOrder.to_vec();
     PlaceOrderParams {
         seat_index_hint,
-        side: side as u8,
-        order_type: order_type as u8,
         flags,
-        kind: kind as u8,
         rate_bps,
         term_seconds,
         principal_atoms,
         collateral_atoms,
-        asking_price_atoms,
-        last_valid_unix_ts,
-        borrower_ltv_bps,
     }
     .serialize(&mut data)
     .unwrap();
@@ -218,13 +98,6 @@ fn place_order_instruction_full(
         AccountMeta::new(lender_marginfi_account, false),
         AccountMeta::new(market_debt_vault, false),
     ]);
-    if let Some(loan) = secondary_loan {
-        // SecondaryLoanSale bid: append the existing Loan PDA as the
-        // trailing account. WRITABLE: the processor toggles
-        // `LoanFixed.has_resting_secondary_bid` (O(1) duplicate-check
-        // counterpart) on every secondary placement.
-        accounts.push(AccountMeta::new(loan, false));
-    }
     // Vault PDA (writable). Always derivable from `debt_mint`. The
     // processor reads/mutates GlobalVault state to apply match-time
     // encumbrance for any vault-owned makers crossed in this match.

@@ -25,9 +25,22 @@ impl<'a, 'info, T: YdeltaAccount + Get + Clone> YdeltaAccountInfo<'a, 'info, T> 
         verify_owned_by_ydelta(info.owner)?;
 
         let bytes: Ref<&mut [u8]> = info.try_borrow_data()?;
+        // Guard the `split_at` below: it panics if the account data is
+        // shorter than `T`'s header. A yDelta-owned account that was
+        // realloc'd smaller, or created undersized, would otherwise abort
+        // the transaction with a panic instead of a clean error.
+        require!(
+            bytes.len() >= size_of::<T>(),
+            ProgramError::AccountDataTooSmall,
+            "Account data ({} bytes) shorter than header ({} bytes)",
+            bytes.len(),
+            size_of::<T>()
+        )?;
         let (header_bytes, _) = bytes.split_at(size_of::<T>());
         let header: &T = get_helper::<T>(header_bytes, 0_u32);
         header.verify_discriminant()?;
+        // Reject a stale account layout at load time.
+        header.verify_version()?;
 
         Ok(Self {
             info,
@@ -64,6 +77,14 @@ impl<'a, 'info, T: YdeltaAccount + Pod + Clone> Deref for YdeltaAccountInfo<'a, 
 
 pub trait YdeltaAccount {
     fn verify_discriminant(&self) -> ProgramResult;
+
+    /// Reject an account whose `version` field does not match the
+    /// layout this program build expects. The default
+    /// is a no-op for headers that carry no `version` field
+    /// (e.g. `GlobalConfig`); versioned headers override it.
+    fn verify_version(&self) -> ProgramResult {
+        Ok(())
+    }
 }
 
 fn verify_owned_by_ydelta(owner: &Pubkey) -> ProgramResult {

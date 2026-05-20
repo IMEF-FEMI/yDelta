@@ -1,18 +1,20 @@
 use solana_program::{
     account_info::AccountInfo, entrypoint::ProgramResult, keccak, program::invoke_signed,
-    program_error::ProgramError, pubkey::Pubkey, rent::Rent, system_instruction,
+    pubkey::Pubkey, rent::Rent, system_instruction,
 };
 
-/// Canonical discriminant of an account header type. Hashes the program ID
-/// with the fully-qualified type name; collisions are infeasible.
-pub fn get_discriminant<T>() -> Result<u64, ProgramError> {
-    let type_name: &str = std::any::type_name::<T>();
-    let discriminant: u64 = u64::from_le_bytes(
-        keccak::hashv(&[crate::ID.as_ref(), type_name.as_bytes()]).as_ref()[..8]
-            .try_into()
-            .map_err(|_| ProgramError::InvalidAccountData)?,
-    );
-    Ok(discriminant)
+/// Canonical discriminant for a named type. Hashes the program ID with
+/// an explicit, caller-supplied `type_id` string.
+///
+/// The `type_id` MUST be a stable source-level string (callers
+/// pass `stringify!(TypeName)`), never `std::any::type_name`: the latter
+/// has no stable-ABI guarantee, so a rustc upgrade would silently change
+/// every discriminant and break off-chain indexers / account decoding.
+pub fn get_discriminant(type_id: &str) -> u64 {
+    let bytes: [u8; 8] = keccak::hashv(&[crate::ID.as_ref(), type_id.as_bytes()]).as_ref()[..8]
+        .try_into()
+        .expect("keccak hash sliced to [..8] is always 8 bytes");
+    u64::from_le_bytes(bytes)
 }
 
 /// Wraps the system-program `create_account` CPI with a single PDA-seed

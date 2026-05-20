@@ -41,7 +41,10 @@ pub fn process_set_fee_config(
     let payer = Signer::new_payer(next_account_info(account_iter)?)?;
     let _ = crate::validation::loaders::load_global_config(account_iter)?;
     let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
-    crate::validation::loaders::require_market_not_paused(&market)?;
+    // No pause gate. Markets ship paused-by-default and the setup order
+    // is "configure fee config, THEN unpause" — a pause check here would
+    // deadlock that. This is an admin-only header mutation with no atom
+    // flow, so it is safe while paused.
     let _system_program = Program::new(next_account_info(account_iter)?, &system_program::id())?;
 
     // Admin gate.
@@ -128,6 +131,15 @@ pub fn process_set_fee_config(
         if let Some(v) = params.grace_period_seconds {
             header.fee_config.grace_period_seconds = v;
         }
+
+        // Mark the market's fee config as explicitly configured.
+        // `set_market_pause` refuses to unpause a market until this flag
+        // is set, so a fresh market — whose `FeeConfig` defaults every
+        // bps field (incl. `ltv_buffer_bps`) to 0 — can never go live
+        // without the admin consciously running `set_fee_config`. The
+        // admin sets `ltv_buffer_bps` to the desired safety margin in
+        // that same call.
+        header.fee_config_set = 1;
     }
 
     Ok(())

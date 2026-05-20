@@ -15,7 +15,7 @@ use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use hypertree::{HyperTreeReadOperations, NIL};
-use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, pubkey::Pubkey};
+use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, msg, pubkey::Pubkey};
 
 use crate::program::YdeltaError;
 use crate::require;
@@ -50,6 +50,10 @@ pub fn process_transfer_market_admin(
         "transfer_market_admin: signer != MarketFixed.admin"
     )?;
     header.pending_admin = params.new_admin;
+    msg!(
+        "ydelta: market admin transfer initiated, pending -> {}",
+        params.new_admin
+    );
     Ok(())
 }
 
@@ -74,6 +78,7 @@ pub fn process_accept_market_admin(
     )?;
     header.admin = header.pending_admin;
     header.pending_admin = Pubkey::default();
+    msg!("ydelta: market admin accepted by {}", payer.info.key);
     Ok(())
 }
 
@@ -99,6 +104,10 @@ pub fn process_transfer_global_vault_admin(
         "transfer_global_vault_admin: signer != GlobalVaultFixed.global_vault_admin"
     )?;
     header.pending_global_vault_admin = params.new_admin;
+    msg!(
+        "ydelta: global_vault admin transfer initiated, pending -> {}",
+        params.new_admin
+    );
     Ok(())
 }
 
@@ -124,6 +133,7 @@ pub fn process_accept_global_vault_admin(
     )?;
     header.global_vault_admin = header.pending_global_vault_admin;
     header.pending_global_vault_admin = Pubkey::default();
+    msg!("ydelta: global_vault admin accepted by {}", payer.info.key);
     Ok(())
 }
 
@@ -143,7 +153,7 @@ pub fn process_transfer_curator(
     let data_ref: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
     let (fixed_bytes, dynamic) = data_ref.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
     let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-    let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+    let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
     let profile_idx = {
         let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
         tree.lookup_index(&probe)
@@ -161,6 +171,11 @@ pub fn process_transfer_curator(
         "transfer_curator: signer != RiskProfile.curator"
     )?;
     profile.pending_curator = params.new_curator;
+    msg!(
+        "ydelta: curator transfer initiated for profile {}, pending -> {}",
+        params.profile_id,
+        params.new_curator
+    );
     Ok(())
 }
 
@@ -179,7 +194,7 @@ pub fn process_accept_curator(
     let data_ref: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
     let (fixed_bytes, dynamic) = data_ref.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
     let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-    let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+    let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
     let profile_idx = {
         let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
         tree.lookup_index(&probe)
@@ -203,5 +218,10 @@ pub fn process_accept_curator(
     )?;
     profile.curator = profile.pending_curator;
     profile.pending_curator = Pubkey::default();
+    msg!(
+        "ydelta: curator accepted for profile {} by {}",
+        params.profile_id,
+        payer.info.key
+    );
     Ok(())
 }

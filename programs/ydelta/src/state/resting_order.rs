@@ -6,13 +6,14 @@ use bytemuck::{Pod, Zeroable};
 use hypertree::DataIndex;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use shank::ShankType;
-use solana_program::{entrypoint::ProgramResult, program_error::ProgramError, pubkey::Pubkey};
+use solana_program::{entrypoint::ProgramResult, program_error::ProgramError};
 use static_assertions::const_assert_eq;
 
 use super::constants::{NO_EXPIRATION_LAST_VALID_UNIX_TS, RESTING_ORDER_SIZE};
 
-/// Side of the book a `RestingOrder` is sitting on. Bids = borrower
-/// demand, asks = lender supply.
+/// Trade side. `Bid` = borrower demand (the IOC taker side; a borrower
+/// bid never rests). `Ask` = lender supply (vault risk-profile quotes;
+/// the only side that rests on the book).
 #[derive(
     Debug,
     BorshDeserialize,
@@ -31,42 +32,14 @@ pub enum Side {
     Ask = 1,
 }
 
-unsafe impl Zeroable for Side {}
-unsafe impl Pod for Side {}
+// No `unsafe impl Pod for Side`. A `#[repr(u8)]` enum has invalid
+// bit patterns (2..=255), so `Pod` would be unsound. `RestingOrder`
+// stores the discriminant as a raw `u8`; use `Side::try_from` to get a
+// typed value, which rejects an out-of-range byte instead of UB.
 
 impl Default for Side {
     fn default() -> Self {
         Side::Bid
-    }
-}
-
-/// Order kind. `Primary` is a fresh borrow/lend; `SecondaryLoanSale`
-/// is the lender-exit path that transfers an existing loan to a new
-/// lender.
-#[derive(
-    Debug,
-    BorshDeserialize,
-    BorshSerialize,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    ShankType,
-    IntoPrimitive,
-    TryFromPrimitive,
-)]
-#[repr(u8)]
-pub enum OrderKind {
-    Primary = 0,
-    SecondaryLoanSale = 1,
-}
-
-unsafe impl Zeroable for OrderKind {}
-unsafe impl Pod for OrderKind {}
-
-impl Default for OrderKind {
-    fn default() -> Self {
-        OrderKind::Primary
     }
 }
 
@@ -87,13 +60,17 @@ impl Default for OrderKind {
 )]
 #[repr(u8)]
 pub enum OrderType {
+    /// Retained only as the zero discriminant so a zeroed `OrderType`
+    /// byte (required by the `Pod`/`Zeroable` impls and `Default`)
+    /// deserialises to a valid variant. The live order types are
+    /// `ImmediateOrCancel` (borrower bids) and `PostOnly` (vault
+    /// risk-profile asks).
     Limit = 0,
     ImmediateOrCancel = 1,
     PostOnly = 2,
 }
 
-unsafe impl Zeroable for OrderType {}
-unsafe impl Pod for OrderType {}
+// No `unsafe impl Pod for OrderType` — see the note on `Side`.
 
 impl Default for OrderType {
     fn default() -> Self {
@@ -109,14 +86,12 @@ pub fn order_type_can_take(order_type: OrderType) -> bool {
     order_type != OrderType::PostOnly
 }
 
-/// `RestingOrder` payload. Lives in either the bids or asks tree of a
-/// `Market`.
+/// `RestingOrder` payload. Lives in the asks tree of a `Market`.
 ///
-/// Sort key on the bid tree: `rate_bps` descending then
-/// `sequence_number` ascending (FIFO). On the ask tree: `rate_bps`
-/// ascending then `sequence_number` ascending. The `Ord` impl folds
-/// `side` so the same payload type slots into both trees with the
-/// correct comparator.
+/// The only resting orders are vault risk-profile asks — a borrower bid
+/// never rests. Sort key on the ask tree: `rate_bps` ascending then
+/// `sequence_number` ascending (FIFO). The `Ord` impl encodes that
+/// single comparator.
 ///
 /// `share_price_snapshot_bytes` records the bank's share-price at
 /// place-order time so cancel/match can decrement the seat's
@@ -128,63 +103,45 @@ pub fn order_type_can_take(order_type: OrderType) -> bool {
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct RestingOrder {
-    pub trader_seat_index: DataIndex,
-    /// For `kind == SecondaryLoanSale`, this is the referenced loan's
-    /// `matched_loan_sequence` (read off the Loan PDA at placement).
-    /// The matching engine carries it onto the MatchedLoan queue node
-    /// at cross time so the cranker can derive the loan PDA address
-    /// (`[b"loan", market, sequence_le]`). Zero for primary orders.
-    /// 32-bit because `matched_loan_sequence` is a per-market u64 in
-    /// the on-disk layout but in practice will fit in u32 for the
-    /// foreseeable future (4B loans per market).
-    pub loan_sequence_snapshot: u32,
+    pub trader_seat_index: DataIndex, // @0  4
+    _pad0: [u8; 4],                   // @4  4
 
-    pub sequence_number: u64,
-    pub principal_atoms: u64,
-    pub collateral_atoms: u64,
-    /// **DEPRECATED** — par-exit invariant: for `SecondaryLoanSale`
-    /// orders this field always equals `principal_atoms` (no
-    /// per-seller pricing). Kept for layout stability. Off-chain
-    /// readers should treat as informational; the matching engine
-    /// uses `principal_atoms` directly for cash settlement.
-    pub asking_price_atoms: u64,
-    pub last_valid_unix_ts: i64,
+    pub sequence_number: u64,    // @8  8
+    pub principal_atoms: u64,    // @16 8
+    pub collateral_atoms: u64,   // @24 8
+    pub last_valid_unix_ts: i64, // @32 8
 
-    pub loan_pda: Pubkey,
-
-    pub term_seconds: u32,
-    pub rate_bps: u16,
-    pub side: Side,
-    pub kind: OrderKind,
-    pub order_type: OrderType,
-    pub flags: u8,
+    pub term_seconds: u32, // @40 4
+    pub rate_bps: u16,     // @44 2
+    /// `Side` discriminant, stored raw. A `#[repr(u8)]` enum has
+    /// invalid bit patterns, so `unsafe impl Pod` on the enum is
+    /// unsound — a corrupt account byte would be a UB-on-`match` enum.
+    /// Stored as `u8`; convert with `Side::try_from` at typed use sites.
+    pub side: u8, // @46 1
+    /// `OrderType` discriminant, stored raw — see `side`.
+    pub order_type: u8, // @47 1
+    pub flags: u8,         // @48 1
+    _pad1: [u8; 1],        // @49 1
 
     /// fp48 (`bits / 2^48`) snapshot of the side-relevant bank's
     /// `asset_share_value` at the time of `place_order`. Bid orders
     /// snapshot the collateral bank; ask orders snapshot the debt
     /// bank.
-    share_price_snapshot_bytes: [u8; 16],
-    /// Borrower-side LTV cap declared at bid placement. Meaningful only
-    /// for Bids; Asks ignore (set to 0). Default: marginfi's init LTV
-    /// (every bid that satisfies marginfi-init also satisfies this).
-    /// The matching loop skips vault makers whose
-    /// `RiskProfile.max_ltv_bps < borrower_ltv_bps` — this is the
-    /// risk-tier transitivity that lets borrowers and lenders each
-    /// declare their LTV preferences explicitly.
-    pub borrower_ltv_bps: u16,
-    _padding2: [u8; 4],
-    /// Reserved budget. 32 bytes of headroom from the 144-byte payload
+    share_price_snapshot_bytes: [u8; 16], // @50 16
+    /// Padding to keep `_reserved` 8-aligned at offset 72.
+    _pad2: [u8; 6], // @66 6
+
+    /// Reserved budget. 72 bytes of headroom from the 144-byte payload
     /// (matching engine's snapshot fields land on `MatchedLoan`, not
     /// here — this slot is forward-compat).
-    _reserved: [u64; 4],
+    _reserved: [u64; 9], // @72 72
 }
-// trader_seat_index 4 + _padding1 4 +
-// sequence/principal/collateral/asking_price/last_valid 5 × 8 = 40 +
-// loan_pda 32 +
-// term_seconds 4 + rate_bps 2 + side+kind+order_type+flags 4 +
-// share_price_snapshot_bytes 16 + borrower_ltv_bps 2 + _padding2 4 +
-// _reserved 32
-// = 8 + 40 + 32 + 10 + 16 + 2 + 4 + 32 = 144
+// trader_seat_index 4 + _pad0 4 +
+// sequence/principal/collateral/last_valid 4 × 8 = 32 +
+// term_seconds 4 + rate_bps 2 + side+order_type+flags 3 + _pad1 1 +
+// share_price_snapshot_bytes 16 + _pad2 6 +
+// _reserved 72
+// = 8 + 32 + 4 + 2 + 4 + 16 + 6 + 72 = 144
 const_assert_eq!(size_of::<RestingOrder>(), RESTING_ORDER_SIZE);
 const_assert_eq!(size_of::<RestingOrder>() % 8, 0);
 
@@ -202,33 +159,23 @@ impl RestingOrder {
         last_valid_unix_ts: i64,
         flags: u8,
         share_price_snapshot_fp48: u128,
-        borrower_ltv_bps: u16,
     ) -> Self {
         RestingOrder {
             trader_seat_index,
-            loan_sequence_snapshot: 0,
+            _pad0: [0; 4],
             sequence_number,
             principal_atoms,
             collateral_atoms,
-            asking_price_atoms: 0,
             last_valid_unix_ts,
-            loan_pda: Pubkey::default(),
             term_seconds,
             rate_bps,
-            side,
-            kind: OrderKind::Primary,
-            order_type,
+            side: side as u8,
+            order_type: order_type as u8,
             flags,
+            _pad1: [0; 1],
             share_price_snapshot_bytes: share_price_snapshot_fp48.to_le_bytes(),
-            // Bids: caller-resolved cap (defaults to marginfi-init at
-            // place_order). Asks: meaningless — pass 0.
-            borrower_ltv_bps: if matches!(side, Side::Bid) {
-                borrower_ltv_bps
-            } else {
-                0
-            },
-            _padding2: [0; 4],
-            _reserved: [0; 4],
+            _pad2: [0; 6],
+            _reserved: [0; 9],
         }
     }
 
@@ -246,54 +193,6 @@ impl RestingOrder {
     pub fn is_expired(&self, now_unix_ts: i64) -> bool {
         self.last_valid_unix_ts != NO_EXPIRATION_LAST_VALID_UNIX_TS
             && self.last_valid_unix_ts < now_unix_ts
-    }
-
-    /// Construct a `SecondaryLoanSale` Bid for a lender who's
-    /// putting their existing loan up for sale. `rate_bps` /
-    /// `term_seconds` / `principal_atoms` are snapshots from the loan
-    /// (caller is responsible for reading them off the Loan PDA at
-    /// placement). `collateral_atoms` is always 0 — the loan's
-    /// existing collateral stays attached. `share_price_snapshot_fp48`
-    /// is unused for secondary bids (no encumbrance) but stamped for
-    /// uniformity.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_secondary_bid(
-        trader_seat_index: DataIndex,
-        loan_sequence_snapshot: u32,
-        sequence_number: u64,
-        rate_bps: u16,
-        term_seconds: u32,
-        principal_atoms: u64,
-        loan_pda: Pubkey,
-        asking_price_atoms: u64,
-        last_valid_unix_ts: i64,
-        flags: u8,
-        share_price_snapshot_fp48: u128,
-    ) -> Self {
-        RestingOrder {
-            trader_seat_index,
-            loan_sequence_snapshot,
-            sequence_number,
-            principal_atoms,
-            collateral_atoms: 0,
-            asking_price_atoms,
-            last_valid_unix_ts,
-            loan_pda,
-            term_seconds,
-            rate_bps,
-            side: Side::Bid,
-            kind: OrderKind::SecondaryLoanSale,
-            order_type: OrderType::Limit,
-            flags,
-            share_price_snapshot_bytes: share_price_snapshot_fp48.to_le_bytes(),
-            // Secondary bids transfer an existing loan; the buyer is the
-            // new lender, the borrower keeps their original LTV. No
-            // borrower-side declaration applies — leave 0 (sentinel for
-            // "no per-maker gate").
-            borrower_ltv_bps: 0,
-            _padding2: [0; 4],
-            _reserved: [0; 4],
-        }
     }
 
     pub fn reduce(&mut self, atoms: u64) -> ProgramResult {
@@ -315,25 +214,20 @@ impl RestingOrder {
 
 impl Ord for RestingOrder {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Comparator only well-defined within one side's tree.
-        debug_assert_eq!(self.side, other.side);
-
+        // Every resting order is a vault risk-profile Ask — a borrower
+        // bid never rests, so there is only one tree (the asks tree)
+        // and one comparator.
+        //
         // Direction is chosen so that the tree's `max_index` (rightmost
         // node, where hypertree puts the largest-by-Ord) points at the
-        // BEST maker — the one the matching engine should hit first.
-        // Same convention numa uses (`reference/numa/.../resting_order.rs`).
+        // BEST ask — the one the matching engine should hit first.
         //
-        // - Bid: best = highest rate (a borrower paying more interest).
-        //   Higher rate → larger Ord-key → rightmost.
-        // - Ask: best = lowest rate (a lender accepting less interest).
-        //   Lower rate → larger Ord-key → rightmost.
+        // Best ask = lowest rate (a lender accepting less interest).
+        // Lower rate → larger Ord-key → rightmost.
         //
         // Within equal rates: FIFO. Earlier sequence number = better
         // priority = larger Ord-key (so earlier orders sit at the right).
-        let rate_cmp = match self.side {
-            Side::Bid => self.rate_bps.cmp(&other.rate_bps), // ascending
-            Side::Ask => other.rate_bps.cmp(&self.rate_bps), // descending
-        };
+        let rate_cmp = other.rate_bps.cmp(&self.rate_bps); // descending
         match rate_cmp {
             Ordering::Equal => other.sequence_number.cmp(&self.sequence_number),
             ord => ord,
@@ -385,30 +279,13 @@ mod tests {
             0,
             0,
             1u128 << 48,
-            0,
         )
     }
 
     #[test]
     fn defaults_yield_valid_variants() {
         assert_eq!(Side::default(), Side::Bid);
-        assert_eq!(OrderKind::default(), OrderKind::Primary);
         assert_eq!(OrderType::default(), OrderType::Limit);
-    }
-
-    #[test]
-    fn bid_tree_puts_best_at_max_index() {
-        // Best bid = highest rate. Tree's `max_index` (rightmost / largest
-        // by Ord) must therefore be the highest-rate bid: high > low.
-        let high = order(Side::Bid, 800, 0);
-        let low = order(Side::Bid, 600, 1);
-        assert!(high > low, "highest-rate bid is the best");
-
-        // FIFO at equal rate: earlier sequence wins. Earlier = better =
-        // larger by Ord = ends up at max_index.
-        let same_rate_first = order(Side::Bid, 700, 0);
-        let same_rate_later = order(Side::Bid, 700, 1);
-        assert!(same_rate_first > same_rate_later, "FIFO breaks ties");
     }
 
     #[test]
@@ -418,6 +295,12 @@ mod tests {
         let cheap = order(Side::Ask, 600, 0);
         let pricey = order(Side::Ask, 800, 1);
         assert!(cheap > pricey, "lowest-rate ask is the best");
+
+        // FIFO at equal rate: earlier sequence wins. Earlier = better =
+        // larger by Ord = ends up at max_index.
+        let same_rate_first = order(Side::Ask, 700, 0);
+        let same_rate_later = order(Side::Ask, 700, 1);
+        assert!(same_rate_first > same_rate_later, "FIFO breaks ties");
     }
 
     #[test]

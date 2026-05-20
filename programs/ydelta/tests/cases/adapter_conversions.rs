@@ -1,4 +1,4 @@
-//! Phase-2 integration test for the read-only adapter conversions
+//! Integration test for the read-only adapter conversions
 //! (`shares_to_amount`, `amount_to_shares`). Loads marginfi.so + ydelta.so
 //! + ydelta-test-harness.so, drops a synthetic Bank into the ledger, then
 //! invokes the harness ix which CPIs into ydelta's adapter logic.

@@ -15,6 +15,10 @@ use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 
 use hypertree::NIL;
+use marginfi_mocks::state::MarginfiAccount;
+use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
+use ydelta::state::loan::{LoanState, LoanType};
+use ydelta::state::market_helpers::FLAG_OB_ONLY;
 use ydelta::state::{OrderType, Side};
 
 use crate::test_utils::marginfi_fixture::mainnet;
@@ -124,8 +128,8 @@ async fn bid_unfilled_residual_p2pool_borrows() {
     // rested), one matched-loan slot allocated.
     let market = fixture.read_market_fixed().await;
     assert_eq!(
-        market.bids_root_index, NIL,
-        "Bid residual went to P2PoolBorrow, must NOT rest on book"
+        market.asks_root_index, NIL,
+        "borrower bid is IOC-only — nothing rests on the book"
     );
     assert_eq!(
         market.matched_loan_sequence, 1,
@@ -172,8 +176,6 @@ async fn bid_unfilled_residual_p2pool_borrows() {
 /// triggering the P2Pool borrow path.
 #[tokio::test]
 async fn ob_only_blocks_p2pool_borrow_path() {
-    use ydelta::state::market_helpers::FLAG_OB_ONLY;
-
     let fixture = MarketFixture::new().await;
     let bob = fixture.create_trader().await;
     fixture.claim_seat(&bob).await;
@@ -210,11 +212,12 @@ async fn ob_only_blocks_p2pool_borrow_path() {
         "OB_ONLY must not fire marginfi.borrow"
     );
 
-    // Order rested instead of being P2Pool-borrowed.
+    // OB_ONLY residual was dropped — not P2Pool-borrowed and not
+    // rested (a borrower bid is IOC-only).
     let market = fixture.read_market_fixed().await;
-    assert_ne!(
-        market.bids_root_index, NIL,
-        "OB_ONLY Limit Bid residual should rest on book"
+    assert_eq!(
+        market.asks_root_index, NIL,
+        "borrower bid is IOC-only — nothing rests on the book"
     );
     assert_eq!(
         market.matched_loan_sequence, 0,
@@ -229,29 +232,30 @@ async fn ob_only_blocks_p2pool_borrow_path() {
 /// `Fixed` against the ask maker, one `P2Pool` for the residual.
 #[tokio::test]
 async fn bid_partial_match_residual_p2pool_borrows() {
-    use ydelta::state::loan::LoanType;
-
     let fixture = MarketFixture::new().await;
-    let alice = fixture.create_trader().await; // ask maker / lender
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await; // borrower
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
 
-    // Alice deposits USDC (lender side).
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    fixture.refresh_blockhash().await;
+    // Lender side: a vault profile rests an unbounded ask, but funded
+    // with only `ask_principal` (40 atoms) idle so the cross can only
+    // fill 40 atoms — the residual must fall through to P2Pool.
+    let ask_principal: u64 = 40;
     fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            /*term_seconds=*/ 30 * 86_400,
+            /*deposit_atoms=*/ ask_principal,
+        )
+        .await;
 
+    fixture.claim_seat(&bob).await;
     // Bob deposits wSOL collateral (borrower side). Tiny size to avoid
     // u64 overflow with the mainnet liquidity-vault snapshot.
     let bob_wsol = Pubkey::new_unique();
@@ -263,32 +267,17 @@ async fn bid_partial_match_residual_p2pool_borrows() {
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Alice places a primary ask sized to cover only PART of the bid.
-    let ask_principal: u64 = 40;
-    fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
-            30 * 86_400,
-            ask_principal,
-            0,
-        )
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
     // Bob bids for 100 atoms with flags=0 (P2Pool fallback enabled).
-    // Matching engine: 40 atoms cross alice's ask → Fixed MatchedLoan;
-    // residual 60 atoms → P2Pool MatchedLoan + marginfi.borrow CPI.
+    // Matching engine: 40 atoms cross the vault ask (idle-capped) →
+    // Fixed MatchedLoan; residual 60 atoms → P2Pool MatchedLoan +
+    // marginfi.borrow CPI.
     let bid_principal: u64 = 100;
     let collateral_atoms: u64 = 5_000;
     fixture
         .place_order_with_flags(
             &bob,
-            Side::Bid,
-            OrderType::Limit,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
             800,
             30 * 86_400,
             bid_principal,
@@ -298,29 +287,31 @@ async fn bid_partial_match_residual_p2pool_borrows() {
         .await
         .unwrap();
 
-    // Two MatchedLoans queued — one Fixed, one P2Pool. Order book is
-    // empty: ask was fully consumed, bid residual went to P2Pool (not
-    // rested).
+    // Two MatchedLoans queued — one Fixed, one P2Pool. The vault ask
+    // persists on the book (the matching engine never removes a
+    // risk-profile ask — it's unbounded and only the curator removes
+    // it); the bid residual went to P2Pool (not rested).
     let market = fixture.read_market_fixed().await;
     assert_eq!(
         market.matched_loan_sequence, 2,
         "expected one Fixed + one P2Pool MatchedLoan"
     );
-    assert_eq!(
+    assert_ne!(
         market.asks_root_index, NIL,
-        "alice's ask was fully filled by the partial cross"
-    );
-    assert_eq!(
-        market.bids_root_index, NIL,
-        "bid residual went to P2PoolBorrow, NOT rested on book"
+        "the vault risk-profile ask must persist after the cross",
     );
 
-    // Crank both queue nodes → two `LoanFixed` PDAs.
-    fixture.crank_matched_loan(0).await.unwrap();
+    // Crank both queue nodes → two `LoanFixed` PDAs. The Fixed cross
+    // has a vault-profile lender → risk-profile cranker; the P2Pool
+    // residual has no vault lender → plain cranker.
+    fixture
+        .crank_matched_loan_for_risk_profile(0)
+        .await
+        .unwrap();
     fixture.refresh_blockhash().await;
     fixture.crank_matched_loan(1).await.unwrap();
 
-    // Loan 0: Fixed, alice as lender, ask_principal in size.
+    // Loan 0: Fixed, vault profile as lender, ask_principal in size.
     let loan_fixed = fixture.read_loan(0).await;
     assert_eq!(
         loan_fixed.loan_type,
@@ -364,4 +355,260 @@ async fn bid_partial_match_residual_p2pool_borrows() {
         total_collateral,
         collateral_atoms
     );
+}
+
+/// Read the borrower marginfi-account's live USDC liability shares.
+async fn p2pool_liability_shares(fixture: &MarketFixture) -> u128 {
+    let data = fixture
+        .account_data(fixture.borrower_marginfi_account_pubkey())
+        .await;
+    let mfi = MarginfiAccount::try_from_account_data(&data).unwrap();
+    mfi.find_balance(&mainnet::usdc_bank())
+        .map(|b| wrapped_i80f48_to_u128(b.liability_shares))
+        .unwrap_or(0)
+}
+
+/// Open a P2Pool fallback loan (no resting asks) and crank it into a
+/// `LoanFixed`. Returns `(borrower, borrower_usdc_ata)` — the ATA is
+/// pre-funded so the borrower can repay.
+async fn open_p2pool_loan_for_repay(
+    fixture: &MarketFixture,
+    principal_atoms: u64,
+    collateral_atoms: u64,
+) -> (solana_sdk::signature::Keypair, Pubkey) {
+    // A lender deposits USDC first so the lender-side marginfi account
+    // already carries a balance slot — the P2Pool borrow's deposit-back
+    // CPI reuses that slot instead of paying the extra CUs of a fresh
+    // balance-slot init inside place_order.
+    let alice = fixture.create_trader().await;
+    fixture.claim_seat(&alice).await;
+    let alice_usdc = Pubkey::new_unique();
+    fixture.put_token_account(
+        alice_usdc,
+        mainnet::usdc_mint(),
+        alice.pubkey(),
+        100_000_000,
+    );
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    let bob = fixture.create_trader().await;
+    fixture.claim_seat(&bob).await;
+
+    // Collateral must clear marginfi's risk-engine health check on the
+    // P2Pool borrow. The working `bid_unfilled_residual` test uses a
+    // ~50:1 collateral:principal atom ratio (wSOL 9-dec vs USDC 6-dec);
+    // mirror that so the `LendingAccountBorrow` CPI is not rejected as
+    // undercollateralized.
+    let bob_wsol = Pubkey::new_unique();
+    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), 2_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&bob, bob_wsol, /*is_debt=*/ false, collateral_atoms)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // No asks → full residual goes to the P2Pool fallback.
+    fixture
+        .place_order_with_flags(
+            &bob,
+            Side::Bid,
+            OrderType::Limit,
+            800,
+            30 * 86_400,
+            principal_atoms,
+            collateral_atoms,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    fixture.crank_matched_loan(0).await.unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Fund a fresh USDC ATA for the repay. The borrowed atoms landed in
+    // the lender-side marginfi account, not bob's wallet.
+    let bob_usdc = Pubkey::new_unique();
+    fixture.put_token_account(bob_usdc, mainnet::usdc_mint(), bob.pubkey(), 100_000_000);
+    fixture.refresh_blockhash().await;
+    (bob, bob_usdc)
+}
+
+/// Open a P2Pool fallback loan and fund a third-party keeper with debt
+/// / collateral token accounts suitable for liquidation or matured
+/// settlement.
+async fn open_p2pool_loan_for_keeper(
+    fixture: &MarketFixture,
+    principal_atoms: u64,
+    collateral_atoms: u64,
+) -> (solana_sdk::signature::Keypair, Pubkey, Pubkey) {
+    let _ = open_p2pool_loan_for_repay(fixture, principal_atoms, collateral_atoms).await;
+    let keeper = fixture.create_trader().await;
+    let keeper_usdc = Pubkey::new_unique();
+    fixture.put_token_account(
+        keeper_usdc,
+        mainnet::usdc_mint(),
+        keeper.pubkey(),
+        100_000_000,
+    );
+    let keeper_wsol = Pubkey::new_unique();
+    fixture.put_wsol_token_account(keeper_wsol, keeper.pubkey(), 0);
+    fixture.refresh_blockhash().await;
+    (keeper, keeper_usdc, keeper_wsol)
+}
+
+async fn loan_account_is_closed(fixture: &MarketFixture, sequence: u64) -> bool {
+    let (loan_addr, _) = ydelta::state::loan::loan_pda(&fixture.market.pubkey(), sequence);
+    let ctx = fixture.context.borrow_mut();
+    ctx.banks_client
+        .get_account(loan_addr)
+        .await
+        .unwrap()
+        .is_none()
+}
+
+/// P2Pool voluntary repay (partial): repaying less than the live
+/// liability leaves the loan `Active` with a non-zero residual.
+#[tokio::test]
+async fn p2pool_partial_repay_leaves_loan_active() {
+    let fixture = MarketFixture::new().await;
+    let principal_atoms: u64 = 1_000;
+    let (bob, bob_usdc) = open_p2pool_loan_for_repay(&fixture, principal_atoms, 60_000).await;
+
+    let liability_pre = p2pool_liability_shares(&fixture).await;
+    assert!(liability_pre > 0, "P2Pool loan must carry a live liability");
+
+    // Repay 400 of the ~1_000-atom liability.
+    fixture
+        .repay(
+            &bob, 0, bob_usdc, /*repay_atoms=*/ 400, /*full_repay=*/ false,
+        )
+        .await
+        .unwrap();
+
+    // Loan stays Active; the PDA is intact.
+    let loan = fixture.read_loan(0).await;
+    assert_eq!(
+        loan.state,
+        LoanState::Active as u8,
+        "partial P2Pool repay must leave the loan Active"
+    );
+    assert_eq!(loan.loan_type, LoanType::P2Pool as u8);
+
+    // A residual marginfi liability remains, smaller than before.
+    let liability_post = p2pool_liability_shares(&fixture).await;
+    assert!(
+        liability_post > 0,
+        "partial repay must leave a non-zero residual liability"
+    );
+    assert!(
+        liability_post < liability_pre,
+        "partial repay must shrink the liability (was {}, now {})",
+        liability_pre,
+        liability_post
+    );
+    // `outstanding_debt_atoms` mirror tracks the post-CPI live residual.
+    assert!(loan.outstanding_debt_atoms > 0);
+}
+
+/// P2Pool voluntary repay (full): `full_repay` drives the marginfi
+/// liability to exactly zero and closes the loan PDA — the close is
+/// gated on the POST-CPI live liability being zero.
+#[tokio::test]
+async fn p2pool_full_repay_zeroes_liability_and_closes_pda() {
+    let fixture = MarketFixture::new().await;
+    let principal_atoms: u64 = 1_000;
+    let (bob, bob_usdc) = open_p2pool_loan_for_repay(&fixture, principal_atoms, 60_000).await;
+
+    let liability_pre = p2pool_liability_shares(&fixture).await;
+    assert!(liability_pre > 0);
+
+    // Full repay: repays exactly the live liability re-derived from
+    // `liability_shares` at the live bank price.
+    fixture
+        .repay(
+            &bob, 0, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true,
+        )
+        .await
+        .unwrap();
+
+    // Liability fully retired.
+    let liability_post = p2pool_liability_shares(&fixture).await;
+    assert_eq!(
+        liability_post, 0,
+        "full P2Pool repay must drive the marginfi liability to exactly 0"
+    );
+
+    assert!(
+        loan_account_is_closed(&fixture, 0).await,
+        "full P2Pool repay must close the loan PDA only when the \
+         post-CPI live liability is zero"
+    );
+}
+
+/// Full matured settlement on a P2Pool loan must retire the marginfi
+/// liability to exactly zero and close/refund the loan PDA.
+#[cfg(feature = "test-sbf")]
+#[tokio::test]
+async fn p2pool_full_matured_settlement_zeroes_liability_and_closes_pda() {
+    let fixture = MarketFixture::new().await;
+    let principal_atoms: u64 = 1_000;
+    let (keeper, keeper_usdc, keeper_wsol) =
+        open_p2pool_loan_for_keeper(&fixture, principal_atoms, 60_000).await;
+
+    let loan_pre = fixture.read_loan(0).await;
+    fixture
+        .set_clock_unix_timestamp(loan_pre.matures_at_unix + 2 * 86_400)
+        .await;
+    fixture.refresh_blockhash().await;
+    fixture.refresh_oracle_freshness().await;
+
+    fixture
+        .settle_matured_loan(&keeper, 0, keeper_usdc, keeper_wsol, /*repay_max=*/ 0)
+        .await
+        .unwrap();
+
+    assert_eq!(p2pool_liability_shares(&fixture).await, 0);
+    assert!(loan_account_is_closed(&fixture, 0).await);
+}
+
+/// Full LTV liquidation on a P2Pool loan must retire the marginfi
+/// liability to exactly zero and close/refund the loan PDA.
+#[cfg(feature = "test-sbf")]
+#[tokio::test]
+async fn p2pool_full_liquidation_zeroes_liability_and_closes_pda() {
+    let fixture = MarketFixture::new().await;
+    let principal_atoms: u64 = 1_000;
+    let (keeper, keeper_usdc, keeper_wsol) =
+        open_p2pool_loan_for_keeper(&fixture, principal_atoms, 60_000).await;
+
+    fixture
+        .set_swb_oracle_price_atoms(mainnet::sol_oracle(), 1_000_000_000_000_000_i128)
+        .await;
+    {
+        let cur = fixture
+            .context
+            .borrow()
+            .banks_client
+            .get_root_slot()
+            .await
+            .unwrap();
+        fixture.context.borrow_mut().warp_to_slot(cur + 1).unwrap();
+    }
+    fixture.refresh_blockhash().await;
+    fixture.refresh_oracle_freshness().await;
+
+    fixture
+        .liquidate_loan(&keeper, 0, keeper_usdc, keeper_wsol, /*repay_max=*/ 0)
+        .await
+        .unwrap();
+
+    assert_eq!(p2pool_liability_shares(&fixture).await, 0);
+    assert!(loan_account_is_closed(&fixture, 0).await);
 }

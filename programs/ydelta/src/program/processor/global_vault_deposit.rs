@@ -3,6 +3,7 @@
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use hypertree::{HyperTreeReadOperations, NIL};
 use solana_program::{
     account_info::AccountInfo, clock::Clock, entrypoint::ProgramResult, program::invoke,
     program_error::ProgramError, pubkey::Pubkey, rent::Rent, system_instruction, sysvar::Sysvar,
@@ -61,7 +62,12 @@ pub fn process_global_vault_deposit(
     let vault_key = *vault.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    // Transfer depositor_token to global_vault_staging.
+    // Transfer depositor_token to global_vault_staging. Snapshot the
+    // staging balance around the transfer: a Token-2022 transfer-fee
+    // mint delivers less than the nominal `params.amount_atoms`, and all
+    // downstream accounting (marginfi deposit, share mint, principal /
+    // assets totals) must use what PHYSICALLY arrived.
+    let staging_before_atoms = global_vault_staging.get_balance_atoms();
     super::deposit::transfer_user_to_vault(
         token_program.info,
         depositor_token.info,
@@ -70,6 +76,15 @@ pub fn process_global_vault_deposit(
         payer.info,
         params.amount_atoms,
         mint.mint.decimals,
+    )?;
+    let received_atoms = global_vault_staging
+        .get_balance_atoms()
+        .checked_sub(staging_before_atoms)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    require!(
+        received_atoms > 0,
+        YdeltaError::InvalidArgument,
+        "global_vault_deposit: staging vault received 0 atoms"
     )?;
 
     // Deposit from global_vault_staging into the liquidity vault,
@@ -90,7 +105,7 @@ pub fn process_global_vault_deposit(
     ];
     let _credited_shares: u128 = MarginfiV18Adapter.deposit(
         &adapter_accounts,
-        params.amount_atoms,
+        received_atoms,
         &[global_vault_signer_seeds],
     )?;
 
@@ -133,8 +148,7 @@ pub fn process_global_vault_deposit(
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
         // Locate profile node.
-        use hypertree::{HyperTreeReadOperations, NIL};
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1, 0);
+        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
         let profile_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
             tree.lookup_index(&probe)
@@ -153,7 +167,7 @@ pub fn process_global_vault_deposit(
                 crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info);
             accrue_risk_profile(profile, now, share_value_fp48)?;
 
-            let atoms_u128 = params.amount_atoms as u128;
+            let atoms_u128 = received_atoms as u128;
             let shares: u128 = if profile.total_shares == 0 {
                 // Genesis (or post-drain) state. Reset accumulated assets
                 // to neutralize any donations / phantom yield credited
@@ -175,7 +189,7 @@ pub fn process_global_vault_deposit(
                 shares > 0,
                 YdeltaError::InvalidArgument,
                 "global_vault_deposit: amount {} too small to mint any shares",
-                params.amount_atoms
+                received_atoms
             )?;
 
             profile.total_shares = profile
@@ -184,11 +198,11 @@ pub fn process_global_vault_deposit(
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             profile.total_principal_atoms = profile
                 .total_principal_atoms
-                .checked_add(params.amount_atoms)
+                .checked_add(received_atoms)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             profile.total_assets_atoms = profile
                 .total_assets_atoms
-                .checked_add(params.amount_atoms)
+                .checked_add(received_atoms)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             (
                 shares,
@@ -243,7 +257,7 @@ pub fn process_global_vault_deposit(
         depositor: *payer.info.key,
         shares_minted,
         profile_total_shares: total_shares_after,
-        atoms_in: params.amount_atoms,
+        atoms_in: received_atoms,
         gain_atoms: 0,
         profile_total_assets_atoms: total_assets_after,
         profile_id: params.profile_id,

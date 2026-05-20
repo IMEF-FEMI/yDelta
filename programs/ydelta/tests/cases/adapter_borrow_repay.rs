@@ -1,4 +1,4 @@
-//! Phase-2 integration tests for the borrow + repay CPI paths through real
+//! Integration tests for the borrow + repay CPI paths through real
 //! marginfi v0.1.8.
 //!
 //! Setup pattern:

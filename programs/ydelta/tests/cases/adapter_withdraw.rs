@@ -1,4 +1,4 @@
-//! Phase-2 integration test for the withdraw CPI path. Builds on the
+//! Integration test for the withdraw CPI path. Builds on the
 //! deposit fixture: deposit 1 USDC, then withdraw a fraction of the shares
 //! back to a destination token account. Withdraw is health-checking, so
 //! `remaining_accounts` carries `(bank, oracle)` for the marginfi-account's

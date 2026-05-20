@@ -1,4 +1,4 @@
-//! Phase-2 integration test for the deposit CPI path. Uses real marginfi
+//! Integration test for the deposit CPI path. Uses real marginfi
 //! mainnet state (group + USDC bank + USDC mint + liquidity vault) replayed
 //! into ProgramTest, plus a freshly-initialised marginfi-account, plus a
 //! synthesised signer USDC account with a starting balance. Exercises the

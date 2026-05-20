@@ -13,6 +13,7 @@
 //! 5. Account-count invariants for cancel/update_order ixs (the only
 //!    non-marginfi signer-side ixs reachable in native).
 
+use hypertree::{HyperTreeValueIteratorTrait, RedBlackTreeReadOnly, NIL};
 use solana_program_test::ProgramTestContext;
 use solana_sdk::{
     instruction::Instruction,
@@ -22,10 +23,15 @@ use solana_sdk::{
 
 use ydelta::{
     program::{
-        instruction_builders::sync_market_position_instruction::sync_market_position_instruction,
+        instruction_builders::{
+            claim_seat_instruction::claim_seat_instruction,
+            sync_market_position_instruction::sync_market_position_instruction,
+        },
         YdeltaError,
     },
-    state::user_account::{user_account_pda, MarketPositionTreeReadOnly, UserAccountFixed},
+    state::user_account::{
+        user_account_pda, MarketPosition, MarketPositionTreeReadOnly, UserAccountFixed,
+    },
     state::USER_ACCOUNT_FIXED_SIZE,
 };
 
@@ -53,8 +59,6 @@ async fn read_user_account(
 
 #[tokio::test]
 async fn claim_seat_auto_creates_user_account_and_inserts_mirror() {
-    use hypertree::{HyperTreeValueIteratorTrait, RedBlackTreeReadOnly, NIL};
-
     let mut fixture = TestFixture::new().await;
     let trader = fixture.create_trader(0, 0).await;
 
@@ -79,7 +83,6 @@ async fn claim_seat_auto_creates_user_account_and_inserts_mirror() {
     );
     assert_eq!(fixed.owner, trader.pubkey());
 
-    use ydelta::state::user_account::MarketPosition;
     let tree: MarketPositionTreeReadOnly =
         RedBlackTreeReadOnly::new(&dynamic, fixed.market_positions_root_index, NIL);
     let positions: Vec<MarketPosition> = tree.iter::<MarketPosition>().map(|(_, mp)| *mp).collect();
@@ -129,8 +132,6 @@ async fn sync_market_position_rejects_uninitialized_user_account() {
 
 #[tokio::test]
 async fn sync_market_position_succeeds_after_claim_seat() {
-    use hypertree::{HyperTreeValueIteratorTrait, RedBlackTreeReadOnly, NIL};
-
     let mut fixture = TestFixture::new().await;
     let trader = fixture.create_trader(0, 0).await;
 
@@ -164,7 +165,6 @@ async fn sync_market_position_succeeds_after_claim_seat() {
     // After sync, the mirror still holds exactly one MarketPosition
     // and its balances are still zero (seat hasn't moved).
     let (fixed_post, dynamic_post) = read_user_account(&fixture, &trader.pubkey()).await.unwrap();
-    use ydelta::state::user_account::MarketPosition;
     let tree: MarketPositionTreeReadOnly =
         RedBlackTreeReadOnly::new(&dynamic_post, fixed_post.market_positions_root_index, NIL);
     assert_eq!(
@@ -183,52 +183,7 @@ async fn sync_market_position_succeeds_after_claim_seat() {
 }
 
 #[tokio::test]
-async fn cancel_order_account_count_includes_user_account_pair() {
-    use ydelta::program::instruction_builders::cancel_order_instruction::cancel_order_instruction;
-
-    let payer = solana_sdk::signature::Keypair::new();
-    let market = solana_sdk::pubkey::Pubkey::new_unique();
-    let ix = cancel_order_instruction(&market, &payer.pubkey(), 0, None, None, None);
-    // 3 (payer/market/system) + 2 (UserAccount + system_program for
-    // auto-create) + 1 (global_config) = 6. The optional
-    // secondary-loan trailing account is omitted (None).
-    assert_eq!(
-        ix.accounts.len(),
-        6,
-        "cancel_order primary = 3 + 2 (UserAccount) + 1 (global_config)"
-    );
-}
-
-#[tokio::test]
-async fn update_order_account_count_includes_user_account_pair() {
-    use ydelta::program::instruction_builders::update_order_instruction::update_order_instruction;
-
-    let payer = solana_sdk::signature::Keypair::new();
-    let market = solana_sdk::pubkey::Pubkey::new_unique();
-    let ix = update_order_instruction(
-        &market,
-        &payer.pubkey(),
-        0,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
-    assert_eq!(
-        ix.accounts.len(),
-        6,
-        "update_order = 3 + 2 (UserAccount) + 1 (global_config)"
-    );
-}
-
-#[tokio::test]
 async fn claim_seat_account_count_includes_user_account() {
-    use ydelta::program::instruction_builders::claim_seat_instruction::claim_seat_instruction;
-
     let payer = solana_sdk::signature::Keypair::new();
     let market = solana_sdk::pubkey::Pubkey::new_unique();
     let ix = claim_seat_instruction(&market, &payer.pubkey());

@@ -2,6 +2,9 @@
 
 use solana_sdk::signer::Signer;
 
+use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
+use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
+
 use crate::test_utils::MarketFixture;
 
 #[tokio::test]
@@ -10,9 +13,6 @@ async fn admin_can_update_liquidation_keeper_bps() {
 
     // The fixture's `payer` is the create_market signer, which becomes
     // the admin. Build the ix with payer as signer.
-    use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
-    use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
-
     let mut params = SetFeeConfigParams::default();
     params.liquidation_keeper_bps = Some(750);
     params.ltv_buffer_bps = Some(200);
@@ -31,9 +31,6 @@ async fn non_admin_set_fee_config_rejects() {
     let fixture = MarketFixture::new().await;
     let interloper = fixture.create_trader().await;
 
-    use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
-    use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
-
     let mut params = SetFeeConfigParams::default();
     params.liquidation_keeper_bps = Some(750);
 
@@ -49,9 +46,6 @@ async fn non_admin_set_fee_config_rejects() {
 #[tokio::test]
 async fn out_of_range_bps_rejected() {
     let fixture = MarketFixture::new().await;
-
-    use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
-    use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
 
     let mut params = SetFeeConfigParams::default();
     // 10_001 bps > 100% — must be rejected.
@@ -78,13 +72,6 @@ async fn out_of_range_bps_rejected() {
 #[cfg(feature = "test-sbf")]
 #[tokio::test]
 async fn protocol_accumulates_origination_fee_on_fixed_match() {
-    use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
-    use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
-    use ydelta::state::{OrderType, Side};
-
-    use crate::test_utils::marginfi_fixture::mainnet;
-    use solana_program::pubkey::Pubkey;
-
     let fixture = MarketFixture::new().await;
 
     // ── Set origination_bps = 50 (0.5%) before any matching. ──
@@ -102,58 +89,51 @@ async fn protocol_accumulates_origination_fee_on_fixed_match() {
         "no fees accrued yet"
     );
 
-    // ── Standard wallet match (alice ASK, bob BID). ──
-    let alice = fixture.create_trader().await;
+    // ── Quote-only match: vault profile rests an ask, borrower bids. ──
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    fixture.claim_seat(&bob).await;
 
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    fixture.refresh_blockhash().await;
     fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            /*term_seconds=*/ 30 * 86_400,
+            /*deposit_atoms=*/ 10_000_000,
+        )
+        .await;
+
+    fixture.claim_seat(&bob).await;
     fixture
         .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
         .await;
+    fixture.refresh_blockhash().await;
 
     let principal_atoms: u64 = 1_000_000;
     let collateral_atoms: u64 = 100_000_000;
     fixture
-        .place_order(
-            &alice,
-            Side::Ask,
-            OrderType::Limit,
-            600,
+        .place_order_with_flags(
+            &bob,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
             30 * 86_400,
             principal_atoms,
-            0,
+            collateral_atoms,
+            /*flags=*/ 0,
         )
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .place_order(
-            &bob,
-            Side::Bid,
-            OrderType::Limit,
-            800,
-            30 * 86_400,
-            principal_atoms,
-            collateral_atoms,
-        )
+        .crank_matched_loan_for_risk_profile(0)
         .await
         .unwrap();
-    fixture.refresh_blockhash().await;
-    fixture.crank_matched_loan(0).await.unwrap();
 
     // ── Assertion: accumulated_protocol_fee_shares grew strictly. ──
     let market_post = fixture.read_market_fixed().await;

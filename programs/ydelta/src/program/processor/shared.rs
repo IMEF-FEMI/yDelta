@@ -2,76 +2,24 @@ use std::cell::{Ref, RefMut};
 use std::mem::size_of;
 
 use bytemuck::Pod;
-use hypertree::{get_helper, get_mut_helper, Get};
+use hypertree::{
+    get_helper, get_mut_helper, FreeListNode, Get, HyperTreeReadOperations,
+    HyperTreeValueIteratorTrait, RedBlackTreeReadOnly, NIL,
+};
 use solana_program::{
-    account_info::AccountInfo, entrypoint::ProgramResult, instruction::Instruction, pubkey::Pubkey,
-    rent::Rent, sysvar::Sysvar,
+    account_info::AccountInfo, entrypoint::ProgramResult, instruction::Instruction,
+    program_error::ProgramError, pubkey::Pubkey, rent::Rent, sysvar::Sysvar,
 };
 
-use crate::state::{market_helpers::market_expand, DynamicAccount, MarketFixed, MARKET_BLOCK_SIZE};
+use crate::state::market::{ClaimedSeatTreeReadOnly, MarketUnusedFreeListPadding};
+use crate::state::user_account::{
+    get_mut_helper_market_position, upsert_market_position, UserAccountFixed,
+};
+use crate::state::{
+    market_helpers::market_expand, ClaimedSeat, DynamicAccount, MarketFixed, RestingOrder,
+    MARKET_BLOCK_SIZE, USER_ACCOUNT_FIXED_SIZE,
+};
 use crate::validation::{Signer, YdeltaAccount, YdeltaAccountInfo};
-
-/// Re-stamp the market-side vault `ClaimedSeat`'s
-/// `risk_profile_max_ltv_bps` from the live `RiskProfile`. Call at the
-/// top of every profile-affecting ix
-/// (place/cancel/update_order_for_risk_profile, claim_curator_fee).
-/// Picks up the latest policy when curators rotate risk via
-/// `update_risk_profile` without requiring re-claim of the seat.
-///
-/// Silent no-op if either the seat or profile lookup misses (defensive
-/// against partial tear-down). Idempotent: calling repeatedly without
-/// state change is a no-op.
-pub(crate) fn sync_vault_seat_from_profile(
-    market_ai: &AccountInfo<'_>,
-    vault_ai: &AccountInfo<'_>,
-    profile_id: u8,
-) -> ProgramResult {
-    use crate::state::claimed_seat::{ClaimedSeat, OWNER_KIND_RISK_PROFILE};
-    use crate::state::market::{get_mut_helper_seat, ClaimedSeatTreeReadOnly};
-    use crate::state::vault::{
-        get_helper_risk_profile, GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
-    };
-    use crate::state::GLOBAL_VAULT_FIXED_SIZE;
-    use hypertree::{HyperTreeReadOperations, NIL};
-    use solana_program::pubkey::Pubkey;
-
-    let vault_key = *vault_ai.key;
-
-    // Read the profile's live max_ltv_bps.
-    let live_max_ltv: u16 = {
-        let vault_data = vault_ai.try_borrow_data()?;
-        let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
-        let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-        let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1, 0);
-        let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
-        let idx = tree.lookup_index(&probe);
-        if idx == NIL {
-            return Ok(());
-        }
-        get_helper_risk_profile(dynamic, idx)
-            .get_value()
-            .max_ltv_bps
-    };
-
-    // Re-stamp the market-side seat.
-    let mut market_data: RefMut<&mut [u8]> = market_ai.try_borrow_mut_data()?;
-    let dyn_offset = std::mem::size_of::<MarketFixed>();
-    let header: &MarketFixed = bytemuck::from_bytes(&market_data[..dyn_offset]);
-    let root = header.claimed_seats_root_index;
-    let dynamic = &mut market_data[dyn_offset..];
-    let probe = ClaimedSeat::new_empty(vault_key, OWNER_KIND_RISK_PROFILE, profile_id);
-    let seat_idx = {
-        let tree = ClaimedSeatTreeReadOnly::new(dynamic, root, NIL);
-        tree.lookup_index(&probe)
-    };
-    if seat_idx != NIL {
-        let seat = get_mut_helper_seat(dynamic, seat_idx).get_mut_value();
-        if seat.risk_profile_max_ltv_bps != live_max_ltv {
-            seat.risk_profile_max_ltv_bps = live_max_ltv;
-        }
-    }
-    Ok(())
-}
 
 /// Borrow the market account as a mutable `DynamicAccount` view (header
 /// borrowed mutably, dynamic region borrowed mutably).
@@ -107,6 +55,62 @@ pub(crate) fn expand_market_if_needed<'a, 'info, T: YdeltaAccount + Pod + Clone>
         return Ok(());
     }
     expand_market(&Signer::new_payer(payer)?, market_account_info)
+}
+
+/// Count the resting orders in the market's asks RB-tree.
+///
+/// The asks tree holds only unbounded vault risk-profile asks, and a
+/// borrower bid crosses each at most once. The count is therefore a
+/// safe upper bound on the number of `MatchedLoan` blocks a single
+/// `match_borrower_bid` pass can allocate.
+pub(crate) fn count_resting_asks<'a, 'info, T: YdeltaAccount + Pod + Clone>(
+    market_account_info: &YdeltaAccountInfo<'a, 'info, T>,
+) -> Result<usize, solana_program::program_error::ProgramError> {
+    let market_data: &Ref<&mut [u8]> = &market_account_info.try_borrow_data()?;
+    let fixed: &MarketFixed = get_helper::<MarketFixed>(market_data, 0_u32);
+    let root = fixed.asks_root_index;
+    let dynamic = &market_data[size_of::<MarketFixed>()..];
+    let tree = RedBlackTreeReadOnly::<RestingOrder>::new(dynamic, root, NIL);
+    Ok(tree.iter::<RestingOrder>().count())
+}
+
+/// Count the blocks currently on the market's free list by walking the
+/// `FreeListNode` chain from `free_list_head_index`.
+fn count_market_free_blocks(market_data: &[u8]) -> usize {
+    let fixed: &MarketFixed = get_helper::<MarketFixed>(market_data, 0_u32);
+    let dynamic = &market_data[size_of::<MarketFixed>()..];
+    let mut count = 0usize;
+    let mut idx = fixed.free_list_head_index;
+    while idx != NIL {
+        let node: &FreeListNode<MarketUnusedFreeListPadding> =
+            get_helper::<FreeListNode<MarketUnusedFreeListPadding>>(dynamic, idx);
+        count += 1;
+        idx = node.get_next_index();
+    }
+    count
+}
+
+/// Grow the market account until its free list holds at least
+/// `min_free_blocks` blocks. Each iteration reallocs one
+/// `MARKET_BLOCK_SIZE` block, tops up rent, and links it onto the free
+/// list. No-op when enough free blocks already exist.
+pub(crate) fn expand_market_to_free_blocks<'a, 'info, T: YdeltaAccount + Pod + Clone>(
+    payer: &AccountInfo<'info>,
+    market_account_info: &YdeltaAccountInfo<'a, 'info, T>,
+    min_free_blocks: usize,
+) -> ProgramResult {
+    let payer = Signer::new_payer(payer)?;
+    loop {
+        let free_count: usize = {
+            let market_data: &Ref<&mut [u8]> = &market_account_info.try_borrow_data()?;
+            count_market_free_blocks(market_data)
+        };
+        if free_count >= min_free_blocks {
+            break;
+        }
+        expand_market(&payer, market_account_info)?;
+    }
+    Ok(())
 }
 
 /// Realloc the market account by one block, top up rent, and link the new
@@ -153,14 +157,6 @@ pub fn sync_signer_market_position(
     user_account_ai: &AccountInfo,
     signer_pubkey: &Pubkey,
 ) -> ProgramResult {
-    use crate::state::user_account::{
-        get_mut_helper_market_position, upsert_market_position, UserAccountFixed,
-    };
-    use crate::state::{
-        market::ClaimedSeatTreeReadOnly, ClaimedSeat, MarketFixed, USER_ACCOUNT_FIXED_SIZE,
-    };
-    use hypertree::{HyperTreeReadOperations, NIL};
-
     // Read the canonical seat first.
     let market_key = *market_ai.key;
     let (seat_index, seat_snapshot): (hypertree::DataIndex, ClaimedSeat) = {
@@ -199,4 +195,25 @@ pub fn invoke(ix: &Instruction, account_infos: &[AccountInfo<'_>]) -> ProgramRes
     {
         solana_program::program::invoke(ix, account_infos)
     }
+}
+
+/// Zero an account's data and refund its rent lamports to `refund_target`.
+pub fn close_account_and_refund(
+    account: &AccountInfo<'_>,
+    refund_target: &AccountInfo<'_>,
+) -> ProgramResult {
+    {
+        let mut data = account.try_borrow_mut_data()?;
+        for byte in data.iter_mut() {
+            *byte = 0;
+        }
+    }
+
+    let lamports = account.lamports();
+    **account.try_borrow_mut_lamports()? = 0;
+    **refund_target.try_borrow_mut_lamports()? = refund_target
+        .lamports()
+        .checked_add(lamports)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    Ok(())
 }

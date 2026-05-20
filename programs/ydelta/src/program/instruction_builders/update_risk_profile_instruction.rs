@@ -11,14 +11,12 @@ use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
 /// Build a vault-admin `UpdateRiskProfile` instruction.
-#[allow(clippy::too_many_arguments)]
 pub fn update_risk_profile_instruction(
     mint: &Pubkey,
     payer: &Pubkey,
     profile_id: u8,
     new_max_ltv_bps: Option<u16>,
     new_max_term_seconds: Option<u32>,
-    new_allowed_market_max: Option<u8>,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
 
@@ -27,7 +25,6 @@ pub fn update_risk_profile_instruction(
         profile_id,
         new_max_ltv_bps,
         new_max_term_seconds,
-        new_allowed_market_max,
     }
     .serialize(&mut data)
     .unwrap();

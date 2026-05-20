@@ -71,10 +71,12 @@ pub fn process_claim_repayment_for_risk_profile(
         lender_profile_id,
         principal_debt_atoms,
         lender_rate_bps,
+        curator_fee_bps_snapshot,
         claimable_atoms,
         protocol_fee_atoms,
         curator_fee_atoms,
-    ): (hypertree::DataIndex, u8, u64, u16, u64, u64, u64) = {
+        loan_started_at_unix,
+    ): (hypertree::DataIndex, u8, u64, u16, u16, u64, u64, u64, i64) = {
         let loan_data: &mut RefMut<&mut [u8]> = &mut loan.info.try_borrow_mut_data()?;
         let header: &mut LoanFixed = bytemuck::from_bytes_mut(&mut loan_data[..LOAN_FIXED_SIZE]);
         accrue_loan(header, now_unix_ts, grace_period_seconds)?;
@@ -99,9 +101,11 @@ pub fn process_claim_repayment_for_risk_profile(
             header.lender_profile_id,
             header.principal_debt_atoms,
             header.lender_rate_bps,
+            header.curator_fee_bps_snapshot,
             header.lender_claimable_atoms,
             header.accumulated_protocol_fee_atoms,
             header.accumulated_curator_fee_atoms,
+            header.started_at_unix,
         );
         header.lender_claimable_atoms = 0;
         header.accumulated_protocol_fee_atoms = 0;
@@ -166,8 +170,10 @@ pub fn process_claim_repayment_for_risk_profile(
         )?;
         seat.debt_encumbered_shares = seat.debt_encumbered_shares.saturating_sub(claim_shares);
         seat.open_lend_count = seat.open_lend_count.saturating_sub(1);
-        let prev_deployed = seat.deployed_atoms();
-        seat.set_deployed_atoms(prev_deployed.saturating_sub(principal_debt_atoms));
+        // Deployed principal is tracked solely on
+        // `RiskProfile.deployed_principal_atoms`, decremented in the
+        // vault-side bookkeeping below — there is no per-seat
+        // `deployed_atoms` to unwind here.
         if protocol_fee_shares > 0 {
             da.fixed.accumulated_protocol_fee_shares = da
                 .fixed
@@ -210,13 +216,6 @@ pub fn process_claim_repayment_for_risk_profile(
     } else {
         0
     };
-    // Split `actual_atoms` between curator and lender. Curator gets
-    // first dibs at exactly `curator_fee_atoms` (the requested amount);
-    // any sub-atom drift between requested and returned absorbs into
-    // the lender's portion.
-    let curator_realised: u64 = curator_fee_atoms.min(actual_atoms);
-    let lender_realised: u64 = actual_atoms.saturating_sub(curator_realised);
-
     if actual_atoms > 0 {
         // SPL transfer market_debt_vault → global_vault_staging,
         // signed by market_signer.
@@ -282,11 +281,41 @@ pub fn process_claim_repayment_for_risk_profile(
             token_program.info.clone(),
             marginfi_program.info.clone(),
         ];
-        let _credited: u128 = MarginfiV18Adapter.deposit(
+        let credited_shares: u128 = MarginfiV18Adapter.deposit(
             &deposit_accounts,
             actual_atoms,
             &[global_vault_signer_seeds],
         )?;
+
+        // Account by the REDEEMABLE value of the shares marginfi
+        // actually credited to the integration account, NOT the nominal
+        // `actual_atoms`. The deposit's share conversion floors, so
+        // `credited_atoms` can be a sub-atom below `actual_atoms`;
+        // accounting by `actual_atoms` would let the profile's on-book
+        // claims (`total_principal_atoms` + `accumulated_curator_fee_atoms`)
+        // drift above what the integration account can actually redeem.
+        let credited_atoms: u64 =
+            MarginfiV18Adapter.shares_to_amount(&[debt_bank.info.clone()], credited_shares)?;
+        // Split `credited_atoms` between lender and curator. The lender's
+        // claimable atoms get first dibs; the curator is a fee-taker, NOT
+        // a senior creditor, so it receives only the remainder and
+        // absorbs any rounding/shortfall drift.
+        let mut lender_realised: u64 = claimable_atoms.min(credited_atoms);
+        let mut curator_realised: u64 = credited_atoms.saturating_sub(lender_realised);
+        // The curator fee is JUNIOR to LP principal recovery. On a
+        // shortfall close (`lender_realised < principal_debt_atoms` —
+        // the LP took a principal loss) claw the curator's realised
+        // slice back against the shortfall before it can be swept onto
+        // `RiskProfile.accumulated_curator_fee_atoms`. The curator does
+        // not collect a management fee accrued on interest the lender
+        // never received. Reattributing the slice to `lender_realised`
+        // shrinks the LP shortfall booked below.
+        if lender_realised < principal_debt_atoms && curator_realised > 0 {
+            let shortfall: u64 = principal_debt_atoms - lender_realised;
+            let clawback: u64 = curator_realised.min(shortfall);
+            curator_realised -= clawback;
+            lender_realised += clawback;
+        }
 
         // Risk-profile state: accrue, then bump idle_principal_atoms by
         // the realised atoms now back inside the GlobalVault.
@@ -294,7 +323,7 @@ pub fn process_claim_repayment_for_risk_profile(
             let data: &mut RefMut<&mut [u8]> = &mut global_vault.info.try_borrow_mut_data()?;
             let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
             let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-            let probe = RiskProfile::new_empty(lender_profile_id, Pubkey::default(), 1, 1, 0);
+            let probe = RiskProfile::new_empty(lender_profile_id, Pubkey::default(), 1, 1);
             let profile_idx = {
                 let tree =
                     RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
@@ -312,15 +341,69 @@ pub fn process_claim_repayment_for_risk_profile(
             // (the closed loan was over-contributing during the close-to-
             // claim window; the cranker incentive bounds that window).
             accrue_risk_profile(profile, now_unix_ts, share_value_fp48)?;
-            // Stop yield contribution from the now-closed loan.
+            // Stop yield contribution from the now-closed loan. Unwind
+            // BOTH the gross aggregate and the NET aggregate by the same
+            // deltas used when the loan was opened in `do_vault_settle` —
+            // the net delta is the gross product scaled DOWN by
+            // `(10_000 − curator_fee_bps) / 10_000`.
             let weighted_delta: u128 =
                 (principal_debt_atoms as u128).saturating_mul(lender_rate_bps as u128);
+            // Unwind with `checked_sub`, not `saturating_sub`. A
+            // desync here (the loan's weighted contribution exceeding
+            // the profile aggregate) is a real accounting bug — fail
+            // loudly rather than silently clamp to 0 and corrupt
+            // depositor-yield accrual.
             profile.total_weighted_rate_bps = profile
                 .total_weighted_rate_bps
-                .saturating_sub(weighted_delta);
+                .checked_sub(weighted_delta)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            let net_weighted_delta: u128 = weighted_delta.saturating_mul(
+                (crate::state::loan::BPS_PER_UNIT as u128) - curator_fee_bps_snapshot as u128,
+            ) / (crate::state::loan::BPS_PER_UNIT as u128);
+            profile.total_weighted_net_rate_bps = profile
+                .total_weighted_net_rate_bps
+                .checked_sub(net_weighted_delta)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
             profile.deployed_principal_atoms = profile
                 .deployed_principal_atoms
                 .saturating_sub(principal_debt_atoms);
+            // ─── Reconcile `total_assets_atoms` to realized
+            //     economics ───
+            //
+            // While the loan was open, `accrue_risk_profile` continuously
+            // credited the depositors' share price (`total_assets_atoms`)
+            // with an ESTIMATED net loan yield, derived from this loan's
+            // contribution to `total_weighted_net_rate_bps`. At close that
+            // estimate must be replaced by the realized cash:
+            //
+            //   estimated_accrued = net_weighted_delta × loan_lifetime
+            //                       / (BPS_PER_UNIT × SECONDS_PER_YEAR)
+            //
+            // where `net_weighted_delta = principal × lender_rate ×
+            // (10_000 − curator_fee_bps) / 10_000` — exactly the per-loan
+            // slice `accrue_risk_profile` integrated over the loan's life.
+            //
+            // `realized_net` is the depositors' actually-collected
+            // interest: `lender_realised − principal` on a clean close,
+            // or a NEGATIVE figure (the bad-debt shortfall) when the LP
+            // took a principal loss. The true-up nudges
+            // `total_assets_atoms` by `realized_net − estimated_accrued`,
+            // so share price reflects realized cash, not a stale
+            // estimate. `total_principal_atoms` is moved by the realized
+            // economics only (it never carried the estimate).
+            let loan_lifetime: u128 =
+                (now_unix_ts.saturating_sub(loan_started_at_unix)).max(0) as u128;
+            let yield_denom: u128 = (crate::state::loan::BPS_PER_UNIT as u128)
+                .checked_mul(crate::state::loan::SECONDS_PER_YEAR as u128)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            let estimated_accrued_atoms: u128 = net_weighted_delta
+                .checked_mul(loan_lifetime)
+                .and_then(|x| x.checked_div(yield_denom))
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+
+            // `realized_net` as a signed atom delta to depositor NAV.
+            let realized_net: i128 = (lender_realised as i128) - (principal_debt_atoms as i128);
+
             // Realised atoms: principal portion was already counted in
             // `total_principal_atoms` (just changed location); interest
             // portion is new capital for the LPs. We use `lender_realised`
@@ -329,16 +412,36 @@ pub fn process_claim_repayment_for_risk_profile(
             // separate accumulator below, not to LP yield. Bad debt
             // (`lender_realised < principal`) shrinks the pool by the
             // shortfall.
-            if lender_realised >= principal_debt_atoms {
-                let interest = lender_realised - principal_debt_atoms;
+            if realized_net >= 0 {
+                let interest = realized_net as u64;
                 profile.total_principal_atoms = profile
                     .total_principal_atoms
                     .checked_add(interest)
                     .ok_or(ProgramError::ArithmeticOverflow)?;
             } else {
-                let shortfall = principal_debt_atoms - lender_realised;
+                let shortfall = (-realized_net) as u64;
                 profile.total_principal_atoms =
                     profile.total_principal_atoms.saturating_sub(shortfall);
+            }
+
+            // True-up `total_assets_atoms` by `realized_net −
+            // estimated_accrued`. A positive delta (loan out-earned the
+            // estimate, or repaid early) lifts share price; a negative
+            // delta (estimate over-credited, or bad debt) lowers it.
+            // `saturating_*` guards the extreme where the true-up would
+            // drive `total_assets_atoms` below 0 — depositor NAV can't go
+            // negative; the residual loss is socialised via share price
+            // staying at floor.
+            let assets_delta: i128 = realized_net - (estimated_accrued_atoms as i128);
+            if assets_delta >= 0 {
+                profile.total_assets_atoms = profile
+                    .total_assets_atoms
+                    .checked_add(assets_delta as u64)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            } else {
+                profile.total_assets_atoms = profile
+                    .total_assets_atoms
+                    .saturating_sub((-assets_delta) as u64);
             }
             // Sweep curator's manager-fee atoms onto the per-profile
             // accumulator. The atoms themselves were just deposited
@@ -354,28 +457,24 @@ pub fn process_claim_repayment_for_risk_profile(
         }
     }
 
-    // Close the loan PDA: zero its data and refund cranker rent if the
-    // optional cranker_refund matches loan.created_by.
-    let created_by: Pubkey = {
-        let data = loan.info.try_borrow_data()?;
-        let header: &LoanFixed = bytemuck::from_bytes(&data[..LOAN_FIXED_SIZE]);
-        header.created_by
-    };
+    // Close the loan PDA: zero its data and refund the PDA rent to the
+    // keeper. `cranker_refund` is REQUIRED by the loader and bound to
+    // `loan.created_by`, so the refund happens UNCONDITIONALLY — the
+    // lender calling this ix cannot strand the keeper's rent by omitting
+    // or mis-supplying the account.
     {
         let mut data: RefMut<&mut [u8]> = loan.info.try_borrow_mut_data()?;
         for byte in data.iter_mut() {
             *byte = 0;
         }
     }
-    if let Some(refund_ai) = cranker_refund {
-        if *refund_ai.key == created_by {
-            let lamports = loan.info.lamports();
-            **loan.info.try_borrow_mut_lamports()? = 0;
-            **refund_ai.try_borrow_mut_lamports()? = refund_ai
-                .lamports()
-                .checked_add(lamports)
-                .ok_or(ProgramError::ArithmeticOverflow)?;
-        }
+    {
+        let lamports = loan.info.lamports();
+        **loan.info.try_borrow_mut_lamports()? = 0;
+        **cranker_refund.try_borrow_mut_lamports()? = cranker_refund
+            .lamports()
+            .checked_add(lamports)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
     }
 
     emit_stack(RepaymentClaimedForRiskProfileLog {
