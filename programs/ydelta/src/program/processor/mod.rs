@@ -9,6 +9,7 @@ pub mod create_market;
 pub mod create_risk_profile;
 pub mod create_vault;
 pub mod deposit;
+pub mod fee_config_helpers;
 pub mod global_config_admin;
 pub mod global_vault_deposit;
 pub mod global_vault_withdraw;

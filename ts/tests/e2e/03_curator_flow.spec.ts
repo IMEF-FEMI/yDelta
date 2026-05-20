@@ -38,7 +38,6 @@ import {
   setupMarket,
   setupRiskProfile,
   setupVault,
-  unpauseMarket,
 } from './_setup.ts';
 
 describe('e2e: curator flow', () => {
@@ -54,7 +53,6 @@ describe('e2e: curator flow', () => {
     admin = bk.payer;
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
-    await unpauseMarket(bk, admin, market.publicKey);
     await setupVault(bk, admin);
 
     curator = await bk.fundedKeypair();

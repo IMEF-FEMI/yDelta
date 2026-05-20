@@ -56,7 +56,6 @@ import {
   bankLiquidityVaultAuthority,
   setupGlobalConfig,
   setupMarket,
-  unpauseMarket,
 } from './_setup.ts';
 
 describe('e2e: P2Pool full fallback (empty book, fallback on)', () => {
@@ -74,7 +73,6 @@ describe('e2e: P2Pool full fallback (empty book, fallback on)', () => {
     admin = bk.payer;
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
-    await unpauseMarket(bk, admin, market.publicKey);
 
     borrower = await bk.fundedKeypair();
     borrowerSolAta = Keypair.generate().publicKey;

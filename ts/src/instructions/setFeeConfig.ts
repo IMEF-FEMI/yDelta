@@ -8,9 +8,8 @@ import { InstructionTag } from './_tags.js';
 /**
  * Tag 18 — `SetFeeConfig`. Each field is independent: pass `null` /
  * `undefined` to leave unchanged, or a number to update. Runs even while
- * the market is paused (it's the admin-only header mutation that lets the
- * market unpause for the first time, since `set_market_pause(false)` is
- * gated on `fee_config_set`).
+ * the market is paused — it's a pure admin-only header mutation with no
+ * atom flow, useful for retuning fees on a halted market before resuming.
  */
 export interface SetFeeConfigArgs {
   admin: PublicKey;

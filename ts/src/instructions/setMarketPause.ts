@@ -6,9 +6,9 @@ import { Writer } from './_serialise.js';
 import { InstructionTag } from './_tags.js';
 
 /**
- * Tag 27 — toggle `MarketFixed.is_paused`. Admin-gated; gated on
- * `fee_config_set` for the un-pause case (markets ship paused-by-default
- * and the admin must call `set_fee_config` once before unpausing).
+ * Tag 27 — toggle `MarketFixed.is_paused`. Admin-gated. Markets ship
+ * unpaused (the on-chain `FeeConfig::default()` is already safe), so
+ * this ix is purely for halting / resuming a live market.
  */
 export function setMarketPauseInstruction(args: {
   admin: PublicKey;

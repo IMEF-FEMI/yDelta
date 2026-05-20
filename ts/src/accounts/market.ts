@@ -1,51 +1,9 @@
 // MarketFixed 512-byte header + dynamic region (asks tree, claimed-seats tree,
 // matched-loans tree, shared 160-byte free list).
 //
-// Header byte map (from state/market.rs):
-//   @0    u64    discriminator
-//   @8    u8     version
-//   @9    u8     debt_mint_decimals
-//   @10   u8     collateral_mint_decimals
-//   @11   u8     debt_vault_bump
-//   @12   u8     collateral_vault_bump
-//   @16   Pubkey debt_mint
-//   @48   Pubkey collateral_mint
-//   @80   Pubkey debt_vault
-//   @112  Pubkey collateral_vault
-//   @144  u128   accumulated_protocol_fee_shares
-//   @160  u64    order_sequence_number
-//   @168  u64    matched_loan_sequence
-//   @176  u32    num_bytes_allocated
-//   @188  u32    asks_root_index
-//   @192  u32    asks_best_index
-//   @196  u32    claimed_seats_root_index
-//   @200  u32    matched_loans_root_index
-//   @204  u32    free_list_head_index
-//   @208  u32    position_count
-//   @212  FeeConfig (24)
-//   @240  Pubkey lender_integration_account
-//   @272  Pubkey borrower_integration_account
-//   @304  Pubkey debt_lending_pool
-//   @336  Pubkey collateral_lending_pool
-//   @368  Pubkey marginfi_group
-//   @400  Pubkey market_signer
-//   @432  u8     market_signer_bump
-//   @433  u8     lender_integration_account_bump
-//   @434  u8     borrower_integration_account_bump
-//   @440  Pubkey admin
-//   @472  Pubkey pending_admin
-//   @504  u8     is_paused
-//   @505  u8     fee_config_set
-//
-// FeeConfig (24 bytes):
-//   +0  u16  protocol_fee_bps_floor
-//   +2  u16  origination_bps
-//   +4  u16  curator_split_bps
-//   +6  u16  curator_fee_bps
-//   +8  u16  liquidation_keeper_bps
-//   +10 u16  liquidation_protocol_bps
-//   +12 u16  ltv_buffer_bps
-//   +16 u32  grace_period_seconds
+// Byte offsets live in `./layout.ts` (`MarketFixedOffsets`,
+// `FeeConfigOffsets`). Keep raw reads here using those constants — no
+// magic numbers.
 import { PublicKey } from '@solana/web3.js';
 
 import {
@@ -59,6 +17,7 @@ import {
   view,
 } from './_read.js';
 import { CLAIMED_SEAT_SIZE, ClaimedSeat, decodeClaimedSeat } from './claimedSeat.js';
+import { FeeConfigOffsets, MarketFixedOffsets } from './layout.js';
 import { MATCHED_LOAN_SIZE, MatchedLoan, decodeMatchedLoan } from './matchedLoan.js';
 import { RESTING_ORDER_SIZE, RestingOrder, decodeRestingOrder } from './restingOrder.js';
 import { walkDescending, walkFreeList } from './trees.js';
@@ -111,7 +70,6 @@ export interface MarketHeader {
   admin: PublicKey;
   pendingAdmin: PublicKey;
   isPaused: boolean;
-  feeConfigSet: boolean;
 }
 
 export interface Market {
@@ -123,14 +81,14 @@ export interface Market {
 
 function decodeFeeConfig(dv: DataView, base: number): FeeConfig {
   return {
-    protocolFeeBpsFloor: readU16(dv, base + 0),
-    originationBps: readU16(dv, base + 2),
-    curatorSplitBps: readU16(dv, base + 4),
-    curatorFeeBps: readU16(dv, base + 6),
-    liquidationKeeperBps: readU16(dv, base + 8),
-    liquidationProtocolBps: readU16(dv, base + 10),
-    ltvBufferBps: readU16(dv, base + 12),
-    gracePeriodSeconds: readU32(dv, base + 16),
+    protocolFeeBpsFloor: readU16(dv, base + FeeConfigOffsets.PROTOCOL_FEE_BPS_FLOOR),
+    originationBps: readU16(dv, base + FeeConfigOffsets.ORIGINATION_BPS),
+    curatorSplitBps: readU16(dv, base + FeeConfigOffsets.CURATOR_SPLIT_BPS),
+    curatorFeeBps: readU16(dv, base + FeeConfigOffsets.CURATOR_FEE_BPS),
+    liquidationKeeperBps: readU16(dv, base + FeeConfigOffsets.LIQUIDATION_KEEPER_BPS),
+    liquidationProtocolBps: readU16(dv, base + FeeConfigOffsets.LIQUIDATION_PROTOCOL_BPS),
+    ltvBufferBps: readU16(dv, base + FeeConfigOffsets.LTV_BUFFER_BPS),
+    gracePeriodSeconds: readU32(dv, base + FeeConfigOffsets.GRACE_PERIOD_SECONDS),
   };
 }
 
@@ -139,46 +97,45 @@ export function decodeMarketHeader(data: Uint8Array | Buffer): MarketHeader {
     throw new RangeError(`decodeMarketHeader: account too small (${data.byteLength})`);
   }
   const dv = view(data);
-  const disc = dv.getBigUint64(0, true);
+  const disc = dv.getBigUint64(MarketFixedOffsets.DISCRIMINATOR, true);
   if (disc !== MARKET_FIXED_DISCRIMINANT) {
     throw new Error(
       `decodeMarketHeader: bad discriminator 0x${disc.toString(16)} (expected 0x${MARKET_FIXED_DISCRIMINANT.toString(16)})`,
     );
   }
   return {
-    version: readU8(dv, 8),
-    debtMintDecimals: readU8(dv, 9),
-    collateralMintDecimals: readU8(dv, 10),
-    debtVaultBump: readU8(dv, 11),
-    collateralVaultBump: readU8(dv, 12),
-    debtMint: readPubkey(dv, 16),
-    collateralMint: readPubkey(dv, 48),
-    debtVault: readPubkey(dv, 80),
-    collateralVault: readPubkey(dv, 112),
-    accumulatedProtocolFeeShares: readU128(dv, 144),
-    orderSequenceNumber: readU64(dv, 160),
-    matchedLoanSequence: readU64(dv, 168),
-    numBytesAllocated: readU32(dv, 176),
-    asksRootIndex: readU32(dv, 188),
-    asksBestIndex: readU32(dv, 192),
-    claimedSeatsRootIndex: readU32(dv, 196),
-    matchedLoansRootIndex: readU32(dv, 200),
-    freeListHeadIndex: readU32(dv, 204),
-    positionCount: readU32(dv, 208),
-    feeConfig: decodeFeeConfig(dv, 212),
-    lenderIntegrationAccount: readPubkey(dv, 240),
-    borrowerIntegrationAccount: readPubkey(dv, 272),
-    debtLendingPool: readPubkey(dv, 304),
-    collateralLendingPool: readPubkey(dv, 336),
-    marginfiGroup: readPubkey(dv, 368),
-    marketSigner: readPubkey(dv, 400),
-    marketSignerBump: readU8(dv, 432),
-    lenderIntegrationAccountBump: readU8(dv, 433),
-    borrowerIntegrationAccountBump: readU8(dv, 434),
-    admin: readPubkey(dv, 440),
-    pendingAdmin: readPubkey(dv, 472),
-    isPaused: readU8(dv, 504) !== 0,
-    feeConfigSet: readU8(dv, 505) !== 0,
+    version: readU8(dv, MarketFixedOffsets.VERSION),
+    debtMintDecimals: readU8(dv, MarketFixedOffsets.DEBT_MINT_DECIMALS),
+    collateralMintDecimals: readU8(dv, MarketFixedOffsets.COLLATERAL_MINT_DECIMALS),
+    debtVaultBump: readU8(dv, MarketFixedOffsets.DEBT_VAULT_BUMP),
+    collateralVaultBump: readU8(dv, MarketFixedOffsets.COLLATERAL_VAULT_BUMP),
+    debtMint: readPubkey(dv, MarketFixedOffsets.DEBT_MINT),
+    collateralMint: readPubkey(dv, MarketFixedOffsets.COLLATERAL_MINT),
+    debtVault: readPubkey(dv, MarketFixedOffsets.DEBT_VAULT),
+    collateralVault: readPubkey(dv, MarketFixedOffsets.COLLATERAL_VAULT),
+    accumulatedProtocolFeeShares: readU128(dv, MarketFixedOffsets.ACCUMULATED_PROTOCOL_FEE_SHARES),
+    orderSequenceNumber: readU64(dv, MarketFixedOffsets.ORDER_SEQUENCE_NUMBER),
+    matchedLoanSequence: readU64(dv, MarketFixedOffsets.MATCHED_LOAN_SEQUENCE),
+    numBytesAllocated: readU32(dv, MarketFixedOffsets.NUM_BYTES_ALLOCATED),
+    asksRootIndex: readU32(dv, MarketFixedOffsets.ASKS_ROOT_INDEX),
+    asksBestIndex: readU32(dv, MarketFixedOffsets.ASKS_BEST_INDEX),
+    claimedSeatsRootIndex: readU32(dv, MarketFixedOffsets.CLAIMED_SEATS_ROOT_INDEX),
+    matchedLoansRootIndex: readU32(dv, MarketFixedOffsets.MATCHED_LOANS_ROOT_INDEX),
+    freeListHeadIndex: readU32(dv, MarketFixedOffsets.FREE_LIST_HEAD_INDEX),
+    positionCount: readU32(dv, MarketFixedOffsets.POSITION_COUNT),
+    feeConfig: decodeFeeConfig(dv, MarketFixedOffsets.FEE_CONFIG),
+    lenderIntegrationAccount: readPubkey(dv, MarketFixedOffsets.LENDER_INTEGRATION_ACCOUNT),
+    borrowerIntegrationAccount: readPubkey(dv, MarketFixedOffsets.BORROWER_INTEGRATION_ACCOUNT),
+    debtLendingPool: readPubkey(dv, MarketFixedOffsets.DEBT_LENDING_POOL),
+    collateralLendingPool: readPubkey(dv, MarketFixedOffsets.COLLATERAL_LENDING_POOL),
+    marginfiGroup: readPubkey(dv, MarketFixedOffsets.MARGINFI_GROUP),
+    marketSigner: readPubkey(dv, MarketFixedOffsets.MARKET_SIGNER),
+    marketSignerBump: readU8(dv, MarketFixedOffsets.MARKET_SIGNER_BUMP),
+    lenderIntegrationAccountBump: readU8(dv, MarketFixedOffsets.LENDER_INTEGRATION_ACCOUNT_BUMP),
+    borrowerIntegrationAccountBump: readU8(dv, MarketFixedOffsets.BORROWER_INTEGRATION_ACCOUNT_BUMP),
+    admin: readPubkey(dv, MarketFixedOffsets.ADMIN),
+    pendingAdmin: readPubkey(dv, MarketFixedOffsets.PENDING_ADMIN),
+    isPaused: readU8(dv, MarketFixedOffsets.IS_PAUSED) !== 0,
   };
 }
 

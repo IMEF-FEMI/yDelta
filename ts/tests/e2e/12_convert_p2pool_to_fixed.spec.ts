@@ -52,7 +52,6 @@ import {
   setupMarket,
   setupRiskProfile,
   setupVault,
-  unpauseMarket,
 } from './_setup.ts';
 
 describe('e2e: ConvertP2PoolToFixed refinances variable debt at a curator ask', () => {
@@ -78,7 +77,6 @@ describe('e2e: ConvertP2PoolToFixed refinances variable debt at a curator ask', 
     admin = bk.payer;
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
-    await unpauseMarket(bk, admin, market.publicKey);
 
     // ── Step 0: an unrelated lender (Alice) deposits USDC first ──
     // This pre-initialises the lender-side marginfi-account's USDC balance

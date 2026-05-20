@@ -1,5 +1,6 @@
 /** Phase-3 zero-copy account decoders. */
 export * from './_read.js';
+export * from './layout.js';
 export * from './trees.js';
 
 export { decodeGlobalConfig, GLOBAL_CONFIG_SIZE } from './globalConfig.js';

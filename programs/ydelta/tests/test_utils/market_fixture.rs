@@ -48,7 +48,7 @@ use ydelta::program::instruction_builders::{
     update_risk_profile_instruction::update_risk_profile_instruction,
     withdraw_instruction::withdraw_instruction,
 };
-use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
+use ydelta::program::processor::create_market::CreateMarketParams;
 use ydelta::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
 use ydelta::state::market::{
     get_helper_seat, get_mut_helper_seat, MarketFixed, MatchedLoan, MatchedLoanTreeReadOnly,
@@ -140,6 +140,12 @@ impl MarketFixture {
     pub async fn create_second_market(&self) {
         let market2 = Keypair::new();
         let payer = self.payer.insecure_clone();
+        // See `create_market_account` below for why `ltv_buffer_bps`
+        // is held at 0 here despite the protocol default of 200.
+        let params = CreateMarketParams {
+            ltv_buffer_bps: Some(0),
+            ..CreateMarketParams::default()
+        };
         let ixs = create_market_instructions(
             &market2.pubkey(),
             &mainnet::usdc_mint(),
@@ -149,26 +155,11 @@ impl MarketFixture {
             &mainnet::usdc_bank(),
             &mainnet::sol_bank(),
             &marginfi_mocks::ID,
+            &params,
         )
         .unwrap();
         let m2_kp = market2.insecure_clone();
         self.process_ixs(&ixs, &[&m2_kp]).await.unwrap();
-        // `set_market_pause(false)` is gated on fee config having been
-        // explicitly set. Call `set_fee_config` first (buffer 0 to
-        // preserve existing LTV-math expectations across the suite).
-        {
-            let mut params = SetFeeConfigParams::default();
-            params.ltv_buffer_bps = Some(0);
-            let set_fee = ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction(
-                &market2.pubkey(), &payer.pubkey(), params,
-            );
-            self.process(set_fee, &[]).await.unwrap();
-        }
-        // New markets ship paused; unpause for test ergonomics.
-        let unpause = ydelta::program::instruction_builders::set_market_pause_instruction::set_market_pause_instruction(
-            &market2.pubkey(), &payer.pubkey(), false,
-        );
-        self.process(unpause, &[]).await.unwrap();
         *self.second_market.borrow_mut() = Some(market2);
     }
 
@@ -200,6 +191,15 @@ impl MarketFixture {
 
     async fn create_market_account(&self) {
         let payer = self.payer.insecure_clone();
+        // Override `ltv_buffer_bps` back to 0 — the protocol default
+        // moved to 200 (2%) once `create_market` started seeding a safe
+        // `FeeConfig::default()`, but existing LTV-sensitive tests in
+        // this suite were authored against a zero buffer. Holding the
+        // buffer at 0 here avoids re-tuning every case.
+        let params = CreateMarketParams {
+            ltv_buffer_bps: Some(0),
+            ..CreateMarketParams::default()
+        };
         let ixs = create_market_instructions(
             &self.market.pubkey(),
             &mainnet::usdc_mint(),
@@ -209,27 +209,11 @@ impl MarketFixture {
             &mainnet::usdc_bank(),
             &mainnet::sol_bank(),
             &marginfi_mocks::ID,
+            &params,
         )
         .unwrap();
         let market_kp = self.market.insecure_clone();
         self.process_ixs(&ixs, &[&market_kp]).await.unwrap();
-        // `set_market_pause(false)` is gated on fee config having been
-        // explicitly set. Call `set_fee_config` first (buffer 0 to
-        // preserve existing LTV-math expectations across the suite).
-        {
-            let mut params = SetFeeConfigParams::default();
-            params.ltv_buffer_bps = Some(0);
-            let set_fee = ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction(
-                &self.market.pubkey(), &payer.pubkey(), params,
-            );
-            self.process(set_fee, &[]).await.unwrap();
-        }
-        // New markets ship paused; unpause so the rest of the fixture
-        // (loan lifecycle, order placement, etc.) can mutate market state.
-        let unpause = ydelta::program::instruction_builders::set_market_pause_instruction::set_market_pause_instruction(
-            &self.market.pubkey(), &payer.pubkey(), false,
-        );
-        self.process(unpause, &[]).await.unwrap();
     }
 
     /// Returns the lender-side marginfi-account PDA at

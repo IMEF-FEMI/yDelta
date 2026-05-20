@@ -185,7 +185,6 @@ describe('decodeMarketHeader', () => {
     const admin = new PublicKey('11111111111111111111111111111114');
     writePk(buf, 440, admin);
     buf[504] = 0; // is_paused = false
-    buf[505] = 1; // fee_config_set = true
 
     const header = decodeMarketHeader(buf);
     expect(header.version).toBe(1);
@@ -200,7 +199,6 @@ describe('decodeMarketHeader', () => {
     expect(header.feeConfig.gracePeriodSeconds).toBe(86_400);
     expect(header.admin.equals(admin)).toBe(true);
     expect(header.isPaused).toBe(false);
-    expect(header.feeConfigSet).toBe(true);
   });
 });
 

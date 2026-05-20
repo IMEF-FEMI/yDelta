@@ -14,7 +14,8 @@
  *
  * Profile is configured with `max_ltv_bps = 9_999` so the bank-weight
  * gate is binding (not the profile-LTV gate). `ltv_buffer_bps = 0` (the
- * default in `unpauseMarket`) so the buffer doesn't enter the math.
+ * default `setupMarket` bakes into `CreateMarketParams`) so the buffer
+ * doesn't enter the math.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
@@ -53,7 +54,6 @@ import {
   setupMarket,
   setupRiskProfile,
   setupVault,
-  unpauseMarket,
 } from './_setup.ts';
 
 const BORROW_ATOMS = 1_000_000n;
@@ -72,7 +72,6 @@ describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-f
     admin = bk.payer;
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
-    await unpauseMarket(bk, admin, market.publicKey); // ltv_buffer_bps = 0
     await setupVault(bk, admin);
     const curator = await bk.fundedKeypair();
     // max_ltv = 9_999 so the profile gate is wide-open and the

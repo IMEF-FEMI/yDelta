@@ -20,8 +20,6 @@ import {
   MARKET_FIXED_SIZE,
   placeOrderForRiskProfileInstruction,
   placeOrderInstruction,
-  setFeeConfigInstruction,
-  setMarketPauseInstruction,
   YDELTA_PROGRAM_ID,
 } from '../../src/index.js';
 import { BankrunHandle } from './_bankrun.ts';
@@ -59,12 +57,39 @@ export async function setupGlobalConfig(bk: BankrunHandle, admin: Keypair): Prom
 }
 
 /**
- * Allocate + initialise a USDC/SOL market. Returns the market keypair (the
- * caller should treat the pubkey as the market id). The market is left
- * paused-and-not-yet-configured — call `unpauseMarket` after fee config to
- * make it live.
+ * Per-test fee_config overrides layered on top of the on-chain
+ * `FeeConfig::default()`. The suite-wide convention is `ltv_buffer_bps: 0`
+ * (matching-friendly — tiny atom amounts cross without hitting the buffer)
+ * unless a spec needs to exercise non-zero fee accrual or LTV-tightening
+ * behaviour.
  */
-export async function setupMarket(bk: BankrunHandle, admin: Keypair): Promise<Keypair> {
+export interface FeeOverrides {
+  protocolFeeBpsFloor?: number;
+  originationBps?: number;
+  curatorSplitBps?: number;
+  curatorFeeBps?: number;
+  liquidationKeeperBps?: number;
+  liquidationProtocolBps?: number;
+  ltvBufferBps?: number;
+  gracePeriodSeconds?: number;
+}
+
+/**
+ * Allocate + initialise a USDC/SOL market with the supplied fee overrides
+ * baked in. Returns the market keypair (the caller should treat the pubkey
+ * as the market id). The market ships **unpaused** and fully configured —
+ * no follow-up `set_fee_config` / `set_market_pause` round-trip required.
+ *
+ * `ltvBufferBps` defaults to `0` to keep tiny-atom matching tests stable
+ * across the suite (the on-chain default of 200 would tighten the
+ * LTV-at-match gate enough to break those cases). Pass an explicit
+ * `feeOverrides.ltvBufferBps` to opt in to a non-zero buffer.
+ */
+export async function setupMarket(
+  bk: BankrunHandle,
+  admin: Keypair,
+  feeOverrides: FeeOverrides = {},
+): Promise<Keypair> {
   const market = Keypair.generate();
   const blockhash = (await bk.client.getLatestBlockhash())![0];
   const rent = Number(
@@ -94,59 +119,21 @@ export async function setupMarket(bk: BankrunHandle, admin: Keypair): Promise<Ke
         debtBank: USDC_BANK,
         collateralBank: SOL_BANK,
         marginfiProgram: MARGINFI_PROGRAM_ID,
+        params: {
+          ltvBufferBps: feeOverrides.ltvBufferBps ?? 0,
+          protocolFeeBpsFloor: feeOverrides.protocolFeeBpsFloor,
+          originationBps: feeOverrides.originationBps,
+          curatorSplitBps: feeOverrides.curatorSplitBps,
+          curatorFeeBps: feeOverrides.curatorFeeBps,
+          liquidationKeeperBps: feeOverrides.liquidationKeeperBps,
+          liquidationProtocolBps: feeOverrides.liquidationProtocolBps,
+          gracePeriodSeconds: feeOverrides.gracePeriodSeconds,
+        },
       }),
     ],
     [admin],
   );
   return market;
-}
-
-/**
- * Apply fee config + unpause. Defaults are **matching-friendly** (all bps = 0,
- * `ltv_buffer_bps = 0`) so tiny atom amounts cross cleanly. Mirrors the Rust
- * integration-test fixture (`MarketFixture::new`) which uses the same setup
- * so LTV-math expectations stay stable across the test suite.
- *
- * Pass `feeOverrides` for tests that exercise non-zero fee accrual.
- */
-export interface FeeOverrides {
-  protocolFeeBpsFloor?: number;
-  originationBps?: number;
-  curatorSplitBps?: number;
-  curatorFeeBps?: number;
-  liquidationKeeperBps?: number;
-  liquidationProtocolBps?: number;
-  ltvBufferBps?: number;
-  gracePeriodSeconds?: number;
-}
-
-export async function unpauseMarket(
-  bk: BankrunHandle,
-  admin: Keypair,
-  market: PublicKey,
-  feeOverrides: FeeOverrides = {},
-): Promise<void> {
-  await bk.send(
-    [
-      setFeeConfigInstruction({
-        admin: admin.publicKey,
-        market,
-        // `set_market_pause(false)` is gated on `fee_config_set`, so we MUST
-        // touch at least one field. `ltv_buffer_bps: 0` does that without
-        // tightening the LTV-at-match gate the way `200` would.
-        ltvBufferBps: feeOverrides.ltvBufferBps ?? 0,
-        protocolFeeBpsFloor: feeOverrides.protocolFeeBpsFloor,
-        originationBps: feeOverrides.originationBps,
-        curatorSplitBps: feeOverrides.curatorSplitBps,
-        curatorFeeBps: feeOverrides.curatorFeeBps,
-        liquidationKeeperBps: feeOverrides.liquidationKeeperBps,
-        liquidationProtocolBps: feeOverrides.liquidationProtocolBps,
-        gracePeriodSeconds: feeOverrides.gracePeriodSeconds,
-      }),
-      setMarketPauseInstruction({ admin: admin.publicKey, market, paused: false }),
-    ],
-    [admin],
-  );
 }
 
 /** Stand up the per-mint GlobalVault and stamp `admin` as `global_vault_admin`. */
@@ -251,7 +238,6 @@ export async function driveToMatchLanded(
 
   await setupGlobalConfig(bk, admin);
   const market = await setupMarket(bk, admin);
-  await unpauseMarket(bk, admin, market.publicKey);
   await setupVault(bk, admin);
   const curator = await bk.fundedKeypair();
   await setupRiskProfile(bk, admin, curator.publicKey, { maxLtvBps, maxTermSeconds: termSeconds });

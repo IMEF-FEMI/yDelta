@@ -30,7 +30,7 @@ import {
   USDC_MINT,
   WSOL_MINT,
 } from './_fixtures.ts';
-import { setupGlobalConfig, setupMarket, unpauseMarket } from './_setup.ts';
+import { setupGlobalConfig, setupMarket } from './_setup.ts';
 
 describe('e2e: borrower seat + collateral deposit', () => {
   let bk: BankrunHandle;
@@ -44,7 +44,6 @@ describe('e2e: borrower seat + collateral deposit', () => {
     admin = bk.payer;
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
-    await unpauseMarket(bk, admin, market.publicKey);
 
     borrower = await bk.fundedKeypair();
     // Synth wSOL token account holding 5 SOL. wSOL needs `is_native=Some(rent)`

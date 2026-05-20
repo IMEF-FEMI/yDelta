@@ -39,7 +39,6 @@ import {
   setupMarket,
   setupRiskProfile,
   setupVault,
-  unpauseMarket,
 } from './_setup.ts';
 
 describe('e2e: pause guards reject state mutations with the right Custom error', () => {
@@ -55,7 +54,6 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
     admin = bk.payer;
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
-    await unpauseMarket(bk, admin, market.publicKey);
     await setupVault(bk, admin);
     curator = await bk.fundedKeypair();
     await setupRiskProfile(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });

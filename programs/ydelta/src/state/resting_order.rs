@@ -44,8 +44,7 @@ impl Default for Side {
 }
 
 /// Order type. yDelta supports `Limit | ImmediateOrCancel |
-/// PostOnly`. The `Reverse` and `Global` variants from manifest are
-/// deliberately not carried over.
+/// PostOnly`.
 #[derive(
     Debug,
     BorshDeserialize,

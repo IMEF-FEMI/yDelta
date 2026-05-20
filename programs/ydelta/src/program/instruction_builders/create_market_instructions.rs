@@ -1,3 +1,4 @@
+use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
     program_error::ProgramError,
@@ -6,6 +7,7 @@ use solana_program::{
     sysvar::rent::Rent,
 };
 
+use crate::program::processor::create_market::CreateMarketParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::MARKET_FIXED_SIZE;
@@ -36,6 +38,11 @@ pub fn derive_market_signer(market: &Pubkey) -> Pubkey {
 }
 
 /// Create the market account and its `CreateMarket` instruction.
+///
+/// `params` carries optional per-field fee_config overrides applied on
+/// top of `FeeConfig::default()`. Pass `CreateMarketParams::default()`
+/// to ship with the protocol defaults (safe `ltv_buffer_bps = 200`,
+/// 24h grace, zero protocol/curator/keeper fees).
 #[allow(clippy::too_many_arguments)]
 pub fn create_market_instructions(
     market: &Pubkey,
@@ -46,6 +53,7 @@ pub fn create_market_instructions(
     debt_bank: &Pubkey,
     collateral_bank: &Pubkey,
     marginfi_program: &Pubkey,
+    params: &CreateMarketParams,
 ) -> Result<Vec<Instruction>, ProgramError> {
     let space: usize = MARKET_FIXED_SIZE;
     Ok(vec![
@@ -65,6 +73,7 @@ pub fn create_market_instructions(
             debt_bank,
             collateral_bank,
             marginfi_program,
+            params,
         ),
     ])
 }
@@ -79,12 +88,20 @@ pub fn create_market_instruction(
     debt_bank: &Pubkey,
     collateral_bank: &Pubkey,
     marginfi_program: &Pubkey,
+    params: &CreateMarketParams,
 ) -> Instruction {
     let (debt_vault, _) = get_vault_address(market, debt_mint);
     let (collateral_vault, _) = get_vault_address(market, collateral_mint);
     let lender_marginfi_account = derive_lender_marginfi_account(market);
     let borrower_marginfi_account = derive_borrower_marginfi_account(market);
     let market_signer = derive_market_signer(market);
+    let mut data = YdeltaInstruction::CreateMarket.to_vec();
+    // Borsh-serialize `CreateMarketParams` after the 1-byte ix tag.
+    // The processor accepts an empty tail as "all defaults"; we always
+    // emit the full payload so the wire format is unambiguous.
+    params
+        .serialize(&mut data)
+        .expect("CreateMarketParams serialization is infallible");
     Instruction {
         program_id: crate::id(),
         accounts: vec![
@@ -111,6 +128,6 @@ pub fn create_market_instruction(
             AccountMeta::new_readonly(market_signer, false),
             AccountMeta::new_readonly(*marginfi_program, false),
         ],
-        data: YdeltaInstruction::CreateMarket.to_vec(),
+        data,
     }
 }

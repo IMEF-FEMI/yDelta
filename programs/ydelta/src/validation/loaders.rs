@@ -720,7 +720,7 @@ pub(crate) struct PlaceOrderContext<'a, 'info> {
     pub user_account_ai: &'a AccountInfo<'info>,
     /// Optional GlobalVault account. Required only when the matching
     /// engine crosses a vault-owned maker; without it, those crosses
-    /// are skipped (Manifest-style `GlobalSkip`). The processor
+    /// are skipped
     /// applies match-time encumbrance to vault state in the same tx
     /// so concurrent matches in other markets see the locked idle
     /// pool.

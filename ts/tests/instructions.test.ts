@@ -93,7 +93,7 @@ function expectYdeltaIx(ix: { programId: PublicKey; data: Buffer | Uint8Array })
 
 describe('instruction builders — discriminator tags + key positions', () => {
   /* ── Tag 0 ───────────────────────────────────────────── */
-  it('CreateMarket', () => {
+  it('CreateMarket (no params → 8 null Option flags)', () => {
     const ix = createMarketInstruction({
       marketCreator: PAYER,
       market: MARKET,
@@ -106,7 +106,9 @@ describe('instruction builders — discriminator tags + key positions', () => {
     });
     expectYdeltaIx(ix);
     expect(tagOf(ix.data)).toBe(InstructionTag.CreateMarket);
-    expect(ix.data.length).toBe(1);
+    // 1-byte tag + 8 borsh Option flags (each 1 byte = 0 for None when omitted).
+    expect(ix.data.length).toBe(9);
+    expect(Array.from(ix.data.slice(1))).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
     expect(ix.keys).toHaveLength(17);
     expect(ix.keys[0]).toMatchObject({ pubkey: PAYER, isSigner: true, isWritable: true });
     expect(ix.keys[2]).toMatchObject({ pubkey: MARKET, isWritable: true });
@@ -114,6 +116,32 @@ describe('instruction builders — discriminator tags + key positions', () => {
     expect(ix.keys[9].pubkey.equals(TOKEN_2022_PROGRAM_ID)).toBe(true);
     expect(ix.keys[13].pubkey.equals(lenderIntegrationAccountPda(MARKET)[0])).toBe(true);
     expect(ix.keys[14].pubkey.equals(borrowerIntegrationAccountPda(MARKET)[0])).toBe(true);
+  });
+
+  it('CreateMarket (with params → borsh-encoded Some(value) fields)', () => {
+    const ix = createMarketInstruction({
+      marketCreator: PAYER,
+      market: MARKET,
+      debtMint: DEBT_MINT,
+      collateralMint: COLLAT_MINT,
+      marginfiGroup: MARGINFI_GROUP,
+      debtBank: DEBT_BANK,
+      collateralBank: COLLAT_BANK,
+      marginfiProgram: MARGINFI_PROGRAM,
+      params: {
+        ltvBufferBps: 250,
+        gracePeriodSeconds: 3600,
+      },
+    });
+    expect(tagOf(ix.data)).toBe(InstructionTag.CreateMarket);
+    // tag(1) + 6× None(1) + Some(u16)(3) + Some(u32)(5) = 15 bytes.
+    expect(ix.data.length).toBe(1 + 6 + 3 + 5);
+    // ltvBufferBps = 250 (7th option, at offset 1 + 6 = 7).
+    expect(ix.data[7]).toBe(1); // Some tag
+    expect(ix.data.readUInt16LE(8)).toBe(250);
+    // gracePeriodSeconds = 3600 (8th option, at offset 10).
+    expect(ix.data[10]).toBe(1); // Some tag
+    expect(ix.data.readUInt32LE(11)).toBe(3600);
   });
 
   /* ── Tag 1 ───────────────────────────────────────────── */

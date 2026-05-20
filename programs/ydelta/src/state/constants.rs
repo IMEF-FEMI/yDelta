@@ -25,7 +25,7 @@ const FREE_LIST_OVERHEAD: usize = 4;
 pub const MARKET_FREE_LIST_BLOCK_SIZE: usize = MARKET_BLOCK_SIZE - FREE_LIST_OVERHEAD;
 
 /// Wall-clock sentinel for `RestingOrder.last_valid_unix_ts` meaning
-/// "never expires". Mirrors manifest's `NO_EXPIRATION_LAST_VALID_SLOT`
+/// "never expires".
 /// pattern but in unix-ts since yDelta orders are time-windowed.
 pub const NO_EXPIRATION_LAST_VALID_UNIX_TS: i64 = 0;
 

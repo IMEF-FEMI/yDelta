@@ -1,5 +1,6 @@
 use std::cell::RefMut;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use hypertree::get_mut_helper;
 use solana_program::{
     account_info::AccountInfo, entrypoint::ProgramResult, msg, program_error::ProgramError,
@@ -18,13 +19,67 @@ use crate::validation::{
     MARKET_SIGNER_SEED,
 };
 
+use super::fee_config_helpers::{apply_fee_config_overrides, validate_fee_config_overrides};
 use super::shared::{expand_market, invoke};
+
+/// Per-field overrides applied on top of `FeeConfig::default()` when
+/// the market is created. Every field is optional — `None` keeps the
+/// default value. Shares its wire format (and validation rules) with
+/// `SetFeeConfigParams` so admins use the same shape whether they're
+/// configuring a market at creation or retuning it later.
+///
+/// `FeeConfig::default()` already seeds `ltv_buffer_bps = 200` and a
+/// 24-hour `grace_period_seconds`, so a `CreateMarketParams` with
+/// every field set to `None` produces a market that is safe to take
+/// traffic immediately (no zero-margin LTV checks).
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Default)]
+pub struct CreateMarketParams {
+    pub protocol_fee_bps_floor: Option<u16>,
+    pub origination_bps: Option<u16>,
+    pub curator_split_bps: Option<u16>,
+    pub curator_fee_bps: Option<u16>,
+    pub liquidation_keeper_bps: Option<u16>,
+    pub liquidation_protocol_bps: Option<u16>,
+    pub ltv_buffer_bps: Option<u16>,
+    pub grace_period_seconds: Option<u32>,
+}
+
+impl From<&CreateMarketParams> for crate::program::processor::set_fee_config::SetFeeConfigParams {
+    /// `CreateMarketParams` is wire-identical to `SetFeeConfigParams`,
+    /// but Rust treats them as distinct nominal types. This conversion
+    /// lets us route through the shared `validate_fee_config_overrides`
+    /// / `apply_fee_config_overrides` helpers without duplicating the
+    /// eight per-field branches in both processors.
+    fn from(p: &CreateMarketParams) -> Self {
+        Self {
+            protocol_fee_bps_floor: p.protocol_fee_bps_floor,
+            origination_bps: p.origination_bps,
+            curator_split_bps: p.curator_split_bps,
+            curator_fee_bps: p.curator_fee_bps,
+            liquidation_keeper_bps: p.liquidation_keeper_bps,
+            liquidation_protocol_bps: p.liquidation_protocol_bps,
+            ltv_buffer_bps: p.ltv_buffer_bps,
+            grace_period_seconds: p.grace_period_seconds,
+        }
+    }
+}
 
 pub fn process_create_market(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
-    _data: &[u8],
+    data: &[u8],
 ) -> ProgramResult {
+    // Optional payload — accept a zero-length data buffer as "all
+    // defaults", so callers that don't care about overrides don't pay
+    // a borsh-serialization round-trip. Any non-empty payload MUST
+    // borsh-decode cleanly into `CreateMarketParams`.
+    let params: CreateMarketParams = if data.is_empty() {
+        CreateMarketParams::default()
+    } else {
+        CreateMarketParams::try_from_slice(data)?
+    };
+    let fee_overrides = (&params).into();
+    validate_fee_config_overrides(&fee_overrides)?;
     let CreateMarketContext {
         payer,
         market,
@@ -165,6 +220,12 @@ pub fn process_create_market(
         header.marginfi_group = *marginfi_group.info.key;
         header.market_signer = *market_signer.key;
         header.market_signer_bump = market_signer_bump;
+        // `new_empty` already seeded `header.fee_config` with safe
+        // defaults (`ltv_buffer_bps = 200`, 24h grace). Layer any
+        // admin-supplied overrides on top so the market ships
+        // fully-configured in a single ix — no follow-up
+        // `set_fee_config` round-trip required.
+        apply_fee_config_overrides(&mut header.fee_config, &fee_overrides);
     }
 
     emit_stack(CreateMarketLog {

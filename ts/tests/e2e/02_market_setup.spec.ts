@@ -3,9 +3,12 @@
  * marginfi mainnet fixtures loaded.
  *
  *   1. CreateGlobalConfig (precondition for every state-mutating ix).
- *   2. CreateMarket — initialises both marginfi integration accounts via CPI.
- *   3. SetFeeConfig — flips `fee_config_set` so the market can unpause.
- *   4. SetMarketPause(false) — go live.
+ *   2. CreateMarket(params) — initialises both marginfi integration accounts
+ *      via CPI AND applies any supplied `CreateMarketParams` fee overrides.
+ *      Markets ship unpaused with a safe `FeeConfig::default()`.
+ *   3. SetFeeConfig — retunes fee_config on a live market (still callable
+ *      while paused, for emergency retunes).
+ *   4. SetMarketPause(true) / (false) — admin halt/resume.
  *   5. CreateVault — opens the per-mint GlobalVault.
  *   6. CreateRiskProfile — adds profile 0.
  *
@@ -93,7 +96,7 @@ describe('e2e: market + vault setup', () => {
     expect(acc!.data.length).toBe(MARKET_FIXED_SIZE);
   });
 
-  it('CreateMarket initialises a paused market with the right admin/mints', async () => {
+  it('CreateMarket(params) ships unpaused + applies the supplied fee overrides', async () => {
     await bk.send(
       [
         createMarketInstruction({
@@ -105,6 +108,12 @@ describe('e2e: market + vault setup', () => {
           debtBank: USDC_BANK,
           collateralBank: SOL_BANK,
           marginfiProgram: MARGINFI_PROGRAM_ID,
+          params: {
+            protocolFeeBpsFloor: 50,
+            ltvBufferBps: 200,
+            curatorSplitBps: 1_000,
+            gracePeriodSeconds: 86_400,
+          },
         }),
       ],
       [admin],
@@ -114,40 +123,52 @@ describe('e2e: market + vault setup', () => {
     expect(header.debtMint.equals(USDC_MINT)).toBe(true);
     expect(header.collateralMint.equals(WSOL_MINT)).toBe(true);
     expect(header.admin.equals(admin.publicKey)).toBe(true);
-    expect(header.isPaused).toBe(true);
-    expect(header.feeConfigSet).toBe(false);
+    // Market is fully configured AND unpaused in one ix — no follow-up
+    // `set_fee_config` / `set_market_pause(false)` round-trip required.
+    expect(header.isPaused).toBe(false);
+    expect(header.feeConfig.protocolFeeBpsFloor).toBe(50);
+    expect(header.feeConfig.ltvBufferBps).toBe(200);
+    expect(header.feeConfig.curatorSplitBps).toBe(1_000);
+    expect(header.feeConfig.gracePeriodSeconds).toBe(86_400);
     expect(header.marginfiGroup.equals(MARGINFI_GROUP)).toBe(true);
   });
 
-  it('SetFeeConfig flips fee_config_set + applies the bps values', async () => {
+  it('SetFeeConfig retunes individual fields on a live market', async () => {
     await bk.send(
       [
         setFeeConfigInstruction({
           admin: admin.publicKey,
           market: market.publicKey,
-          protocolFeeBpsFloor: 50,
-          ltvBufferBps: 200,
-          curatorSplitBps: 1_000,
-          gracePeriodSeconds: 86_400,
+          ltvBufferBps: 300,
         }),
       ],
       [admin],
     );
 
     const header = decodeMarketHeader((await bk.getAccount(market.publicKey))!.data);
-    expect(header.feeConfigSet).toBe(true);
+    // Only the field passed in changes; the others stay at their
+    // create-market values (regression guard for the shared
+    // `apply_fee_config_overrides` helper).
+    expect(header.feeConfig.ltvBufferBps).toBe(300);
     expect(header.feeConfig.protocolFeeBpsFloor).toBe(50);
-    expect(header.feeConfig.ltvBufferBps).toBe(200);
     expect(header.feeConfig.curatorSplitBps).toBe(1_000);
     expect(header.feeConfig.gracePeriodSeconds).toBe(86_400);
   });
 
-  it('SetMarketPause(false) flips the live bit', async () => {
+  it('SetMarketPause toggles is_paused both directions', async () => {
+    // Halt.
+    await bk.send(
+      [setMarketPauseInstruction({ admin: admin.publicKey, market: market.publicKey, paused: true })],
+      [admin],
+    );
+    let header = decodeMarketHeader((await bk.getAccount(market.publicKey))!.data);
+    expect(header.isPaused).toBe(true);
+    // Resume.
     await bk.send(
       [setMarketPauseInstruction({ admin: admin.publicKey, market: market.publicKey, paused: false })],
       [admin],
     );
-    const header = decodeMarketHeader((await bk.getAccount(market.publicKey))!.data);
+    header = decodeMarketHeader((await bk.getAccount(market.publicKey))!.data);
     expect(header.isPaused).toBe(false);
   });
 

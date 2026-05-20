@@ -136,6 +136,128 @@
                 "panel": "shared",
                 "clear": true
             }
+        },
+        {
+            "label": "ts: typecheck",
+            "type": "shell",
+            "command": "yarn",
+            "args": ["typecheck"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$tsc"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ts: lint",
+            "type": "shell",
+            "command": "yarn",
+            "args": ["lint"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$eslint-stylish"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ts: test (unit)",
+            "type": "shell",
+            "command": "yarn",
+            "args": ["vitest", "run", "ts/tests/accounts.test.ts", "ts/tests/instructions.test.ts"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": false
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ts: test (e2e)",
+            "type": "shell",
+            "command": "yarn",
+            "args": ["vitest", "run", "ts/tests/e2e/"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ts: test (all)",
+            "type": "shell",
+            "command": "yarn",
+            "args": ["test"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ts: single test (e2e, by spec)",
+            "type": "shell",
+            "command": "yarn",
+            "args": ["vitest", "run", "ts/tests/e2e/${input:tsSpec}"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "ts: format",
+            "type": "shell",
+            "command": "yarn",
+            "args": ["format"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
         }
     ],
     "inputs": [
@@ -144,6 +266,32 @@
             "type": "promptString",
             "description": "Test name (substring filter, e.g. match_account_count_constant_in_n)",
             "default": ""
+        },
+        {
+            "id": "tsSpec",
+            "type": "pickString",
+            "description": "TS e2e spec (file in ts/tests/e2e/)",
+            "options": [
+                "01_global_config.spec.ts",
+                "02_market_setup.spec.ts",
+                "03_curator_flow.spec.ts",
+                "04_borrower_deposit.spec.ts",
+                "05_place_order_flow.spec.ts",
+                "06_process_matched_loan.spec.ts",
+                "07_repay_flow.spec.ts",
+                "08_settle_matured.spec.ts",
+                "09_p2pool_full_fallback.spec.ts",
+                "10_p2pool_partial_fallback.spec.ts",
+                "11_liquidate.spec.ts",
+                "12_convert_p2pool_to_fixed.spec.ts",
+                "13_partial_liquidation.spec.ts",
+                "14_pause_guards.spec.ts",
+                "15_authz_negative.spec.ts",
+                "16_accrual.spec.ts",
+                "17_full_cycle_conservation.spec.ts",
+                "18_bad_debt_log.spec.ts",
+                "19_collateral_sizing.spec.ts"
+            ]
         },
         {
             "id": "testCluster",

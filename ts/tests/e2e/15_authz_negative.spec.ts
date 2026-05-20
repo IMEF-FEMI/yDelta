@@ -35,7 +35,6 @@ import {
   setupMarket,
   setupRiskProfile,
   setupVault,
-  unpauseMarket,
 } from './_setup.ts';
 
 void globalVaultPda;
@@ -53,7 +52,6 @@ describe('e2e: authz negative paths (non-admin/non-curator attempts)', () => {
     admin = bk.payer;
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
-    await unpauseMarket(bk, admin, market.publicKey);
     await setupVault(bk, admin);
     curator = await bk.fundedKeypair();
     await setupRiskProfile(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });

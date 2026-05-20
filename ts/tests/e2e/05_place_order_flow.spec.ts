@@ -44,7 +44,7 @@ import {
   USDC_ORACLE,
   WSOL_MINT,
 } from './_fixtures.ts';
-import { setupGlobalConfig, setupMarket, setupRiskProfile, setupVault, unpauseMarket } from './_setup.ts';
+import { setupGlobalConfig, setupMarket, setupRiskProfile, setupVault } from './_setup.ts';
 
 /**
  * Derive a marginfi v0.1.8 bank's `liquidity_vault_authority` PDA. Seeds:
@@ -87,7 +87,6 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
     // Global config + market + vault + risk profile.
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
-    await unpauseMarket(bk, admin, market.publicKey);
     await setupVault(bk, admin);
     curator = await bk.fundedKeypair();
     await setupRiskProfile(bk, admin, curator.publicKey, {

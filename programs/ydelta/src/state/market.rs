@@ -21,7 +21,7 @@ use super::resting_order::RestingOrder;
 /// spread-floor gate applied at match time. `ltv_buffer_bps`
 /// is the LTV-at-match buffer in basis points (`200` = 2%).
 #[repr(C)]
-#[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
+#[derive(Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct FeeConfig {
     pub protocol_fee_bps_floor: u16,
     pub origination_bps: u16,
@@ -30,10 +30,10 @@ pub struct FeeConfig {
     pub liquidation_keeper_bps: u16,
     pub liquidation_protocol_bps: u16,
     /// Extra collateral required above the oracle-implied minimum on
-    /// every match, in basis points. Defaults to 0 on fresh markets
-    /// (set by admin ix). At 0 the LTV check enforces only the bare
-    /// oracle math; tests typically flip this to 200 (2%) to mirror
-    /// mainnet conventions.
+    /// every match, in basis points. Defaults to 200 (2%) — matches
+    /// the mainnet convention referenced throughout the test suite,
+    /// and ensures a freshly-created market cannot run zero-margin
+    /// LTV checks even if the admin passes no fee_config overrides.
     pub ltv_buffer_bps: u16,
     _padding_for_u32: [u8; 2],
     /// Grace window after `loan.matures_at_unix` before the loan
@@ -50,8 +50,29 @@ const_assert_eq!(size_of::<FeeConfig>() % 8, 0);
 /// eligible for the `settle_matured_loan` keeper. 24 hours.
 pub const DEFAULT_GRACE_PERIOD_SECONDS: u32 = 86_400;
 
+/// Default LTV safety buffer applied when `create_market` is invoked
+/// without an explicit `ltv_buffer_bps` override. 200 bps (2%).
+pub const DEFAULT_LTV_BUFFER_BPS: u16 = 200;
+
+impl Default for FeeConfig {
+    fn default() -> Self {
+        Self {
+            protocol_fee_bps_floor: 0,
+            origination_bps: 0,
+            curator_split_bps: 0,
+            curator_fee_bps: 0,
+            liquidation_keeper_bps: 0,
+            liquidation_protocol_bps: 0,
+            ltv_buffer_bps: DEFAULT_LTV_BUFFER_BPS,
+            _padding_for_u32: [0; 2],
+            grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
+            _padding_tail: [0; 4],
+        }
+    }
+}
+
 /// Free-list block payload. Sized to fill a `MARKET_BLOCK_SIZE` block
-/// minus the 4-byte free-list-node header. Mirrors manifest's pattern.
+/// minus the 4-byte free-list-node header.
 #[repr(C, packed)]
 #[derive(Default, Copy, Clone, Pod, Zeroable)]
 pub struct MarketUnusedFreeListPadding {
@@ -265,16 +286,11 @@ pub struct MarketFixed {
     /// When `1`, every state-mutating market ix rejects with
     /// `MarketPaused`. Set/cleared by `set_market_pause`
     /// (admin-gated). Read-only ixs (`SyncMarketPosition`) stay live.
+    /// Markets ship unpaused — `process_create_market` seeds a safe
+    /// `FeeConfig::default()` (non-zero `ltv_buffer_bps`) so there is
+    /// no need to gate first-go-live behind an explicit pause toggle.
     pub is_paused: u8,
-    /// `1` once the admin has explicitly called `set_fee_config`
-    /// at least once. A fresh `FeeConfig` defaults every bps field
-    /// (incl. `ltv_buffer_bps`) to 0, so a market unpaused before fee
-    /// config was set would run zero-margin LTV checks.
-    /// `set_market_pause(0)` (unpause) is gated on this flag — the admin
-    /// MUST consciously run `set_fee_config` (setting `ltv_buffer_bps`
-    /// to the desired safety margin) before the market can go live.
-    pub fee_config_set: u8,
-    _padding_pause: [u8; 6],
+    _padding_pause: [u8; 7],
 }
 // Total size accounting (= 512 = MARKET_FIXED_SIZE):
 //   8   discriminant
@@ -290,7 +306,7 @@ pub struct MarketFixed {
 //   8   3 × u8 bumps + 5 _padding_bumps
 //   32  admin Pubkey
 //   32  pending_admin Pubkey
-//   8   is_paused u8 + fee_config_set u8 + _padding_pause [u8;6]
+//   8   is_paused u8 + _padding_pause [u8;7]
 //   ──
 //   512
 const_assert_eq!(size_of::<MarketFixed>(), MARKET_FIXED_SIZE);
@@ -331,13 +347,7 @@ impl MarketFixed {
             matched_loans_root_index: NIL,
             free_list_head_index: NIL,
             position_count: 0,
-            fee_config: FeeConfig {
-                // Default 24-hour grace window. Other bps fields stay
-                // at their `Default::default()` zero values until the
-                // admin tunes them.
-                grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
-                ..FeeConfig::default()
-            },
+            fee_config: FeeConfig::default(),
             _padding_after_fee: [0; 4],
             lender_integration_account: Pubkey::default(),
             borrower_integration_account: Pubkey::default(),
@@ -351,16 +361,14 @@ impl MarketFixed {
             _padding_bumps: [0; 5],
             admin: Pubkey::default(),
             pending_admin: Pubkey::default(),
-            // New markets start PAUSED. Admin must explicitly send
-            // `set_market_pause(false)` once setup (fee_config, marginfi
-            // wiring, oracle plumbing) is verified. Defense-in-depth
-            // against the "fresh keypair every run" duplicate-market
-            // hazard in setup scripts.
-            is_paused: 1,
-            // Fee config not yet set — `set_market_pause(0)` refuses to
-            // unpause until `set_fee_config` flips this.
-            fee_config_set: 0,
-            _padding_pause: [0; 6],
+            // Markets ship unpaused. `process_create_market` writes
+            // `FeeConfig::default()` (non-zero `ltv_buffer_bps`) here
+            // first, then applies any `CreateMarketParams` overrides,
+            // so the market is safe to take traffic immediately.
+            // Admins still call `set_market_pause` to halt a live
+            // market in an emergency.
+            is_paused: 0,
+            _padding_pause: [0; 7],
         }
     }
 

@@ -22,7 +22,7 @@ use ydelta::program::instruction_builders::{
     create_market_instructions::create_market_instructions,
     place_order_instruction::place_order_instruction,
 };
-use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
+use ydelta::program::processor::create_market::CreateMarketParams;
 use ydelta::state::market::get_mut_helper_seat;
 use ydelta::state::{ClaimedSeat, MarketFixed, MarketValue, OrderType, RestingOrder, Side};
 
@@ -449,6 +449,16 @@ impl TestFixture {
 
     async fn create_market_account(&mut self) {
         let payer = self.payer_keypair();
+        // Override `ltv_buffer_bps` back to 0 — the protocol default
+        // moved to 200 (2%) once `create_market` started seeding a safe
+        // `FeeConfig::default()`, but existing tests in this suite
+        // were authored against a zero buffer (their LTV math is
+        // calibrated against the bare oracle minimum). Holding the
+        // buffer at 0 here avoids re-tuning every LTV-sensitive case.
+        let params = CreateMarketParams {
+            ltv_buffer_bps: Some(0),
+            ..CreateMarketParams::default()
+        };
         let ixs = create_market_instructions(
             &self.market.pubkey(),
             &self.debt_mint.pubkey(),
@@ -458,27 +468,11 @@ impl TestFixture {
             &self.debt_bank,
             &self.collateral_bank,
             &marginfi_mocks::ID,
+            &params,
         )
         .unwrap();
         let market_kp = self.market.insecure_clone();
         self.process(&ixs, &[&market_kp]).await.unwrap();
-        // `set_market_pause(false)` is gated on fee config having been
-        // explicitly set. Call `set_fee_config` first (buffer 0 to
-        // preserve existing LTV-math expectations across the suite).
-        {
-            let mut params = SetFeeConfigParams::default();
-            params.ltv_buffer_bps = Some(0);
-            let set_fee = ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction(
-                &self.market.pubkey(), &payer.pubkey(), params,
-            );
-            self.process(&[set_fee], &[]).await.unwrap();
-        }
-        // New markets ship paused; unpause so existing test cases that
-        // mutate market state through this fixture keep working.
-        let unpause = ydelta::program::instruction_builders::set_market_pause_instruction::set_market_pause_instruction(
-            &self.market.pubkey(), &payer.pubkey(), false,
-        );
-        self.process(&[unpause], &[]).await.unwrap();
     }
 
     /// Create a fresh keypair pre-funded with SOL and ATAs for both mints.
