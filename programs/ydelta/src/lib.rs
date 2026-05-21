@@ -48,6 +48,7 @@ use program::{
     place_order_for_risk_profile::process_place_order_for_risk_profile,
     process_matched_loan::process_process_matched_loan,
     protocol_fee_claim::process_protocol_fee_claim,
+    remove_risk_profile::process_remove_risk_profile,
     repay::process_repay,
     set_fee_config::process_set_fee_config,
     set_market_pause::process_set_market_pause,
@@ -67,10 +68,6 @@ use solana_program::{
 #[cfg(not(feature = "no-entrypoint"))]
 use solana_security_txt::security_txt;
 
-// TODO(pre-mainnet): fill `project_url`, `contacts`, `policy`,
-// `source_code` with real values before deploy. Empty fields fail the
-// solana-security-txt spec's "useful" check and weaken incident-response
-// posture.
 #[cfg(not(feature = "no-entrypoint"))]
 security_txt! {
     name: "ydelta",
@@ -182,6 +179,9 @@ pub fn process_instruction(
             process_check_maturity_liquidatable(program_id, accounts, data)?
         }
         YdeltaInstruction::SetVaultPause => process_set_vault_pause(program_id, accounts, data)?,
+        YdeltaInstruction::RemoveRiskProfile => {
+            process_remove_risk_profile(program_id, accounts, data)?
+        }
     }
 
     Ok(())

@@ -18,6 +18,7 @@ pub mod place_order;
 pub mod place_order_for_risk_profile;
 pub mod process_matched_loan;
 pub mod protocol_fee_claim;
+pub mod remove_risk_profile;
 pub mod repay;
 pub mod set_fee_config;
 pub mod set_market_pause;

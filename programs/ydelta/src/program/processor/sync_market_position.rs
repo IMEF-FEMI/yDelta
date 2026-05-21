@@ -9,7 +9,7 @@ use solana_program::{
 
 use crate::program::YdeltaError;
 use crate::require;
-use crate::state::user_account::user_account_pda;
+use crate::state::user_account::{user_account_pda, UserAccountFixed};
 use crate::state::MarketFixed;
 use crate::validation::loaders::load_global_config;
 use crate::validation::{Signer, YdeltaAccountInfo};
@@ -57,11 +57,9 @@ pub fn process_sync_market_position(
         "owner_user_account is not initialized; the owner must touch a \
          signer-side ix first to auto-create it"
     )?;
-    require!(
-        !owner_user_account_ai.data_is_empty(),
-        YdeltaError::IncorrectAccount,
-        "owner_user_account has no data — cannot sync mirrors"
-    )?;
+    // Verify owner + discriminant + version, consistent with every other
+    // loader (subsumes the data-empty check).
+    let _ = YdeltaAccountInfo::<UserAccountFixed>::new(owner_user_account_ai)?;
 
     // 3. Reuse the same helper signer-side ixs use; it handles read
     //    (canonical seat) → upsert (MarketPosition) → write balances.

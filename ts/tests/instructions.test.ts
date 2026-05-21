@@ -351,19 +351,19 @@ describe('instruction builders — discriminator tags + key positions', () => {
   });
 
   /* ── Tag 9 ───────────────────────────────────────────── */
-  it('CreateRiskProfile encodes the policy fields', () => {
+  it('CreateRiskProfile encodes the policy fields (profile_id is program-assigned)', () => {
     const ix = createRiskProfileInstruction({
       payer: PAYER,
       mint: DEBT_MINT,
-      profileId: 7,
       curator: ADMIN,
       maxLtvBps: 6_000,
       maxTermSeconds: 30 * 86_400,
     });
     expect(tagOf(ix.data)).toBe(InstructionTag.CreateRiskProfile);
-    // tag(1) + u8(1) + Pubkey(32) + u16(2) + u32(4) = 40
-    expect(ix.data.length).toBe(40);
-    expect(ix.data[1]).toBe(7); // profile_id
+    // tag(1) + Pubkey(32) + u16(2) + u32(4) = 39. `profile_id` is no
+    // longer in the wire payload — it's assigned by the program from
+    // the vault's monotonic `next_profile_id` counter.
+    expect(ix.data.length).toBe(39);
   });
 
   /* ── Tag 10 ──────────────────────────────────────────── */
@@ -739,9 +739,9 @@ describe('instruction builders — discriminator tags + key positions', () => {
   });
 });
 
-describe('tag space is exhaustive 0..=36', () => {
-  it('InstructionTag has every value from 0 to 36', () => {
+describe('tag space is exhaustive 0..=37', () => {
+  it('InstructionTag has every value from 0 to 37', () => {
     const values = Object.values(InstructionTag).filter((v): v is number => typeof v === 'number');
-    expect(values.sort((a, b) => a - b)).toEqual(Array.from({ length: 37 }, (_, i) => i));
+    expect(values.sort((a, b) => a - b)).toEqual(Array.from({ length: 38 }, (_, i) => i));
   });
 });

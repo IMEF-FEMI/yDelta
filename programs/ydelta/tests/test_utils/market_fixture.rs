@@ -1334,11 +1334,14 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Admin creates a risk profile on the USDC vault.
+    /// Admin creates a risk profile on the USDC vault. The
+    /// `profile_id` is assigned by the program (vault's monotonic
+    /// `next_profile_id` counter); off-chain tests that need to know
+    /// which id was assigned should read the
+    /// `RiskProfileCreatedLog` event or pre-snapshot the counter.
     pub async fn create_risk_profile(
         &self,
         admin: &Keypair,
-        profile_id: u8,
         curator: Pubkey,
         max_ltv_bps: u16,
         max_term_seconds: u32,
@@ -1346,7 +1349,6 @@ impl MarketFixture {
         let ix = create_risk_profile_instruction(
             &mainnet::usdc_mint(),
             &admin.pubkey(),
-            profile_id,
             &curator,
             max_ltv_bps,
             max_term_seconds,
@@ -1511,15 +1513,17 @@ impl MarketFixture {
         // safe to call after an explicit create_vault.
         let _ = self.create_vault(admin).await;
         self.refresh_blockhash().await;
-        self.create_risk_profile(
-            admin,
-            profile_id,
-            curator.pubkey(),
-            max_ltv_bps,
-            term_seconds,
-        )
-        .await
-        .expect("create_risk_profile");
+        // `profile_id` is now assigned by the program; the caller's
+        // expectation is preserved by the monotonic counter — Nth
+        // create on a fresh vault returns id N-1. Downstream calls in
+        // this helper use the caller's `profile_id`; if it ever
+        // disagrees with the on-chain assignment the
+        // `global_vault_deposit` / `place_order_for_risk_profile` calls
+        // below will fail with `VaultProfileNotFound`, surfacing the
+        // mismatch loudly.
+        self.create_risk_profile(admin, curator.pubkey(), max_ltv_bps, term_seconds)
+            .await
+            .expect("create_risk_profile");
         self.refresh_blockhash().await;
         self.global_vault_deposit(depositor, depositor_token, profile_id, deposit_atoms)
             .await

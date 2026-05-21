@@ -53,6 +53,19 @@ pub fn process_deposit(
         user_account_ai,
     } = DepositContext::load(accounts)?;
 
+    // Only collateral may be deposited into a market seat. The debt side is
+    // an output (loan proceeds, credited internally by process_matched_loan
+    // and withdrawn by the borrower), never a user-supplied input: repay
+    // pulls atoms straight from the borrower's wallet, so a direct debt
+    // deposit serves no purpose and would only commingle with the lender
+    // integration account.
+    require!(
+        !is_debt,
+        YdeltaError::InvalidDepositAccounts,
+        "direct deposit of the debt asset into a market seat is not supported \
+         — post collateral; borrowed funds arrive via loan settlement"
+    )?;
+
     let market_key = *market.info.key;
     let mint_key = if is_debt {
         market.get_fixed()?.debt_mint

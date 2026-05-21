@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "name": "ydelta",
   "programId": "A1fNwJV5C2BTKWcnHmaELNq2TLB11UP7mp9P7q4ahWnu",
-  "description": "Quote-only fixed-rate lending on Solana. 37 instructions, tags 0..=36. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` (Phase 3) and read raw byte offsets.",
+  "description": "Quote-only fixed-rate lending on Solana. 38 instructions, tags 0..=37. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` (Phase 3) and read raw byte offsets.",
   "conventions": {
     "instructionDataHeader": "1-byte u8 tag (see `tag` per instruction). Tail is borsh-encoded except for `SettleMaturedLoan` and `LiquidateLoan`, whose tail is a bare little-endian u64 (`repay_atoms_max`).",
     "amounts": "All atoms are bigint at the wire level. All bps fields are u16. All term_seconds are u32. All u128 fields (shares, fp48 share-values) are LE 16 bytes.",
@@ -31,7 +31,16 @@
         { "name": "market_signer", "writable": false, "pda": ["b\"market_signer\"", "market"] },
         { "name": "marginfi_program", "writable": false }
       ],
-      "args": []
+      "args": [
+        { "name": "protocol_fee_bps_floor", "type": { "option": "u16" } },
+        { "name": "origination_bps", "type": { "option": "u16" } },
+        { "name": "curator_split_bps", "type": { "option": "u16" } },
+        { "name": "curator_fee_bps", "type": { "option": "u16" } },
+        { "name": "liquidation_keeper_bps", "type": { "option": "u16" } },
+        { "name": "liquidation_protocol_bps", "type": { "option": "u16" } },
+        { "name": "ltv_buffer_bps", "type": { "option": "u16" } },
+        { "name": "grace_period_seconds", "type": { "option": "u32" } }
+      ]
     },
     {
       "name": "ClaimSeat",
@@ -233,6 +242,7 @@
     {
       "name": "CreateRiskProfile",
       "tag": 9,
+      "note": "profile_id is assigned by the program from vault.next_profile_id (monotonic, never reused). The assigned id is reported back via RiskProfileCreatedLog.profile_id.",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
         { "name": "global_config", "writable": false },
@@ -240,7 +250,6 @@
         { "name": "system_program", "writable": false }
       ],
       "args": [
-        { "name": "profile_id", "type": "u8" },
         { "name": "curator", "type": "publicKey" },
         { "name": "max_ltv_bps", "type": "u16" },
         { "name": "max_term_seconds", "type": "u32" }
@@ -705,6 +714,17 @@
         { "name": "vault", "writable": true }
       ],
       "args": [{ "name": "paused", "type": "u8" }]
+    },
+    {
+      "name": "RemoveRiskProfile",
+      "tag": 37,
+      "note": "Tears down an empty RiskProfile. Rejects with VaultProfileNotEmpty (code 34) unless every balance field on the profile is zero. The freed 512-byte block returns to the profile free list; vault.next_profile_id is NOT decremented so the id is retired forever.",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true }
+      ],
+      "args": [{ "name": "profile_id", "type": "u8" }]
     }
   ],
   "accounts": [

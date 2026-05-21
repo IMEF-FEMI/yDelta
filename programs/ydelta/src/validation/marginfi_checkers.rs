@@ -322,15 +322,7 @@ pub fn oracle_price_args<'info>(
     out
 }
 
-/// The marginfi program account itself. Validates the pubkey matches the
-/// vendored `marginfi_mocks::ID` so we can't be tricked into CPIs against a
-/// rogue program.
-///
-/// TODO(marginfi-v2): pre-mainnet, swap `marginfi_mocks::ID` for the
-/// real marginfi v2 program id and verify ABI compatibility of
-/// `Bank` / `MarginfiAccount` decoders + `borrow_ix` / `deposit_ix` /
-/// `repay_ix` / `withdraw_ix` CPI builders. yDelta deploys ONE program
-/// to mainnet; the mocks crate is test-only.
+
 #[derive(Clone)]
 pub struct MarginfiProgram<'a, 'info> {
     pub info: &'a AccountInfo<'info>,

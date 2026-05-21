@@ -1,59 +1,94 @@
 /**
- * `claim-repayment.ts` — permissionless cranker that closes a fully-repaid
- * risk-profile loan. Heavy (3 CPIs + oracle read). The vault-settle loader
- * reads exactly ONE oracle (`bank.config.primary_oracle()`), so the script
- * takes a single `--bank-oracle`.
+ * claim-repayment.ts — `ClaimRepaymentForRiskProfile` (tag 20).
+ * Permissionless cranker. Drains a settled vault loan back into vault
+ * shares and closes the loan PDA.
  *
- * Flags:
- *   --market <PUBKEY>
- *   --sequence <U64>
- *   --global-vault <PUBKEY>
- *   --debt-mint <PUBKEY>
- *   --debt-bank <PUBKEY>
- *   --debt-liquidity-vault <PUBKEY>
- *   --debt-bank-lva <PUBKEY>
- *   --bank-oracle <PUBKEY>
- *   --lender-marginfi <PUBKEY>
- *   --token-program <PUBKEY>
- *   --marginfi-group <PUBKEY>
- *   --marginfi-program <PUBKEY>
- *   --cranker-refund <PUBKEY>        (required — must equal LoanPDA.created_by)
+ * Reads:
+ *   .local/claim-repayment-input.json {
+ *     marketLabel: string,
+ *     sequence: string | number,
+ *     crankerRefund: string                  // who paid the loan rent at create
+ *   }
  */
+import { PublicKey } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+
 import {
-  HEAVY_IX_CU_LIMIT,
   claimRepaymentForRiskProfileInstruction,
-} from '../src/index.js';
+  cuBudgetIx,
+} from '../src/instructions/index.js';
 import {
-  bigintFlag,
+  globalVaultPda,
+  lenderIntegrationAccountPda,
+} from '../src/pdas.js';
+import {
+  appendTxLog,
   loadConnection,
   loadSigner,
-  pubkeyFlag,
-  runScript,
+  log,
+  readJson,
+  sendIxs,
 } from './_runner.js';
+import {
+  bankLiquidityVaultAuthority,
+  MARGINFI_PROGRAM_ID,
+  readBankOnchain,
+} from './_marginfi.js';
+import { crankStaleBankOracles } from './_oracleCrank.js';
+import type { MarketDump } from './_types.js';
 
-async function main(): Promise<void> {
-  const conn = loadConnection();
-  const signer = loadSigner();
-  const ix = claimRepaymentForRiskProfileInstruction({
-    payer: signer.publicKey,
-    market: pubkeyFlag('market'),
-    sequence: bigintFlag('sequence'),
-    globalVault: pubkeyFlag('global-vault'),
-    debtMint: pubkeyFlag('debt-mint'),
-    debtBank: pubkeyFlag('debt-bank'),
-    debtLiquidityVault: pubkeyFlag('debt-liquidity-vault'),
-    debtBankLiquidityVaultAuthority: pubkeyFlag('debt-bank-lva'),
-    bankOracle: pubkeyFlag('bank-oracle'),
-    lenderMarginfiAccount: pubkeyFlag('lender-marginfi'),
-    tokenProgram: pubkeyFlag('token-program'),
-    marginfiGroup: pubkeyFlag('marginfi-group'),
-    marginfiProgram: pubkeyFlag('marginfi-program'),
-    crankerRefund: pubkeyFlag('cranker-refund'),
-  });
-  await runScript({ conn, signer, ixs: [ix], cuLimit: HEAVY_IX_CU_LIMIT });
+interface Input {
+  marketLabel: string;
+  sequence: string | number;
+  crankerRefund: string;
 }
 
-main().catch((e) => {
-  console.error(e);
+async function main(): Promise<void> {
+  const input = readJson<Input>('claim-repayment-input.json');
+  const markets = readJson<Record<string, MarketDump>>('markets.json');
+  const market = markets[input.marketLabel];
+  if (!market) throw new Error(`unknown marketLabel ${input.marketLabel}`);
+
+  const conn = loadConnection();
+  const signer = loadSigner();
+  const debtMint = new PublicKey(market.debtMint);
+  const debtBank = new PublicKey(market.debtBank);
+  const debtBankState = await readBankOnchain(conn, debtBank);
+  const crank = await crankStaleBankOracles(conn, signer, [
+    { bank: debtBankState, pythFeedIdHex: market.debtPythFeedIdHex, pythShardId: market.debtPythShardId },
+  ]);
+
+  const ix = claimRepaymentForRiskProfileInstruction({
+    payer: signer.publicKey,
+    market: new PublicKey(market.market),
+    sequence: BigInt(input.sequence.toString()),
+    globalVault: globalVaultPda(debtMint)[0],
+    debtMint,
+    debtBank,
+    debtLiquidityVault: new PublicKey(market.debtLiquidityVault),
+    debtBankLiquidityVaultAuthority: bankLiquidityVaultAuthority(debtBank),
+    bankOracle: debtBankState.oracleKeys[0],
+    lenderMarginfiAccount: lenderIntegrationAccountPda(new PublicKey(market.market))[0],
+    tokenProgram: TOKEN_PROGRAM_ID,
+    marginfiGroup: new PublicKey(market.marginfiGroup),
+    marginfiProgram: MARGINFI_PROGRAM_ID,
+    crankerRefund: new PublicKey(input.crankerRefund),
+  });
+  log(`[claim-repayment] ${market.label} seq=${input.sequence}`);
+  const sig = await sendIxs(conn, signer, [cuBudgetIx(), ix]);
+  log(`[claim-repayment] signature = ${sig}`);
+  appendTxLog({
+    script: 'claim-repayment',
+    signatures: [sig],
+    oracleCrank: crank.entries,
+    summary: {
+      marketLabel: input.marketLabel,
+      sequence: input.sequence.toString(),
+    },
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
   process.exit(1);
 });

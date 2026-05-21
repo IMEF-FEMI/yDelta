@@ -50,6 +50,14 @@ export interface GlobalVaultHeader {
   openOrderCount: number;
   pendingGlobalVaultAdmin: PublicKey;
   isPaused: boolean;
+  /**
+   * Monotonic counter for the next `profile_id` to assign on
+   * `CreateRiskProfile`. Bumped on every successful create; **never**
+   * decremented on `RemoveRiskProfile`, so this value is the id the
+   * next create will receive (callers can pre-read it to predict the
+   * assignment).
+   */
+  nextProfileId: number;
 }
 
 export interface GlobalVault {
@@ -92,6 +100,7 @@ export function decodeGlobalVaultHeader(data: Uint8Array | Buffer): GlobalVaultH
     openOrderCount: readU32(dv, 232),
     pendingGlobalVaultAdmin: readPubkey(dv, 240),
     isPaused: readU8(dv, 304) !== 0,
+    nextProfileId: readU8(dv, 305),
   };
 }
 

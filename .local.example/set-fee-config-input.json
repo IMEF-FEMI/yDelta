@@ -1,0 +1,10 @@
+{
+  "marketLabel": "USDC/SOL",
+  "originationBps": 50,
+  "curatorSplitBps": 1000,
+  "curatorFeeBps": 200,
+  "liquidationKeeperBps": 100,
+  "liquidationProtocolBps": 50,
+  "ltvBufferBps": 200,
+  "gracePeriodSeconds": 86400
+}

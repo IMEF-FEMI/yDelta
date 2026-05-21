@@ -1,0 +1,18 @@
+{
+  "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "curatorLabel": "curator-main",
+  "profiles": [
+    {
+      "maxLtvBps": 6500,
+      "maxTermSeconds": 604800
+    },
+    {
+      "maxLtvBps": 7500,
+      "maxTermSeconds": 2592000
+    },
+    {
+      "maxLtvBps": 8500,
+      "maxTermSeconds": 7776000
+    }
+  ]
+}

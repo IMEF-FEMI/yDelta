@@ -29,6 +29,8 @@ export interface ClaimCuratorFeeArgs {
   bankOracle: PublicKey;
   marginfiProgram: PublicKey;
   marginfiGroup: PublicKey;
+  /** Token program owning the vault mint. Defaults to classic SPL. */
+  tokenProgram?: PublicKey;
 }
 
 export function claimCuratorFeeInstruction(
@@ -55,7 +57,7 @@ export function claimCuratorFeeInstruction(
     ro(args.bankLiquidityVaultAuthority),
     ro(args.bankOracle),
     ro(args.mint),
-    ro(TOKEN_PROGRAM_ID),
+    ro(args.tokenProgram ?? TOKEN_PROGRAM_ID),
     ro(args.marginfiProgram),
     ro(args.marginfiGroup),
   ];

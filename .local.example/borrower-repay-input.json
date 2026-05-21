@@ -1,0 +1,8 @@
+{
+  "marketLabel": "USDC/SOL",
+  "borrowerDebtTokenAta": "<borrower USDC ATA>",
+  "loanSequence": "1",
+  "crankerRefund": "<cranker pubkey that paid loan rent>",
+  "repayAtoms": "100000000",
+  "fullRepay": false
+}

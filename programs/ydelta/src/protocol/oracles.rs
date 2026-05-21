@@ -129,6 +129,11 @@ pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResul
         return Err(AdapterError::InvalidIntegrationAccount.into());
     }
     let bank_ai = &accounts[0];
+    // Defense-in-depth: pin bank owner so oracle-selection config can't come
+    // from an attacker-supplied account if a future caller skips the loader.
+    if bank_ai.owner != &marginfi_mocks::ID {
+        return Err(AdapterError::InvalidIntegrationAccount.into());
+    }
     let oracle_accounts: &[AccountInfo<'info>] = &accounts[1..];
     let bank_data = bank_ai.try_borrow_data()?;
     let cfg = BankConfigView::try_from_account_data(&bank_data)

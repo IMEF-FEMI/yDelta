@@ -177,6 +177,17 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
         0
     };
 
+    // The loan clock starts at FUNDING, not at the earlier orderbook match:
+    // interest accrual, maturity, and the depositor yield stream all share
+    // one t0. For a normal promotion that's `now` (when `do_vault_settle`
+    // below starts crediting this loan's net rate). A `VAULT_PRESETTLED`
+    // (convert) loan already had its vault-settle run inline at convert time
+    // — recorded as `matched_at_unix` — so it keeps that as its start.
+    let loan_started_at_unix = if presettled {
+        node.matched_at_unix
+    } else {
+        now_unix_ts
+    };
     let loan_fixed = LoanFixed::new_from_matched_loan_with_lender(
         market_key,
         node.sequence,
@@ -190,7 +201,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
         node.borrower_rate_bps,
         node.lender_rate_bps,
         node.term_seconds,
-        node.matched_at_unix,
+        loan_started_at_unix,
         node.flags,
         loan_type,
         node.borrower_marginfi_borrow_shares,

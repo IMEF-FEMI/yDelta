@@ -1,0 +1,8 @@
+{
+  "marketLabel": "USDC/SOL",
+  "rateBps": 600,
+  "termSeconds": 604800,
+  "principalAtoms": "10000000",
+  "collateralAtoms": "200000000",
+  "flags": 0
+}

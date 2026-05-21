@@ -103,10 +103,23 @@ pub fn process_global_vault_deposit(
         token_program.info.clone(),
         marginfi_program.info.clone(),
     ];
-    let _credited_shares: u128 = MarginfiV18Adapter.deposit(
+    let credited_shares: u128 = MarginfiV18Adapter.deposit(
         &adapter_accounts,
         received_atoms,
         &[global_vault_signer_seeds],
+    )?;
+    // Marginfi floors shares on deposit, so the integration account is worth
+    // slightly less than `received_atoms`. Account the marginfi-acknowledged
+    // value (not the gross transfer) so `total_assets`/`total_principal` never
+    // exceed the redeemable balance — otherwise the final withdrawer trips the
+    // physical-sufficiency gate on the rounding dust and can't fully exit.
+    let credited_atoms: u64 =
+        MarginfiV18Adapter.shares_to_amount(&[lending_pool.info.clone()], credited_shares)?;
+    require!(
+        credited_atoms > 0,
+        YdeltaError::InvalidArgument,
+        "deposit {} too small — marginfi acknowledged 0 atoms after share rounding",
+        received_atoms
     )?;
 
     // Expand the vault by one node block if needed.
@@ -167,7 +180,7 @@ pub fn process_global_vault_deposit(
                 crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info);
             accrue_risk_profile(profile, now, share_value_fp48)?;
 
-            let atoms_u128 = received_atoms as u128;
+            let atoms_u128 = credited_atoms as u128;
             let shares: u128 = if profile.total_shares == 0 {
                 // Genesis (or post-drain) state. Reset accumulated assets
                 // to neutralize any donations / phantom yield credited
@@ -177,6 +190,16 @@ pub fn process_global_vault_deposit(
                 profile.total_assets_atoms = 0;
                 atoms_u128
             } else {
+                // Fully impaired (assets wiped by bad debt, shares outstanding):
+                // share price is undefined. Block new deposits until shareholders
+                // burn their dead shares (genesis re-mints cleanly afterwards).
+                require!(
+                    profile.total_assets_atoms != 0,
+                    YdeltaError::InvalidArgument,
+                    "profile fully impaired (0 assets, {} shares) — deposits disabled \
+                     until existing shares are burned",
+                    { profile.total_shares }
+                )?;
                 atoms_u128
                     .checked_mul(profile.total_shares)
                     .and_then(|x| x.checked_div(profile.total_assets_atoms as u128))
@@ -198,11 +221,11 @@ pub fn process_global_vault_deposit(
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             profile.total_principal_atoms = profile
                 .total_principal_atoms
-                .checked_add(received_atoms)
+                .checked_add(credited_atoms)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             profile.total_assets_atoms = profile
                 .total_assets_atoms
-                .checked_add(received_atoms)
+                .checked_add(credited_atoms)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             (
                 shares,

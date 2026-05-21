@@ -88,14 +88,18 @@ describe('e2e: curator flow', () => {
       [depositor],
     );
 
-    // Genesis-deposit invariant: when `total_shares == 0` pre-deposit, the
-    // on-chain `atoms_to_vault_shares` formula returns `atoms` 1:1. So
-    // the first deposit of 500B atoms must mint EXACTLY 500B vault shares.
+    // Genesis-deposit invariant: the vault credits the marginfi-ACKNOWLEDGED
+    // atoms (gross minus sub-atom share-rounding on the deposit CPI), and at
+    // genesis (`total_shares == 0`) mints shares 1:1 against that. So
+    // principal == shares == acknowledged ≈ gross (within a couple atoms of
+    // marginfi share-rounding).
+    const GROSS = 500_000_000_000n; // 500_000 USDC
     const [vaultPda] = globalVaultPda(USDC_MINT);
     const vault = decodeGlobalVault((await bk.getAccount(vaultPda))!.data);
     const profile = vault.riskProfiles[0].profile;
-    expect(profile.totalPrincipalAtoms).toBe(500_000_000_000n);
-    expect(profile.totalShares).toBe(500_000_000_000n); // 1:1 at genesis
+    expect(profile.totalPrincipalAtoms).toBeLessThanOrEqual(GROSS);
+    expect(profile.totalPrincipalAtoms).toBeGreaterThan(GROSS - 4n);
+    expect(profile.totalShares).toBe(profile.totalPrincipalAtoms); // 1:1 at genesis
     expect(profile.deployedPrincipalAtoms).toBe(0n);
     expect(profile.encumberedInOrdersAtoms).toBe(0n);
   });

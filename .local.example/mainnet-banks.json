@@ -1,0 +1,43 @@
+{
+  "_doc": "Static marginfi v0.1.8 P0-native bank registry — the ONLY source of truth used by the action scripts for bank/group/oracle pubkeys. No runtime API calls. Operator-edited; verify every field against `solana account <bank>` before mainnet use. assetTag values: 3=Kamino, 4=Drift, 5=Solend, 6=JupLend — anything else is P0 native and eligible here.",
+  "_source": "Captured from api.0.xyz/v0/bankCache snapshot 2026-05-21, cross-checked against marginfi mainnet via solana program show.",
+  "marginfiProgramId": "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA",
+  "marginfiGroup": "4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8",
+  "banks": [
+    {
+      "tokenSymbol": "USDC",
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "mintDecimals": 6,
+      "bank": "2s37akK2eyBbp8DZgCm7RtsaEz8eJP3Nxd4urLHQv7yB",
+      "liquidityVault": "7jaiZR5Sk8hdYN9MxTpczTcwbWpb5WEoxSANuUwveuat",
+      "assetTag": 0,
+      "oracleSetup": "PythPushOracle",
+      "oracleKey": "Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX",
+      "pythFeedIdHex": "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",
+      "pythShardId": 0,
+      "_note": "Pyth-Push USDC/USD on shard 0. Pyth Data Association cranks this feed already; our crank path is a backstop if their cadence drifts beyond bank.oracle_max_age."
+    },
+    {
+      "tokenSymbol": "SOL",
+      "mint": "So11111111111111111111111111111111111111112",
+      "mintDecimals": 9,
+      "bank": "CCKtUs6Cgwo4aaQUmBPmyoApH2gUDErxNZCAntD6LYGh",
+      "liquidityVault": "2eicbpitfJXDwqCuFAmPgDP7t2oUotnAzbGzRKLMgSLe",
+      "assetTag": 1,
+      "oracleSetup": "SwitchboardPull",
+      "oracleKey": "4Hmd6PdjVA9auCoScE12iaBogfwS4ZXQ6VZoBeqanwWW",
+      "_note": "Switchboard On-Demand pull feed. SOL bank carries assetTag=1 (SOL family) which is still native-P0 (Kamino/Drift/Solend/JupLend are 3/4/5/6)."
+    },
+    {
+      "tokenSymbol": "JitoSOL",
+      "mint": "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn",
+      "mintDecimals": 9,
+      "bank": "Bohoc1ikHLD7xKJuzTyiTyCwzaL5N7ggJQu75A8mKYM8",
+      "liquidityVault": "38VGtXd2pDPq9FMh1z6AVjcHCoHgvWyMhdNyamDTeeks",
+      "assetTag": 0,
+      "oracleSetup": "SwitchboardPull",
+      "oracleKey": "5htZ4vPKPjAEg8EJv6JHcaCetMM4XehZo8znQvrp6Ur3",
+      "_note": "Switchboard On-Demand pull feed for JitoSOL/USD."
+    }
+  ]
+}

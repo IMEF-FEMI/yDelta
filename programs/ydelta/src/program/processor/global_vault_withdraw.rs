@@ -99,9 +99,6 @@ pub fn process_global_vault_withdraw(
             params.shares_to_burn,
             { seat.shares }
         )?;
-        // v_data is a `Ref<&mut [u8]>` (a reborrow of the RefCell guard);
-        // calling drop() on the reference here is a no-op. The borrow
-        // releases at end of this scope anyway. Removed.
 
         // Mirror lookup on UserAccountFixed (best-effort — burn even
         // if the mirror is missing or stale).
@@ -164,12 +161,30 @@ pub fn process_global_vault_withdraw(
             "computed atoms_out {} overflows u64",
             atoms_u128
         )?;
-        let atoms_out = atoms_u128 as u64;
+        let atoms_out_raw = atoms_u128 as u64;
+        // Allow a zero-atom burn ONLY when the profile is fully impaired
+        // (assets wiped to 0 by bad debt while shares remain). This lets
+        // shareholders clear their dead shares and reclaim their seat instead
+        // of the position being permanently locked. A 0 from dust shares on a
+        // still-funded profile (total_assets > 0) is still rejected.
         require!(
-            atoms_out > 0,
+            atoms_out_raw > 0 || profile.total_assets_atoms == 0,
             YdeltaError::InvalidArgument,
             "computed atoms_out is 0 — shares too small to redeem any atoms"
         )?;
+
+        // On a full exit (burning every share) the profile's `total_assets`
+        // can marginally exceed the live marginfi balance due to the adapter's
+        // share-rounding on deposit/accrual. Cap the payout at what the
+        // integration account actually holds — the final-burn reconciliation
+        // below zeroes the per-profile totals anyway, so the rounding dust is
+        // not stranded as an unredeemable last share.
+        let burns_last_share: bool = profile.total_shares == params.shares_to_burn;
+        let atoms_out = if burns_last_share {
+            atoms_out_raw.min(mfi_atoms)
+        } else {
+            atoms_out_raw
+        };
 
         // ─── Per-profile liquidity gate ───
         //
@@ -252,7 +267,6 @@ pub fn process_global_vault_withdraw(
         // `total_principal ≥ deployed + encumbered` breaks and the stranded
         // capital can never be redeemed. Reject the last-share burn until
         // every loan has closed and every order has been cancelled.
-        let burns_last_share: bool = profile.total_shares == params.shares_to_burn;
         if burns_last_share {
             require!(
                 profile.deployed_principal_atoms == 0 && profile.encumbered_in_orders_atoms == 0,
@@ -286,36 +300,41 @@ pub fn process_global_vault_withdraw(
         )
     };
 
-    // Withdraw from the integration account into global_vault_staging.
-    let expected_shares: u128 =
-        MarginfiV18Adapter.amount_to_asset_shares(&[lending_pool.info.clone()], atoms_out)?;
-
     let vault_bytes = vault_key.to_bytes();
     let signer_bump_arr = [global_vault_signer_bump];
     let global_vault_signer_seeds: &[&[u8]] =
         &[GLOBAL_VAULT_SIGNER_SEED, &vault_bytes, &signer_bump_arr];
-    let adapter_accounts: Vec<AccountInfo> = vec![
-        marginfi_group.info.clone(),
-        integration_account.info.clone(),
-        global_vault_signer.clone(),
-        lending_pool.info.clone(),
-        global_vault_staging.info.clone(),
-        bank_liquidity_vault_authority.clone(),
-        liquidity_vault.info.clone(),
-        token_program.info.clone(),
-        marginfi_program.info.clone(),
-        // Active-balance health-check pair (vault has only one).
-        lending_pool.info.clone(),
-        lending_pool_oracle.clone(),
-    ];
-    let actual_atoms: u64 = MarginfiV18Adapter.withdraw(
-        &adapter_accounts,
-        expected_shares,
-        &[global_vault_signer_seeds],
-    )?;
 
-    let payout_atoms = actual_atoms.min(atoms_out);
-    let surplus_atoms = actual_atoms.saturating_sub(payout_atoms);
+    // Withdraw from the integration account into global_vault_staging.
+    // atoms_out == 0 only on a fully-impaired share burn (above) — nothing to
+    // move, so skip the marginfi CPI and just burn the dead shares below.
+    let (payout_atoms, surplus_atoms) = if atoms_out > 0 {
+        let expected_shares: u128 =
+            MarginfiV18Adapter.amount_to_asset_shares(&[lending_pool.info.clone()], atoms_out)?;
+        let adapter_accounts: Vec<AccountInfo> = vec![
+            marginfi_group.info.clone(),
+            integration_account.info.clone(),
+            global_vault_signer.clone(),
+            lending_pool.info.clone(),
+            global_vault_staging.info.clone(),
+            bank_liquidity_vault_authority.clone(),
+            liquidity_vault.info.clone(),
+            token_program.info.clone(),
+            marginfi_program.info.clone(),
+            // Active-balance health-check pair (vault has only one).
+            lending_pool.info.clone(),
+            lending_pool_oracle.clone(),
+        ];
+        let actual_atoms: u64 = MarginfiV18Adapter.withdraw(
+            &adapter_accounts,
+            expected_shares,
+            &[global_vault_signer_seeds],
+        )?;
+        let payout = actual_atoms.min(atoms_out);
+        (payout, actual_atoms.saturating_sub(payout))
+    } else {
+        (0, 0)
+    };
 
     // We do NOT re-credit the shortfall (`atoms_out - actual_atoms`)
     // back to `total_assets_atoms` / `total_principal_atoms`. Marginfi
@@ -352,18 +371,20 @@ pub fn process_global_vault_withdraw(
     }
 
     // Transfer from global_vault_staging to depositor_token, signed by
-    // global_vault_signer.
-    transfer_staging_to_depositor(
-        token_program.info,
-        global_vault_staging.info,
-        depositor_token.info,
-        mint.info,
-        global_vault_signer,
-        &vault_key,
-        global_vault_signer_bump,
-        payout_atoms,
-        mint.mint.decimals,
-    )?;
+    // global_vault_signer. Skipped on a fully-impaired (0-atom) burn.
+    if payout_atoms > 0 {
+        transfer_staging_to_depositor(
+            token_program.info,
+            global_vault_staging.info,
+            depositor_token.info,
+            mint.info,
+            global_vault_signer,
+            &vault_key,
+            global_vault_signer_bump,
+            payout_atoms,
+            mint.mint.decimals,
+        )?;
+    }
 
     if surplus_atoms > 0 {
         let deposit_accounts: Vec<AccountInfo> = vec![

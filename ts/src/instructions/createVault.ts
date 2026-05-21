@@ -19,7 +19,9 @@ import { InstructionTag } from './_tags.js';
 /**
  * Tag 8 — `CreateVault`. One-shot per debt mint. Payer becomes the initial
  * `global_vault_admin`. Initialises the vault's marginfi integration account
- * + per-mint staging vault.
+ * + per-mint staging vault. The on-chain processor switches between classic
+ * SPL and Token-2022 from `mint.owner`; both program ids are unconditionally
+ * passed in the account list, so the caller does not need to flag the variant.
  */
 export interface CreateVaultArgs {
   payer: PublicKey;
@@ -27,8 +29,6 @@ export interface CreateVaultArgs {
   marginfiGroup: PublicKey;
   lendingPool: PublicKey;
   marginfiProgram: PublicKey;
-  /** When the debt mint is a Token-2022 mint, override this to false. */
-  splToken2022?: boolean;
 }
 
 export function createVaultInstruction(args: CreateVaultArgs): TransactionInstruction {

@@ -1,23 +1,24 @@
 /**
- * `crank-matched-loan.ts` — promotes a `MatchedLoan` queue node into a
- * `LoanFixed` PDA. Heavy when the lender is a vault (vault → market drain
- * via marginfi CPI), so we always prepend the 600 000 CU limit.
+ * crank-matched-loan.ts — `ProcessMatchedLoan` (tag 5). Permissionless;
+ * the cranker pays the loan PDA rent and is reimbursed at loan close.
  *
- * Required flags:
- *   --market <PUBKEY>
- *   --sequence <U64>
- *   --debt-bank <PUBKEY>
- *   --marginfi-program <PUBKEY>
- *
- * Optional — pass ALL of these together for a vault-lender match:
- *   --debt-mint, --debt-liquidity-vault, --debt-bank-lva,
- *   --debt-oracles <PUBKEY>[,<PUBKEY>...],
- *   --token-program, --marginfi-group
+ * Reads:
+ *   .local/crank-matched-loan-input.json {
+ *     marketLabel: string,
+ *     sequence: string | number,
+ *     matchedLoanIndexHint?: number | null,
+ *     vaultSettle?: boolean        // true if the matched lender is a vault profile
+ *   }
  */
 import { PublicKey } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 import {
-  HEAVY_IX_CU_LIMIT,
+  cuBudgetIx,
+  processMatchedLoanInstruction,
+} from '../src/instructions/index.js';
+import {
+  borrowerIntegrationAccountPda,
   globalVaultIntegrationAccountPda,
   globalVaultPda,
   globalVaultSignerPda,
@@ -25,64 +26,100 @@ import {
   lenderIntegrationAccountPda,
   marketSignerPda,
   marketTokenVaultPda,
-  processMatchedLoanInstruction,
-} from '../src/index.js';
+} from '../src/pdas.js';
 import {
-  bigintFlag,
-  flag,
+  appendTxLog,
   loadConnection,
   loadSigner,
-  optionalPubkeyFlag,
-  pubkeyFlag,
-  runScript,
+  log,
+  readJson,
+  sendIxs,
 } from './_runner.js';
+import {
+  MARGINFI_PROGRAM_ID,
+  readBankOnchain,
+} from './_marginfi.js';
+import { crankStaleBankOracles } from './_oracleCrank.js';
+import type { MarketDump } from './_types.js';
 
-function csvPubkeys(name: string): PublicKey[] {
-  const v = flag(name);
-  if (!v) return [];
-  return v.split(',').map((s) => new PublicKey(s.trim()));
+interface Input {
+  marketLabel: string;
+  sequence: string | number;
+  matchedLoanIndexHint?: number | null;
+  vaultSettle?: boolean;
 }
 
 async function main(): Promise<void> {
+  const input = readJson<Input>('crank-matched-loan-input.json');
+  const markets = readJson<Record<string, MarketDump>>('markets.json');
+  const market = markets[input.marketLabel];
+  if (!market) throw new Error(`unknown marketLabel ${input.marketLabel}`);
+
   const conn = loadConnection();
   const signer = loadSigner();
-  const market = pubkeyFlag('market');
+  const marketPk = new PublicKey(market.market);
+  const debtMint = new PublicKey(market.debtMint);
+  const debtBank = new PublicKey(market.debtBank);
 
-  const debtMint = optionalPubkeyFlag('debt-mint');
-  const vaultSettle = debtMint
-    ? (() => {
-        const vault = globalVaultPda(debtMint)[0];
-        return {
-          globalVault: vault,
-          globalVaultSigner: globalVaultSignerPda(vault)[0],
-          globalVaultStaging: globalVaultStagingPda(vault)[0],
-          globalVaultIntegrationAccount: globalVaultIntegrationAccountPda(vault)[0],
-          marketDebtVault: marketTokenVaultPda(market, debtMint)[0],
-          marketLenderIntegrationAccount: lenderIntegrationAccountPda(market)[0],
-          marketSigner: marketSignerPda(market)[0],
-          debtLiquidityVault: pubkeyFlag('debt-liquidity-vault'),
-          debtBankLiquidityVaultAuthority: pubkeyFlag('debt-bank-lva'),
-          debtOracles: csvPubkeys('debt-oracles'),
-          debtMint,
-          tokenProgram: pubkeyFlag('token-program'),
-          marginfiGroup: pubkeyFlag('marginfi-group'),
-          marginfiProgram: pubkeyFlag('marginfi-program'),
-        };
-      })()
-    : undefined;
+  const debtBankState = await readBankOnchain(conn, debtBank);
+  const crank = await crankStaleBankOracles(conn, signer, [
+    { bank: debtBankState, pythFeedIdHex: market.debtPythFeedIdHex, pythShardId: market.debtPythShardId },
+  ]);
 
+  // `markets.json` was bumped to remember the vaultSettle bit through to
+  // the cranker step; the alternative is to decode the matched-loan
+  // entry's `flags` here. We accept either: explicit flag wins.
   const ix = processMatchedLoanInstruction({
     payer: signer.publicKey,
-    market,
-    debtBank: pubkeyFlag('debt-bank'),
-    marginfiProgram: pubkeyFlag('marginfi-program'),
-    sequence: bigintFlag('sequence'),
-    vaultSettle,
+    market: marketPk,
+    debtBank,
+    marginfiProgram: MARGINFI_PROGRAM_ID,
+    sequence: BigInt(input.sequence.toString()),
+    matchedLoanIndexHint: input.matchedLoanIndexHint ?? null,
+    vaultSettle: input.vaultSettle
+      ? {
+          globalVault: globalVaultPda(debtMint)[0],
+          globalVaultSigner: globalVaultSignerPda(globalVaultPda(debtMint)[0])[0],
+          globalVaultStaging: globalVaultStagingPda(globalVaultPda(debtMint)[0])[0],
+          globalVaultIntegrationAccount: globalVaultIntegrationAccountPda(
+            globalVaultPda(debtMint)[0],
+          )[0],
+          marketDebtVault: marketTokenVaultPda(marketPk, debtMint)[0],
+          marketLenderIntegrationAccount: lenderIntegrationAccountPda(marketPk)[0],
+          marketSigner: marketSignerPda(marketPk)[0],
+          debtLiquidityVault: new PublicKey(market.debtLiquidityVault),
+          debtBankLiquidityVaultAuthority: new PublicKey(
+            market.debtBankLiquidityVaultAuthority,
+          ),
+          debtOracles: market.debtOracles.map((s) => new PublicKey(s)),
+          debtMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          marginfiGroup: new PublicKey(market.marginfiGroup),
+          marginfiProgram: MARGINFI_PROGRAM_ID,
+        }
+      : undefined,
   });
-  await runScript({ conn, signer, ixs: [ix], cuLimit: HEAVY_IX_CU_LIMIT });
+
+  log(`[crank-matched-loan] ${market.label} seq=${input.sequence} vaultSettle=${input.vaultSettle ?? false}`);
+  const sig = await sendIxs(conn, signer, [cuBudgetIx(), ix]);
+  log(`[crank-matched-loan] signature = ${sig}`);
+  appendTxLog({
+    script: 'crank-matched-loan',
+    signatures: [sig],
+    oracleCrank: crank.entries,
+    summary: {
+      marketLabel: input.marketLabel,
+      sequence: input.sequence.toString(),
+      vaultSettle: input.vaultSettle ?? false,
+    },
+  });
+
+  // Reserved for downstream tools that wire borrower seat ops alongside
+  // the cranker — referenced so the import isn't left dangling.
+  void borrowerIntegrationAccountPda;
 }
 
-main().catch((e) => {
-  console.error(e);
+main().catch((err) => {
+  console.error(err);
   process.exit(1);
 });

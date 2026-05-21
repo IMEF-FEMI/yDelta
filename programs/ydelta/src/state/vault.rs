@@ -129,7 +129,17 @@ pub struct GlobalVaultFixed {
     /// gated, so a stuck vault can still have its admin rotated for
     /// recovery. Set by `SetVaultPause` (vault-admin-gated).
     pub is_paused: u8, // 304..305
-    _pad2: [u8; 7], // 305..312
+    /// Monotonically increasing source-of-truth for the next
+    /// `RiskProfile.profile_id` to assign on `create_risk_profile`.
+    /// Initialised to 0 at vault creation; bumped (`checked_add(1)`) on
+    /// every successful create. **Never decremented** on
+    /// `remove_risk_profile` — once a `profile_id` has been used in a
+    /// vault it is never re-issued, so historical references (closed
+    /// loans' `lender_profile_id`, off-chain indexer rows, emitted
+    /// events) stay unambiguous even across create/remove churn.
+    /// Capped at 256 profiles ever per vault by the `u8` domain.
+    pub next_profile_id: u8, // 305..306
+    _pad2: [u8; 6], // 306..312
     /// Reserved space. One `u64` remains after `is_paused` + padding.
     _reserved: [u64; 1], // 312..320
 }
@@ -171,7 +181,8 @@ impl GlobalVaultFixed {
             pending_global_vault_admin: Pubkey::default(),
             _reserved_aggregates: [0; 4],
             is_paused: 0,
-            _pad2: [0; 7],
+            next_profile_id: 0,
+            _pad2: [0; 6],
             _reserved: [0; 1],
         }
     }
@@ -352,6 +363,27 @@ impl RiskProfile {
     /// ascending, so this is the comparison key.
     pub fn key(&self) -> u8 {
         self.profile_id
+    }
+
+    /// Returns true when the profile carries no live exposure or claim
+    /// — i.e. removal is safe. Required precondition for
+    /// `remove_risk_profile`: a profile with any live share, principal,
+    /// deployed loan principal, encumbered order principal, or unclaimed
+    /// curator fee must NOT be torn down, or those amounts become
+    /// unreachable.
+    ///
+    /// Note: this is a header-field check only. The processor must
+    /// additionally confirm there are no live `RiskProfileDepositorSeat`
+    /// or `RiskProfileOrderRef` tree nodes pointing at this profile;
+    /// those are independent trees on the same vault and aren't
+    /// reflected in any single field here.
+    pub fn is_empty(&self) -> bool {
+        self.total_shares == 0
+            && self.total_assets_atoms == 0
+            && self.total_principal_atoms == 0
+            && self.deployed_principal_atoms == 0
+            && self.encumbered_in_orders_atoms == 0
+            && self.accumulated_curator_fee_atoms == 0
     }
 
     /// Fresh profile constructor used by `create_risk_profile`.
@@ -1064,6 +1096,42 @@ pub fn insert_risk_profile_order_ref(
     drop(tree);
     fixed.open_order_count = fixed.open_order_count.saturating_add(1);
     Ok(order_index)
+}
+
+/// Remove the `RiskProfile` keyed by `profile_id`. Returns the freed
+/// data-index, or `NIL` if no profile existed at that id.
+///
+/// **Caller's responsibility:** confirm `RiskProfile::is_empty()` plus
+/// the cross-tree absence of `RiskProfileDepositorSeat` /
+/// `RiskProfileOrderRef` referencing this `profile_id` BEFORE invoking.
+/// This helper is the mechanical removal — it does NOT validate the
+/// "no live exposure" invariant.
+///
+/// Frees the 512-byte block back to the profile free list and
+/// decrements `risk_profile_count`. The vault's `next_profile_id` is
+/// deliberately NOT touched: once a `profile_id` has been used in a
+/// vault it is never re-issued, so historical references keep their
+/// meaning.
+pub fn remove_risk_profile(
+    fixed: &mut GlobalVaultFixed,
+    dynamic: &mut [u8],
+    profile_id: u8,
+) -> DataIndex {
+    let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+    let idx = {
+        let tree = RiskProfileTreeReadOnly::new(dynamic, fixed.risk_profiles_root_index, NIL);
+        tree.lookup_index(&probe)
+    };
+    if idx == NIL {
+        return NIL;
+    }
+    let mut tree = RiskProfileTree::new(dynamic, fixed.risk_profiles_root_index, NIL);
+    tree.remove_by_index(idx);
+    fixed.risk_profiles_root_index = tree.get_root_index();
+    drop(tree);
+    fixed.risk_profile_count = fixed.risk_profile_count.saturating_sub(1);
+    release_profile_address_on_vault_fixed(fixed, dynamic, idx);
+    idx
 }
 
 /// Remove the `RiskProfileOrderRef` for `(market, profile_id)`.

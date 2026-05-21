@@ -299,6 +299,21 @@ pub struct RiskProfileCreatedLog {
 }
 impl_discriminant!(RiskProfileCreatedLog);
 
+/// Emitted by `remove_risk_profile`. Carries the vault and the removed
+/// profile_id. The id is **not** re-issued (the vault's
+/// `next_profile_id` monotonic counter is unaffected by removal), so
+/// any post-removal off-chain reference to this id remains a stable,
+/// historical address.
+#[repr(C)]
+#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
+pub struct RiskProfileRemovedLog {
+    pub global_vault: Pubkey,
+    pub curator: Pubkey,
+    pub profile_id: u8,
+    pub _pad0: [u8; 7],
+}
+impl_discriminant!(RiskProfileRemovedLog);
+
 /// Emitted by `global_vault_deposit`. Records atoms in, shares
 /// minted, and the running profile totals after the mint.
 /// `gain_atoms` reports the depositor's crystallised yield since

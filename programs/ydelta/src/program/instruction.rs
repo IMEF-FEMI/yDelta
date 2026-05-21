@@ -194,11 +194,24 @@ pub enum YdeltaInstruction {
     /// Sets `GlobalVaultFixed.is_paused` to the bool in instruction
     /// data. While paused, every vault-scoped state-mutating ix
     /// (deposit / withdraw, place / cancel / update risk-profile order,
-    /// claim repayment / curator fee, create / update risk profile)
-    /// rejects with `VaultPaused`; the two-step vault-admin transfer
-    /// ixs stay live so admin control can be recovered while paused.
-    /// Signer must equal `GlobalVaultFixed.global_vault_admin`.
+    /// claim repayment / curator fee, create / remove / update risk
+    /// profile) rejects with `VaultPaused`; the two-step vault-admin
+    /// transfer ixs stay live so admin control can be recovered while
+    /// paused. Signer must equal `GlobalVaultFixed.global_vault_admin`.
     SetVaultPause = 36,
+    /// Remove a `RiskProfile` from the vault's `risk_profiles` tree.
+    /// Vault-admin-gated. The profile's `profile_id` is passed in
+    /// instruction data. **Hard precondition**: the profile must be
+    /// empty — `total_shares`, `total_assets_atoms`,
+    /// `total_principal_atoms`, `deployed_principal_atoms`,
+    /// `encumbered_in_orders_atoms`, and `accumulated_curator_fee_atoms`
+    /// must all be zero — otherwise the ix rejects with
+    /// `VaultProfileNotEmpty`. The freed 512-byte block returns to the
+    /// profile free list and `risk_profile_count` decrements. The
+    /// vault's `next_profile_id` is NOT decremented: the id is retired
+    /// forever, so historical references (closed loans, off-chain
+    /// indexers) stay unambiguous.
+    RemoveRiskProfile = 37,
 }
 
 impl YdeltaInstruction {
@@ -216,7 +229,7 @@ mod tests {
         // Tags form a contiguous `0..=last_tag` range with no gaps:
         // every tag in range round-trips through `try_from`, and every
         // value beyond `last_tag` is rejected.
-        let last_tag: u8 = 36;
+        let last_tag: u8 = 37;
         for i in 0..=255u8 {
             match YdeltaInstruction::try_from(i) {
                 Ok(ix) => {

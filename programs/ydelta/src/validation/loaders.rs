@@ -3047,6 +3047,45 @@ impl<'a, 'info> CreateRiskProfileContext<'a, 'info> {
     }
 }
 
+/// Account list for `RemoveRiskProfile`. Same shape as
+/// `CreateRiskProfileContext` but the `system_program` is dropped —
+/// removal never reallocs or transfers lamports.
+pub(crate) struct RemoveRiskProfileContext<'a, 'info> {
+    /// Held only to keep the signer + admin checks structurally
+    /// equivalent to the create flow. Removal doesn't touch lamports,
+    /// so the processor never re-borrows it.
+    pub _payer: Signer<'a, 'info>,
+    pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
+}
+
+impl<'a, 'info> RemoveRiskProfileContext<'a, 'info> {
+    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
+        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
+
+        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let _ = load_global_config(account_iter)?;
+        let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
+            next_account_info(account_iter)?,
+        )?;
+        require_vault_not_paused(&vault)?;
+
+        // Admin gate.
+        let global_vault_admin: Pubkey = vault.get_fixed()?.global_vault_admin;
+        require!(
+            *payer.info.key == global_vault_admin,
+            YdeltaError::VaultAdminRequired,
+            "remove_risk_profile: signer ({}) is not global_vault_admin ({})",
+            payer.info.key,
+            global_vault_admin
+        )?;
+
+        Ok(Self {
+            _payer: payer,
+            vault,
+        })
+    }
+}
+
 // ─────────────────── Admin transfers ───────────────────
 
 /// Initiate `MarketFixed.admin` transfer. Signer must equal the current

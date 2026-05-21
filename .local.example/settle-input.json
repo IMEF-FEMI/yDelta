@@ -1,0 +1,8 @@
+{
+  "marketLabel": "USDC/SOL",
+  "sequence": "1",
+  "liquidatorDebtTokenAta": "<keeper USDC ATA>",
+  "liquidatorCollateralTokenAta": "<keeper SOL ATA>",
+  "repayAtomsMax": "0",
+  "crankerRefund": "<cranker pubkey that paid loan rent>"
+}

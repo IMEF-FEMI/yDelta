@@ -152,19 +152,30 @@ export async function setupVault(bk: BankrunHandle, admin: Keypair): Promise<voi
   );
 }
 
-/** Insert a single risk profile (`profile_id = 0`) with the given curator + policy. */
+/**
+ * Insert a single risk profile with the given curator + policy. The
+ * profile's `profile_id` is assigned by the program (monotonic
+ * `next_profile_id` counter) — on a fresh vault the first create lands
+ * at id 0, the second at id 1, and so on.
+ *
+ * The `opts.profileId` hint is accepted for callsite readability but is
+ * no longer threaded into the ix; the on-chain assignment is what
+ * matters. Downstream calls that need the assigned id should either
+ * snapshot the vault's `next_profile_id` BEFORE this helper runs, or
+ * decode the resulting `RiskProfileCreatedLog`.
+ */
 export async function setupRiskProfile(
   bk: BankrunHandle,
   admin: Keypair,
   curator: PublicKey,
   opts: { profileId?: number; maxLtvBps?: number; maxTermSeconds?: number } = {},
 ): Promise<void> {
+  void opts.profileId;
   await bk.send(
     [
       createRiskProfileInstruction({
         payer: admin.publicKey,
         mint: USDC_MINT,
-        profileId: opts.profileId ?? 0,
         curator,
         maxLtvBps: opts.maxLtvBps ?? 6_000,
         maxTermSeconds: opts.maxTermSeconds ?? 30 * 86_400,

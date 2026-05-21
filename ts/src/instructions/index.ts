@@ -5,7 +5,7 @@
  * (`adminTransfers`, `globalConfigAdmin`, `checkLiquidatable`) grouping the
  * tags that the Rust source bundles together.
  *
- * 37 instructions total — tags 0..=36, contiguous (see `_tags.ts`).
+ * 38 instructions total — tags 0..=37, contiguous (see `_tags.ts`).
  */
 export { InstructionTag } from './_tags.js';
 export { cuBudgetIx, withCuBudget } from './_helpers.js';
@@ -14,6 +14,9 @@ export { createMarketInstruction } from './createMarket.js';
 export type { CreateMarketArgs } from './createMarket.js';
 
 export { claimSeatInstruction } from './claimSeat.js';
+
+export { claimSeatIfNeededInstructions, hasUserSeat } from './claimSeatIfNeeded.js';
+export type { ClaimSeatIfNeededArgs } from './claimSeatIfNeeded.js';
 
 export { depositInstruction } from './deposit.js';
 export type { DepositArgs } from './deposit.js';
@@ -42,6 +45,9 @@ export type { CreateVaultArgs } from './createVault.js';
 
 export { createRiskProfileInstruction } from './createRiskProfile.js';
 export type { CreateRiskProfileArgs } from './createRiskProfile.js';
+
+export { removeRiskProfileInstruction } from './removeRiskProfile.js';
+export type { RemoveRiskProfileArgs } from './removeRiskProfile.js';
 
 export { globalVaultDepositInstruction } from './globalVaultDeposit.js';
 export type { GlobalVaultDepositArgs } from './globalVaultDeposit.js';

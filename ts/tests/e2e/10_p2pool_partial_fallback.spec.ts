@@ -192,24 +192,25 @@ describe('e2e: P2Pool partial fallback (fixed match + marginfi residual)', () =>
     expect(fixedNode).toBeDefined();
     expect(p2poolNode).toBeDefined();
 
-    // Fixed leg should consume the vault's idle pool within the usual
-    // 1-atom marginfi share-rounding tolerance.
+    // Fixed leg consumes the vault's idle pool. Baseline is the GROSS
+    // deposit; the credited idle is gross minus the deposit's share-rounding,
+    // so allow 2 atoms (deposit-acknowledgment + match share-rounding).
     const fixedDrift =
       fixedNode!.principalAtoms > vaultDepositAtoms
         ? fixedNode!.principalAtoms - vaultDepositAtoms
         : vaultDepositAtoms - fixedNode!.principalAtoms;
-    expect(fixedDrift).toBeLessThanOrEqual(1n);
+    expect(fixedDrift).toBeLessThanOrEqual(2n);
     expect(fixedNode!.flags & MATCHED_LOAN_FLAG_VAULT_LENDER).toBe(MATCHED_LOAN_FLAG_VAULT_LENDER);
     expect(fixedNode!.lenderRateBps).toBe(500);
 
-    // P2Pool leg should take the residual, again allowing the same
-    // 1-atom drift band from share math.
+    // P2Pool leg takes the residual; same 2-atom band (the residual absorbs
+    // the deposit-acknowledgment rounding the Fixed leg didn't fill).
     const expectedResidual = bidPrincipalAtoms - vaultDepositAtoms;
     const residualDrift =
       p2poolNode!.principalAtoms > expectedResidual
         ? p2poolNode!.principalAtoms - expectedResidual
         : expectedResidual - p2poolNode!.principalAtoms;
-    expect(residualDrift).toBeLessThanOrEqual(1n);
+    expect(residualDrift).toBeLessThanOrEqual(2n);
     expect(p2poolNode!.flags & MATCHED_LOAN_FLAG_VAULT_LENDER).toBe(0);
     expect(fixedNode!.principalAtoms + p2poolNode!.principalAtoms).toBe(bidPrincipalAtoms);
 
@@ -233,6 +234,6 @@ describe('e2e: P2Pool partial fallback (fixed match + marginfi residual)', () =>
     const residualPrincipal = bidPrincipalAtoms - vaultDepositAtoms; // 50
     const drift =
       liabilityAtoms > residualPrincipal ? liabilityAtoms - residualPrincipal : residualPrincipal - liabilityAtoms;
-    expect(drift).toBeLessThanOrEqual(1n);
+    expect(drift).toBeLessThanOrEqual(2n);
   });
 });

@@ -179,7 +179,11 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
     const profile = vault.riskProfiles[0].profile;
     expect(profile.encumberedInOrdersAtoms).toBe(0n);
     expect(profile.deployedPrincipalAtoms).toBe(0n);
-    expect(profile.totalPrincipalAtoms).toBe(VAULT_DEPOSIT_ATOMS);
+    // Credited principal is the marginfi-ACKNOWLEDGED deposit (gross minus
+    // sub-atom share-rounding on the deposit CPI), so allow a couple atoms
+    // below the gross.
+    expect(profile.totalPrincipalAtoms).toBeLessThanOrEqual(VAULT_DEPOSIT_ATOMS);
+    expect(profile.totalPrincipalAtoms).toBeGreaterThan(VAULT_DEPOSIT_ATOMS - 4n);
   });
 
   it('PlaceOrder crosses the vault ask, bumps encumbered + queues a MatchedLoan', async () => {
@@ -221,7 +225,9 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
     const profile = vault.riskProfiles[0].profile;
     expect(profile.encumberedInOrdersAtoms).toBe(BID_PRINCIPAL_ATOMS);
     expect(profile.deployedPrincipalAtoms).toBe(0n);
-    expect(profile.totalPrincipalAtoms).toBe(VAULT_DEPOSIT_ATOMS);
+    // Marginfi-acknowledged deposit (gross minus sub-atom share-rounding).
+    expect(profile.totalPrincipalAtoms).toBeLessThanOrEqual(VAULT_DEPOSIT_ATOMS);
+    expect(profile.totalPrincipalAtoms).toBeGreaterThan(VAULT_DEPOSIT_ATOMS - 4n);
 
     // Market: one MatchedLoan queue node landed. The ask is unbounded so
     // it stays in the asks tree.

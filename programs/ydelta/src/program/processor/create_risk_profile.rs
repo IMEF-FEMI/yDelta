@@ -14,14 +14,17 @@ use crate::program::YdeltaError;
 use crate::require;
 use crate::state::vault::{
     get_free_profile_address_on_vault_fixed, vault_expand_profile_block, GlobalVaultFixed,
-    RiskProfile, RiskProfileTree, RiskProfileTreeReadOnly,
+    RiskProfile, RiskProfileTree,
 };
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, RISK_PROFILE_BLOCK_SIZE};
 use crate::validation::loaders::CreateRiskProfileContext;
 
+/// `CreateRiskProfile` parameters. `profile_id` is **assigned by the
+/// program** from `GlobalVaultFixed.next_profile_id` — callers cannot
+/// request a specific id. The auto-assigned id is reported back via
+/// `RiskProfileCreatedLog.profile_id`.
 #[derive(BorshDeserialize, BorshSerialize, Clone)]
 pub struct CreateRiskProfileParams {
-    pub profile_id: u8,
     pub curator: Pubkey,
     pub max_ltv_bps: u16,
     pub max_term_seconds: u32,
@@ -94,23 +97,25 @@ pub fn process_create_risk_profile(
     }
 
     // ─── Insert the profile ───
+    //
+    // `profile_id` is the vault's monotonic `next_profile_id` counter —
+    // not a caller input. The counter is bumped with `checked_add` so
+    // the 257th create on any vault hard-fails rather than wrapping the
+    // u8 and aliasing an existing profile_id.
+    let assigned_profile_id: u8;
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
-        // Reject duplicate profile_id.
-        let existing_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
-            let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
-            tree.lookup_index(&probe)
-        };
-        require!(
-            existing_idx == NIL,
-            YdeltaError::VaultProfileIdExists,
-            "profile_id {} already exists in vault",
-            params.profile_id
-        )?;
+        assigned_profile_id = header.next_profile_id;
+        // Advance the counter BEFORE inserting so even an
+        // immediately-following remove can't re-issue this id (the
+        // counter is monotonic regardless of removal).
+        header.next_profile_id = header
+            .next_profile_id
+            .checked_add(1)
+            .ok_or(YdeltaError::VaultProfileIdExists)?;
 
         // Pop a 512-byte block off the profile free list.
         let order_index = get_free_profile_address_on_vault_fixed(header, dynamic);
@@ -121,7 +126,7 @@ pub fn process_create_risk_profile(
         )?;
 
         let profile = RiskProfile::new_empty(
-            params.profile_id,
+            assigned_profile_id,
             params.curator,
             params.max_ltv_bps,
             params.max_term_seconds,
@@ -132,13 +137,22 @@ pub fn process_create_risk_profile(
         header.risk_profiles_root_index = tree.get_root_index();
         drop(tree);
 
-        header.risk_profile_count = header.risk_profile_count.saturating_add(1);
+        // `checked_add` (not `saturating_add`): the live-profile count
+        // is load-bearing for off-chain indexers and the in-program
+        // `is_empty()` removal flow. A saturating overflow at u8::MAX
+        // would silently desync from the actual tree size; hard-fail
+        // instead. In practice this is unreachable — the
+        // `next_profile_id` cap above is the binding constraint.
+        header.risk_profile_count = header
+            .risk_profile_count
+            .checked_add(1)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
     }
 
     emit_stack(RiskProfileCreatedLog {
         global_vault: vault_key,
         curator: params.curator,
-        profile_id: params.profile_id,
+        profile_id: assigned_profile_id,
         _reserved0: 0,
         _pad0: [0; 2],
         max_ltv_bps: params.max_ltv_bps,
