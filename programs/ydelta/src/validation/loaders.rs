@@ -915,7 +915,8 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
                 if ai.data_len() == 0 {
                     None
                 } else {
-                    let _ = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(ai)?;
+                    let typed_vault =
+                        YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(ai)?;
                     let (expected_vault, _) = crate::state::vault::global_vault_pda(&debt_mint_pk);
                     require!(
                         *ai.key == expected_vault,
@@ -923,6 +924,12 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
                         "vault PDA does not match expected derivation \
                          from market.debt_mint"
                     )?;
+                    // A paused vault is frozen. Crossing its resting
+                    // risk-profile asks mutates the profile's
+                    // encumbrance/deployed state, so a paused vault must
+                    // not be matchable — same gate every other
+                    // vault-mutating loader applies.
+                    require_vault_not_paused(&typed_vault)?;
                     Some(ai)
                 }
             }
@@ -3542,6 +3549,16 @@ pub(crate) struct ConvertP2PoolToFixedContext<'a, 'info> {
     /// size each cross against the profile's live idle pool. Pinned to
     /// `global_vault_pda(debt_mint)`.
     pub global_vault: &'a AccountInfo<'info>,
+    /// The vault's marginfi integration account (`global_vault.integration_account`),
+    /// holding the vault's idle pool on the per-mint `lending_pool` bank.
+    /// On a FULL refinance the convert tops up the repay shortfall (the
+    /// deposit-back is share-floor short of the live liability) by
+    /// withdrawing from here, signed by `global_vault_signer`.
+    pub global_vault_integration_account: MarginfiAccountInfo<'a, 'info>,
+    /// The vault's marginfi authority PDA `[GLOBAL_VAULT_SIGNER_SEED, global_vault]`.
+    pub global_vault_signer: &'a AccountInfo<'info>,
+    /// Bump for `global_vault_signer`, read from the vault header.
+    pub global_vault_signer_bump: u8,
     /// Rent-refund target for the P2Pool loan PDA's lamports on
     /// full conversion. REQUIRED and bound to `loan.created_by` (the
     /// keeper who promoted the P2Pool MatchedLoan). The processor closes
@@ -3741,6 +3758,48 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
             "global_vault PDA does not match expected derivation from market.debt_mint"
         )?;
 
+        // Vault funding accounts for the FULL-refinance repay top-up: the
+        // vault's marginfi integration account (idle pool) + its authority
+        // PDA. Read the integration-account pubkey, signer bump, and pinned
+        // bank from the vault header.
+        let (vault_integration_pk, vault_signer_bump, vault_lending_pool) = {
+            let data = global_vault_ai.try_borrow_data()?;
+            let header: &crate::state::vault::GlobalVaultFixed = bytemuck::from_bytes(
+                &data[..std::mem::size_of::<crate::state::vault::GlobalVaultFixed>()],
+            );
+            (
+                header.integration_account,
+                header.global_vault_signer_bump,
+                header.lending_pool,
+            )
+        };
+        require!(
+            vault_lending_pool == debt_lending_pool,
+            YdeltaError::IncorrectAccount,
+            "global_vault.lending_pool does not match market.debt_lending_pool"
+        )?;
+        let global_vault_signer_ai = next_account_info(account_iter)?;
+        let (expected_vault_signer, _) =
+            crate::state::vault::global_vault_signer_pda(global_vault_ai.key);
+        require!(
+            *global_vault_signer_ai.key == expected_vault_signer,
+            YdeltaError::IncorrectAccount,
+            "global_vault_signer PDA does not match [GLOBAL_VAULT_SIGNER_SEED, global_vault]"
+        )?;
+        let global_vault_integration_ai = next_account_info(account_iter)?;
+        require!(
+            *global_vault_integration_ai.key == vault_integration_pk,
+            YdeltaError::IncorrectAccount,
+            "global_vault_integration_account does not match vault header"
+        )?;
+        let global_vault_integration_account =
+            MarginfiAccountInfo::new_with_expected_authority_and_group(
+                global_vault_integration_ai,
+                marginfi_program.info.key,
+                &expected_vault_signer,
+                &expected_marginfi_group,
+            )?;
+
         // REQUIRED trailing `cranker_refund` account, bound to
         // `loan.created_by`. `created_by` is on-chain readable, so any
         // caller can build the correct account list; making it
@@ -3778,6 +3837,9 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
             marginfi_group,
             marginfi_program,
             global_vault: global_vault_ai,
+            global_vault_integration_account,
+            global_vault_signer: global_vault_signer_ai,
+            global_vault_signer_bump: vault_signer_bump,
             cranker_refund,
         })
     }

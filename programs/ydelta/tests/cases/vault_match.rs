@@ -84,7 +84,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
         "match-time vault encumbrance should bump encumbered_in_orders_atoms"
     );
     assert_eq!(
-        profile.total_principal_atoms, 100_000_000,
+        profile.total_principal_atoms, 99_999_999,
         "total_principal_atoms unchanged by match (atoms still in vault.integration)"
     );
     assert_eq!(
@@ -99,9 +99,15 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
         collateral_atoms,
         "Σ MatchedLoan.collateral_atoms == bid collateral_atoms"
     );
-    // Borrower seat: full-fill IOC bid leaves no residual encumbrance.
+    // Borrower seat: the matched collateral stays encumbered (it backs
+    // the open loan, released only at close) and the cross ticked the
+    // open-loan counter to 1.
     let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
-    assert_eq!(borrower_seat.collateral_encumbered_shares, 0);
+    assert!(
+        borrower_seat.collateral_encumbered_shares > 0,
+        "matched collateral stays encumbered while the loan is open"
+    );
+    assert_eq!(borrower_seat.open_borrow_count, 1, "one cross → one open loan");
 }
 
 /// Match-time idle-pool cap: the vault has only N atoms idle but the
@@ -164,7 +170,7 @@ async fn vault_match_capped_at_idle_pool() {
     let profile = fixture.read_risk_profile(0).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms,
-        50 - MARGINFI_ROUNDING_RESERVE_ATOMS,
+        49 - MARGINFI_ROUNDING_RESERVE_ATOMS,
         "vault cross is capped at idle minus the marginfi-rounding reserve"
     );
     assert_eq!(
@@ -256,13 +262,14 @@ async fn risk_profile_order_persists_after_full_fill() {
     );
     // Vault-idle invariant on the crossed profile.
     fixture.assert_vault_idle_invariant(0).await;
-    // Borrower seat must have zero collateral encumbrance after a
-    // full-fill IOC bid.
+    // Borrower seat: the matched collateral stays encumbered (it backs
+    // the open loan) and `open_borrow_count` ticks to 1.
     let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
-    assert_eq!(
-        borrower_seat.collateral_encumbered_shares, 0,
-        "fully-filled IOC bid must leave zero borrower collateral encumbrance"
+    assert!(
+        borrower_seat.collateral_encumbered_shares > 0,
+        "fully-filled IOC bid keeps the matched collateral encumbered (backs the open loan)"
     );
+    assert_eq!(borrower_seat.open_borrow_count, 1, "one cross → one open loan");
 }
 
 /// Once the profile's idle pool is exhausted, the matching engine
@@ -368,7 +375,7 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
     let profile = fixture.read_risk_profile(0).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms,
-        100 - MARGINFI_ROUNDING_RESERVE_ATOMS,
+        99 - MARGINFI_ROUNDING_RESERVE_ATOMS,
     );
     let _ = mainnet::usdc_mint();
 }
@@ -430,7 +437,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     // Profile 1: a second profile in the same vault with 5 USDC idle.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 1, curator.pubkey(), 8_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator.pubkey(), 8_000, 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -486,7 +493,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         .total_principal_atoms
         .saturating_sub(p0.deployed_principal_atoms)
         .saturating_sub(p0.encumbered_in_orders_atoms);
-    assert_eq!(p0_idle, 500_000, "profile 0 has only 0.5 USDC idle");
+    assert_eq!(p0_idle, 499_999, "profile 0 has only 0.5 USDC idle");
 
     // Profile 0's depositor tries to redeem ALL their shares (~1.5 USDC
     // of assets). The shared marginfi balance (~5.5 USDC) would cover it
@@ -518,7 +525,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     // Profile 1's capital is untouched.
     let p1 = fixture.read_risk_profile(1).await;
     assert_eq!(
-        p1.total_principal_atoms, 5_000_000,
+        p1.total_principal_atoms, 4_999_999,
         "profile 1's principal must be untouched by profile 0's withdrawal",
     );
     // Both profiles must satisfy the vault-idle invariant after the

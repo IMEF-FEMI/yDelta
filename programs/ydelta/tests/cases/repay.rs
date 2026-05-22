@@ -163,6 +163,56 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     assert_eq!(bob_seat_post.open_borrow_count, 0);
 }
 
+/// Legacy-shape safety: a Fixed loan whose collateral sits in the seat's
+/// `withdrawable` bucket with `encumbered == 0` — exactly how loans opened
+/// before the match-time collateral encumber existed look on-chain — must
+/// still repay cleanly. The close-time `release_loan_collateral` is
+/// min-capped, so here it is a no-op: the collateral is NEITHER
+/// double-credited NOR stranded, and the loan still closes. This is the
+/// property the 6pGq grandfather (mainnet legacy loans) relied on.
+#[tokio::test]
+async fn legacy_collateral_in_withdrawable_repays_without_double_credit() {
+    let fixture = MarketFixture::new().await;
+    let (bob, bob_usdc) = match_one_loan(&fixture).await;
+
+    // Forge the legacy shape: move the loan's encumbered collateral into
+    // withdrawable (encumbered → 0), as if it had never been encumbered.
+    fixture.legacy_collateral_to_withdrawable(&bob.pubkey()).await;
+    let seat_pre = fixture.read_seat(&bob.pubkey()).await;
+    assert_eq!(
+        seat_pre.collateral_encumbered_shares, 0,
+        "legacy shape: nothing encumbered"
+    );
+    let withdrawable_pre = seat_pre.collateral_withdrawable_shares;
+    assert!(withdrawable_pre > 0, "legacy collateral sits in withdrawable");
+    assert_eq!(seat_pre.open_borrow_count, 1, "loan still open pre-repay");
+
+    // Repay full under the new code.
+    fixture
+        .repay(&bob, 0, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true)
+        .await
+        .unwrap();
+
+    let loan_post = fixture.read_loan(0).await;
+    assert_eq!(
+        loan_post.state,
+        LoanState::Repaid as u8,
+        "loan must close despite the legacy collateral shape"
+    );
+    assert_eq!(loan_post.outstanding_debt_atoms, 0);
+
+    let seat_post = fixture.read_seat(&bob.pubkey()).await;
+    // No double-credit: withdrawable is UNCHANGED — the min-capped release
+    // moved nothing because encumbered was 0 (collateral already there).
+    assert_eq!(
+        seat_post.collateral_withdrawable_shares, withdrawable_pre,
+        "legacy repay must NOT double-credit collateral (release no-ops when encumbered==0)"
+    );
+    // Not stranded, and the open-loan counter still winds down.
+    assert_eq!(seat_post.collateral_encumbered_shares, 0);
+    assert_eq!(seat_post.open_borrow_count, 0);
+}
+
 #[tokio::test]
 async fn partial_repay_leaves_loan_active_and_collateral_locked() {
     let fixture = MarketFixture::new().await;

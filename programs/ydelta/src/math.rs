@@ -54,10 +54,11 @@ pub fn from_scaled_floor(scaled: u128) -> u128 {
 /// underpayment would let the caller settle a debt — or back a loan —
 /// for less than they truly owe.
 ///
-/// The round-up uses `checked_add` and surfaces the (degenerate,
-/// `scaled == u128::MAX`) overflow as an error rather than wrapping to
-/// `0` — a malformed input must fault, never silently yield a price /
-/// atom count of zero.
+/// The round-up uses `checked_add` defensively. Since `truncated =
+/// scaled >> SCALE_BITS` is at most `2^(128 − SCALE_BITS) − 1`, the `+1`
+/// can never actually overflow a u128 — even `scaled == u128::MAX`
+/// succeeds (it rounds up to `2^(128 − SCALE_BITS)`). The checked form is
+/// belt-and-suspenders, not a reachable fault path.
 pub fn from_scaled_ceil(scaled: u128) -> Result<u128, ProgramError> {
     let mask: u128 = (1u128 << SCALE_BITS) - 1;
     let truncated = scaled >> SCALE_BITS;

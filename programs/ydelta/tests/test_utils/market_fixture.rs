@@ -1266,6 +1266,58 @@ impl MarketFixture {
             .set_account(&self.market.pubkey(), &acc.into());
     }
 
+    /// Force a seat into the "legacy" collateral shape: move ALL of its
+    /// `collateral_encumbered_shares` into `collateral_withdrawable_shares`
+    /// (leaving encumbered at 0). Reproduces a loan opened by a program
+    /// build that predated the match-time collateral encumber, where a
+    /// live loan's collateral sits in `withdrawable` instead of
+    /// `encumbered`. Used to prove close-time `release_loan_collateral`
+    /// is a safe no-op for such loans (no double-credit, no stranding).
+    pub async fn legacy_collateral_to_withdrawable(&self, owner: &Pubkey) {
+        let mut data = {
+            let client: RefMut<ProgramTestContext> = self.context.borrow_mut();
+            client
+                .banks_client
+                .get_account(self.market.pubkey())
+                .await
+                .unwrap()
+                .unwrap()
+                .data
+        };
+        let fixed_size = std::mem::size_of::<MarketFixed>();
+        let claimed_seats_root_index = {
+            let header: &MarketFixed = bytemuck::from_bytes(&data[..fixed_size]);
+            header.claimed_seats_root_index
+        };
+        let (_fixed_bytes, dyn_bytes) = data.split_at_mut(fixed_size);
+        let idx = {
+            let tree: RedBlackTreeReadOnly<ClaimedSeat> =
+                RedBlackTreeReadOnly::new(dyn_bytes, claimed_seats_root_index, NIL);
+            tree.lookup_index(&ClaimedSeat::new_empty(*owner, 0, 0))
+        };
+        assert_ne!(idx, NIL, "no seat for {}", owner);
+        {
+            let node = get_mut_helper_seat(dyn_bytes, idx);
+            let seat = node.get_mut_value();
+            seat.collateral_withdrawable_shares = seat
+                .collateral_withdrawable_shares
+                .checked_add(seat.collateral_encumbered_shares)
+                .expect("share overflow");
+            seat.collateral_encumbered_shares = 0;
+        }
+        let lamports = solana_sdk::rent::Rent::default().minimum_balance(data.len());
+        let acc = Account {
+            lamports,
+            data,
+            owner: ydelta::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+        self.context
+            .borrow_mut()
+            .set_account(&self.market.pubkey(), &acc.into());
+    }
+
     // ─────────────────── Vault helpers ───────────────────
 
     /// Call `create_vault` for the market's debt mint (USDC), then

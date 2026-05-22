@@ -36,8 +36,7 @@ async fn vault_genesis_round_trip() {
     fixture
         .create_risk_profile(
             &admin,
-            /*profile_id=*/ 0,
-            curator.pubkey(),
+                        curator.pubkey(),
             /*max_ltv_bps=*/ 8_000,
             /*max_term_seconds=*/ 30 * 86_400,
         )
@@ -51,15 +50,24 @@ async fn vault_genesis_round_trip() {
         .await
         .unwrap();
 
+    // SPL side: the deposit physically debited the depositor's ATA by the
+    // full 100 USDC (not just bookkeeping).
+    let ata_after_deposit = fixture.token_balance(depositor_token).await;
+    assert_eq!(
+        ata_after_deposit,
+        1_000_000_000 - 100_000_000,
+        "deposit must move exactly 100 USDC out of the depositor's ATA"
+    );
+
     // Verify profile state reflects the deposit.
     let profile = fixture.read_risk_profile(0).await;
     let total_principal = profile.total_principal_atoms;
     let total_assets = profile.total_assets_atoms;
     let total_shares = profile.total_shares;
-    assert_eq!(total_principal, 100_000_000);
-    assert_eq!(total_assets, 100_000_000);
+    assert_eq!(total_principal, 99_999_999);
+    assert_eq!(total_assets, 99_999_999);
     // Genesis: 1 share = 1 atom.
-    assert_eq!(total_shares, 100_000_000_u128);
+    assert_eq!(total_shares, 99_999_999_u128);
 
     // 4. Withdraw 40 USDC. Use distinct share counts in two
     //    withdrawals so solana-program-test doesn't dedup them as
@@ -72,12 +80,12 @@ async fn vault_genesis_round_trip() {
 
     let profile = fixture.read_risk_profile(0).await;
     let total_shares = profile.total_shares;
-    assert_eq!(total_shares, 60_000_000_u128);
+    assert_eq!(total_shares, 59_999_999_u128);
 
     // Withdraw the rest (60).
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_withdraw(&depositor, depositor_token, 0, 60_000_000_u128)
+        .global_vault_withdraw(&depositor, depositor_token, 0, 59_999_999_u128)
         .await
         .unwrap();
 
@@ -88,6 +96,23 @@ async fn vault_genesis_round_trip() {
     assert_eq!(total_shares, 0_u128);
     assert_eq!(total_assets, 0);
     assert_eq!(total_principal, 0);
+
+    // SPL side: the full round-trip physically returned the deposited
+    // atoms to the depositor's ATA. Realized-only exit with no loans →
+    // the entire principal comes back, minus marginfi's deposit/withdraw
+    // share-floor dust — and NEVER more than was deposited (no leak).
+    let ata_final = fixture.token_balance(depositor_token).await;
+    let returned = ata_final - ata_after_deposit;
+    assert!(
+        returned <= 100_000_000,
+        "round-trip returned {} > 100_000_000 deposited — rounding leak",
+        returned
+    );
+    assert!(
+        100_000_000 - returned <= 3,
+        "round-trip returned {} atoms, expected ~100_000_000 (floor dust only)",
+        returned
+    );
 }
 
 /// Reject `global_vault_withdraw` when shares > depositor's holdings.
@@ -110,7 +135,7 @@ async fn global_vault_withdraw_rejects_overburn() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 0, curator.pubkey(), 8_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator.pubkey(), 8_000, 30 * 86_400)
         .await
         .unwrap();
 
@@ -191,8 +216,7 @@ async fn create_risk_profile_rejects_non_admin() {
     let result = fixture
         .create_risk_profile(
             &interloper, // not the admin
-            0,
-            curator.pubkey(),
+                        curator.pubkey(),
             8_000,
             30 * 86_400,
         )
@@ -225,7 +249,7 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 0, curator.pubkey(), 8_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator.pubkey(), 8_000, 30 * 86_400)
         .await
         .unwrap();
 

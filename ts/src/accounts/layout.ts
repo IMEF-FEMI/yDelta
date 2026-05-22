@@ -5,8 +5,8 @@
 //   - GlobalConfig      (programs/ydelta/src/state/global_config.rs)
 //   - GlobalVaultFixed  (programs/ydelta/src/state/vault.rs)
 //
-// External readers (the indexer, crankers, future on-chain programs
-// filtering ydelta accounts via memcmp) read these as raw bytes and
+// External readers (the UI, crankers, future on-chain programs
+// filtering ydelta accounts via memcmp/getProgramAccounts) read these as raw bytes and
 // need stable offsets. Keeping them in one file means a layout change
 // updates a single constant rather than every magic number scattered
 // across decoders.

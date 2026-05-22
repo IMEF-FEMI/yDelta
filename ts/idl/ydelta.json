@@ -668,6 +668,8 @@
         { "name": "marginfi_group", "writable": false },
         { "name": "marginfi_program", "writable": false },
         { "name": "global_vault", "writable": true },
+        { "name": "global_vault_signer", "writable": false, "pda": ["b\"global_vault_signer\"", "global_vault"], "note": "Vault marginfi authority — signs the full-refinance repay top-up withdraw" },
+        { "name": "global_vault_integration_account", "writable": true, "pda": ["b\"vault_integration\"", "global_vault"], "note": "Vault idle pool; funds the buyout shortfall on a full refinance" },
         { "name": "cranker_refund", "writable": true, "note": "REQUIRED — bound to P2Pool loan PDA's created_by" }
       ],
       "args": [{ "name": "max_acceptable_rate_bps", "type": "u16" }]

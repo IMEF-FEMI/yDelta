@@ -101,8 +101,8 @@ pub fn market_expand(fixed: &mut MarketFixed, dynamic: &mut [u8]) -> ProgramResu
 // ───────────────── Seat balance bookkeeping ─────────────────
 //
 // Every seat-balance write goes through `update_balance`. Composite helpers
-// (`encumber_for_order`, `unencumber_for_order`, `decrement_encumbrance_on_match`,
-// `decrement_open_count`) build on it.
+// (`encumber_for_order`, `unencumber_for_order`, `release_loan_collateral`)
+// build on it.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BalanceAxis {
@@ -159,9 +159,9 @@ pub const PLACEHOLDER_SHARE_PRICE_FP48: u128 = 1u128 << 48;
 
 /// Convert an atom count to fp48 share count at a given share-price
 /// snapshot. `shares = atoms / share_price` in fp48 math; equivalently
-/// `shares = atoms * SCALE / snapshot` where `SCALE = 2^48`. Saturates
-/// to `u128::MAX` on overflow (caller-rejected at the require-level
-/// check in `update_balance`).
+/// `shares = atoms * SCALE / snapshot` where `SCALE = 2^48`. Cannot
+/// overflow: `atoms` is u64, so `atoms << 48 ≤ 2^112`, which fits in u128
+/// with headroom — there is no saturation path.
 ///
 /// Returns 0 when `snapshot_fp48` is 0 (sentinel used by the vault
 /// path; see `place_order_for_risk_profile`).
@@ -188,6 +188,12 @@ fn encumber_for_order(
     let seat = get_mut_helper_seat(dynamic, seat_index).get_mut_value();
     match side {
         Side::Bid => {
+            // Collateral only. `open_borrow_count` is NOT bumped here:
+            // it tracks open LOANS, not open orders. A borrower bid is
+            // always IOC (never rests), so the count is incremented
+            // per-MatchedLoan as crosses/residual create loans (see
+            // `match_order` Fixed crosses and the P2Pool residual arm of
+            // `match_borrower_bid`) and decremented at each loan's close.
             update_balance(
                 seat,
                 BalanceAxis::Collateral,
@@ -202,10 +208,6 @@ fn encumber_for_order(
                 BalanceSign::Plus,
                 collateral_shares,
             )?;
-            seat.open_borrow_count = seat
-                .open_borrow_count
-                .checked_add(1)
-                .ok_or(ProgramError::ArithmeticOverflow)?;
         }
         Side::Ask => {
             update_balance(
@@ -258,7 +260,9 @@ fn unencumber_for_order(
                 BalanceSign::Plus,
                 collateral_shares,
             )?;
-            seat.open_borrow_count = seat.open_borrow_count.saturating_sub(1);
+            // No `open_borrow_count` change: the count is loan-driven,
+            // not order-driven (see `encumber_for_order`). A dropped IOC
+            // residual created no loan, so there is nothing to decrement.
         }
         Side::Ask => {
             update_balance(
@@ -281,41 +285,33 @@ fn unencumber_for_order(
     Ok(())
 }
 
-/// Match settlement: decrement encumbrance only (atoms re-credited via
-/// `MatchedLoan` → `Loan` flow). Quantities are fp48 shares converted
-/// at the resting order's snapshot share-price.
-fn decrement_encumbrance_on_match(
+/// Release a closing P2Pool loan's collateral from the borrower seat's
+/// `encumbered` bucket: `seized_shares` (= `total - returned`) leave the
+/// protocol via liquidation/settlement; `returned_shares` go back to
+/// `withdrawable`. Capped by the seat's live encumbered balance so loans
+/// opened before this accounting existed (collateral already withdrawable,
+/// encumbered == 0) are a safe no-op — never double-crediting.
+///
+/// ALL loan collateral — Fixed crosses and the P2Pool residual alike —
+/// stays seat-encumbered while the loan is live (the encumber happens once
+/// up front in `match_borrower_bid`; matching no longer pulls it out per
+/// cross). This is the single symmetric release used by every close path
+/// (repay / settle / liquidate) for both loan types.
+pub fn release_loan_collateral(
     dynamic: &mut [u8],
     seat_index: DataIndex,
-    side: Side,
-    principal_shares: u128,
-    collateral_shares: u128,
+    total_collateral_shares: u128,
+    returned_shares: u128,
 ) -> ProgramResult {
     let seat = get_mut_helper_seat(dynamic, seat_index).get_mut_value();
-    match side {
-        Side::Bid => update_balance(
-            seat,
-            BalanceAxis::Collateral,
-            BalanceBucket::Encumbered,
-            BalanceSign::Minus,
-            collateral_shares,
-        ),
-        Side::Ask => update_balance(
-            seat,
-            BalanceAxis::Debt,
-            BalanceBucket::Encumbered,
-            BalanceSign::Minus,
-            principal_shares,
-        ),
-    }
-}
-
-fn decrement_open_count(dynamic: &mut [u8], seat_index: DataIndex, side: Side) {
-    let seat = get_mut_helper_seat(dynamic, seat_index).get_mut_value();
-    match side {
-        Side::Bid => seat.open_borrow_count = seat.open_borrow_count.saturating_sub(1),
-        Side::Ask => seat.open_lend_count = seat.open_lend_count.saturating_sub(1),
-    }
+    let release = total_collateral_shares.min(seat.collateral_encumbered_shares);
+    seat.collateral_encumbered_shares -= release;
+    let credit = returned_shares.min(release);
+    seat.collateral_withdrawable_shares = seat
+        .collateral_withdrawable_shares
+        .checked_add(credit)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    Ok(())
 }
 
 // ─────────────────────── Seat lookup ───────────────────────
@@ -451,19 +447,18 @@ pub fn match_order(
     let mut total_filled = 0u64;
     let mut num_fills = 0u32;
 
-    // Share-rounding dust sweep for the taker's collateral
-    // encumbrance. The taker's collateral was encumbered as a SINGLE
+    // The taker's collateral was encumbered up front as a SINGLE
     // `atoms_to_shares_at_snapshot(args.collateral_atoms, snapshot)`
-    // conversion. Decrementing per cross re-converts each cross's atoms
-    // separately, and each conversion FLOORS — so `Σ per-cross shares`
-    // can fall 0..N−1 units short of the single encumbered total,
-    // leaving share dust frozen in the borrower's encumbered bucket even
-    // after the atom-level dust sweep below. To guarantee an exact
-    // zero, the FINAL cross decrements the EXACT remaining encumbered
-    // shares: `total_collateral_shares − Σ(already decremented)`.
-    let total_collateral_shares =
-        atoms_to_shares_at_snapshot(args.collateral_atoms, args.taker_share_price_snapshot_fp48);
-    let mut decremented_collateral_shares: u128 = 0;
+    // conversion (`encumber_for_order` in `match_borrower_bid`). It
+    // STAYS in the borrower seat's `encumbered` bucket for the life of
+    // every loan it backs — Fixed crosses and the P2Pool residual alike
+    // — and is released `encumbered → withdrawable` only at loan close
+    // (repay / settle / liquidate). Matching no longer decrements the
+    // encumbrance per cross; the per-cross collateral-atom split below
+    // only sizes each loan's `collateral_atoms` (for release-time
+    // accounting), not the seat bucket. A dropped IOC residual is the
+    // one exception: its unmatched collateral is unencumbered back to
+    // `withdrawable` by the `Drop` arm of `match_borrower_bid`.
 
     // The taker is always a borrower Bid — it crosses the ASKS tree.
     let mut current_maker_index: DataIndex = fixed.asks_best_index;
@@ -723,37 +718,23 @@ pub fn match_order(
         // no maker-side seat encumbrance.
         let maker_snapshot = maker.share_price_snapshot();
 
-        // Taker decrement uses the taker's snapshot (carried in
-        // MatchArgs from match_borrower_bid), pre-recorded at place-time
-        // so the decrement matches the original encumber atom-for-atom
-        // in fp48 share units.
+        // The taker's collateral snapshot (carried in MatchArgs from
+        // match_borrower_bid), pre-recorded at place-time so the
+        // loan's release at close is byte-symmetric with the encumber.
         let taker_snapshot = args.taker_share_price_snapshot_fp48;
-        // On the FINAL cross (the one that zeroes
-        // `remaining_principal`) decrement the EXACT remaining
-        // encumbered collateral shares so the borrower's encumbered
-        // bucket lands at precisely zero — no per-cross floor dust. Note
-        // the collateral-atom sweep above already set
-        // `matched_collateral_taker = remaining_collateral` on this same
-        // cross, so the atom side is exact too.
-        let is_final_cross = matched_principal == remaining_principal;
-        let collateral_shares_to_decrement = if is_final_cross {
-            total_collateral_shares.saturating_sub(decremented_collateral_shares)
-        } else {
-            atoms_to_shares_at_snapshot(matched_collateral_taker, taker_snapshot)
-        };
-        decremented_collateral_shares = decremented_collateral_shares
-            .checked_add(collateral_shares_to_decrement)
-            .ok_or(ProgramError::ArithmeticOverflow)?;
-        decrement_encumbrance_on_match(
-            dynamic,
-            args.taker_seat_index,
-            args.side,
-            atoms_to_shares_at_snapshot(matched_principal, taker_snapshot),
-            collateral_shares_to_decrement,
-        )?;
+        // Collateral encumbrance is NOT decremented per cross any more —
+        // it stays in the borrower seat's `encumbered` bucket for the
+        // life of the loan this cross creates, released at close. Only
+        // the per-cross collateral-atom split (`matched_collateral_taker`
+        // / `total_collateral_for_match`, computed above) is recorded on
+        // the loan node so close-time release can size itself; the dust
+        // sweep on the final cross still guarantees `Σ collateral_atoms`
+        // across the loans equals the bid's `collateral_atoms`, so every
+        // encumbered share eventually maps to exactly one loan.
+        //
         // Vault makers: profile.encumbered_in_orders is already written
         // inline at the gate above, so there is nothing to decrement on
-        // the maker side.
+        // the maker side either.
 
         // Risk-profile asks are unbounded standing quotes — never
         // "fully filled" by a cross and never removed by matching. Only
@@ -869,6 +850,20 @@ pub fn match_order(
             .matched_loan_sequence
             .checked_add(1)
             .ok_or(ProgramError::ArithmeticOverflow)?;
+
+        // This Fixed cross created an open loan against the borrower
+        // seat. `open_borrow_count` tracks open LOANS (one per
+        // MatchedLoan), decremented when the loan closes
+        // (repay/settle/liquidate). A multi-cross bid creating N Fixed
+        // loans bumps the count N times — mirroring
+        // `convert_p2pool_to_fixed`'s `+= num_fills`.
+        {
+            let seat = get_mut_helper_seat(dynamic, borrower_seat_index).get_mut_value();
+            seat.open_borrow_count = seat
+                .open_borrow_count
+                .checked_add(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
 
         remaining_principal = remaining_principal
             .checked_sub(matched_principal)
@@ -1251,23 +1246,28 @@ pub fn match_borrower_bid(
         match_result.remaining_principal > 0,
     ) {
         (ResidualAction::P2PoolBorrow, true) => {
-            // Convert the residual into a P2Pool MatchedLoan.
-            // Decrement the encumbrance for the residual (it leaves
-            // the open-order column for the loan column), insert a
-            // MatchedLoan with `loan_type = P2Pool` and
-            // `lender_seat_index = NIL` (marginfi is the funding side
-            // — no on-book lender). `borrower_marginfi_borrow_shares`
-            // is left at zero here; the processor patches it after
-            // the `marginfi.borrow` CPI lands by reading the share
-            // delta off the borrower marginfi-account.
-            unencumber_for_order(
-                dynamic,
-                args.taker_seat_index,
-                Side::Bid,
-                atoms_to_shares_at_snapshot(match_result.remaining_principal, snapshot),
-                atoms_to_shares_at_snapshot(match_result.remaining_collateral, snapshot),
-            )?;
-            decrement_open_count(dynamic, args.taker_seat_index, Side::Bid);
+            // Convert the residual into a P2Pool MatchedLoan with
+            // `loan_type = P2Pool` and `lender_seat_index = NIL` (marginfi
+            // is the funding side — no on-book lender).
+            // `borrower_marginfi_borrow_shares` is left at zero here; the
+            // processor patches it after the `marginfi.borrow` CPI lands.
+            //
+            // The residual's collateral now backs the live marginfi
+            // liability, so it stays in the borrower seat's `encumbered`
+            // bucket (NOT returned to `withdrawable` — that would let the
+            // seat report collateral as free while marginfi's solvency
+            // check still holds it). It is released on close by
+            // `release_loan_collateral` in repay/settle/liquidate. The
+            // P2Pool residual is one open LOAN, so bump `open_borrow_count`
+            // (+1), decremented when the loan closes — consistent with the
+            // Fixed crosses above.
+            {
+                let seat = get_mut_helper_seat(dynamic, args.taker_seat_index).get_mut_value();
+                seat.open_borrow_count = seat
+                    .open_borrow_count
+                    .checked_add(1)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            }
 
             let origination_atoms = (match_result.remaining_principal as u128)
                 .checked_mul(fixed.fee_config.origination_bps as u128)
@@ -1339,7 +1339,9 @@ pub fn match_borrower_bid(
             // IOC remainder dropped: reverse the encumbrance for the
             // unmatched portion since no live order will hold it. Same
             // snapshot as the original encumber so the math cancels
-            // exactly.
+            // exactly. No `open_borrow_count` change — no loan was
+            // created for the dropped portion (the count is loan-driven,
+            // bumped per cross/residual above, not at place time).
             unencumber_for_order(
                 dynamic,
                 args.taker_seat_index,
@@ -1347,12 +1349,11 @@ pub fn match_borrower_bid(
                 atoms_to_shares_at_snapshot(match_result.remaining_principal, snapshot),
                 atoms_to_shares_at_snapshot(match_result.remaining_collateral, snapshot),
             )?;
-            decrement_open_count(dynamic, args.taker_seat_index, Side::Bid);
         }
         (_, false) => {
-            // Fully filled: the taker's order never rested, so remove
-            // the open-counter bump done by `encumber_for_order`.
-            decrement_open_count(dynamic, args.taker_seat_index, Side::Bid);
+            // Fully filled with zero residual: every cross already
+            // bumped `open_borrow_count` per Fixed loan in `match_order`,
+            // and the IOC order never rested — nothing to wind down here.
         }
     }
 

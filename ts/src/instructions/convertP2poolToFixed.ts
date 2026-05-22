@@ -4,7 +4,9 @@ import BN from 'bn.js';
 import {
   borrowerIntegrationAccountPda,
   globalConfigPda,
+  globalVaultIntegrationAccountPda,
   globalVaultPda,
+  globalVaultSignerPda,
   lenderIntegrationAccountPda,
   loanPda,
   marketSignerPda,
@@ -50,6 +52,8 @@ export function convertP2poolToFixedInstruction(
   const marketSigner = marketSignerPda(args.market)[0];
   const marketDebtVault = marketTokenVaultPda(args.market, args.debtMint)[0];
   const vault = globalVaultPda(args.debtMint)[0];
+  const vaultSigner = globalVaultSignerPda(vault)[0];
+  const vaultIntegrationAccount = globalVaultIntegrationAccountPda(vault)[0];
 
   const data = new Writer()
     .u8(InstructionTag.ConvertP2PoolToFixed)
@@ -78,6 +82,8 @@ export function convertP2poolToFixedInstruction(
       ro(args.marginfiGroup),
       ro(args.marginfiProgram),
       rw(vault),
+      ro(vaultSigner),
+      rw(vaultIntegrationAccount),
       rw(args.crankerRefund),
     ],
     data,

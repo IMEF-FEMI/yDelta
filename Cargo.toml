@@ -10,10 +10,6 @@ members = [
 # test`) target the program crate by default. Build other workspace
 # members explicitly with `-p <crate>`.
 default-members = ["programs/ydelta"]
-# Note: the off-chain indexer is a sibling project at `../indexer/`
-# (separate Cargo project, separate Cargo.lock, rustc 1.89 for
-# carbon-core 0.12's solana-* ^3.0 deps). It lives outside the ydelta
-# repo entirely.
 
 [workspace.dependencies]
 shank = "0.4.2"

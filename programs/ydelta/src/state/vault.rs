@@ -317,10 +317,15 @@ pub struct RiskProfile {
     pub last_accrue_unix: i64,              // 136..144
 
     // ─── Cumulative yield indices (Aave-style; × 2^48) ───
-    /// Cumulative supply yield index — drives the supply-component of
-    /// per-depositor crystallisation in `global_vault_deposit` / `global_vault_withdraw`.
+    // NOTE: these indices are advanced in `accrue_risk_profile` and
+    // snapshotted into each depositor seat at deposit, but are NOT
+    // currently consumed — per-depositor yield is realized purely via NAV
+    // (`total_assets_atoms` / `total_principal_atoms` per share), not by
+    // diffing these indices. Reserved for a future index-based
+    // crystallisation path; retained in the layout to avoid a Pod migration.
+    /// Cumulative supply-yield index (maintained, not yet read).
     pub cumulative_supply_yield_index_scaled: u128, // 144..160
-    /// Cumulative delta yield index — drives the lender-rate-component.
+    /// Cumulative delta (lender-rate) yield index (maintained, not yet read).
     pub cumulative_delta_yield_index_scaled: u128, // 160..176
 
     /// Snapshot of marginfi's `Bank.asset_share_value` (fp48) at
@@ -462,9 +467,11 @@ impl std::fmt::Display for RiskProfile {
 /// a downstream mirror so user-account-side dashboards stay coherent
 /// without reading the vault account.
 ///
-/// Yield-index snapshots crystallize the user's per-share growth
-/// against `RiskProfile.cumulative_*_yield_index_scaled` at each
-/// deposit/withdraw boundary.
+/// Yield-index snapshots record `RiskProfile.cumulative_*_yield_index_scaled`
+/// at deposit time. They are currently WRITTEN-ONLY — per-depositor yield
+/// is realized via NAV, not by diffing these indices — and are reserved
+/// for a future index-driven crystallisation path (see the note on
+/// `RiskProfile`'s cumulative indices).
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct RiskProfileDepositorSeat {

@@ -74,6 +74,9 @@ pub fn convert_p2pool_to_fixed_instruction(
         accounts.push(AccountMeta::new_readonly(*o, false));
     }
     let (global_vault, _) = crate::state::vault::global_vault_pda(debt_mint);
+    let (global_vault_signer, _) = crate::state::vault::global_vault_signer_pda(&global_vault);
+    let (global_vault_integration_account, _) =
+        crate::state::vault::global_vault_integration_account_pda(&global_vault);
     accounts.extend([
         AccountMeta::new(market_debt_vault, false),
         AccountMeta::new_readonly(*debt_mint, false),
@@ -84,6 +87,10 @@ pub fn convert_p2pool_to_fixed_instruction(
         // GlobalVault — the convert matcher sizes each cross against
         // the crossed profile's live idle pool.
         AccountMeta::new(global_vault, false),
+        // Vault funding for the full-refinance repay top-up: the vault's
+        // marginfi integration account (idle) + its authority PDA.
+        AccountMeta::new_readonly(global_vault_signer, false),
+        AccountMeta::new(global_vault_integration_account, false),
     ]);
     // cranker_refund is a required trailing account.
     accounts.push(AccountMeta::new(*cranker_refund, false));

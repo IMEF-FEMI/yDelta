@@ -149,41 +149,54 @@ pub fn process_global_vault_withdraw(
             crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info);
         accrue_risk_profile(profile, now, share_value_fp48)?;
 
-        // atoms_out = shares × total_assets / total_shares.
-        let atoms_u128: u128 = params
+        // ─── Realized-only redemption ───
+        //
+        // A withdrawer redeems their proportional share of
+        // `total_principal_atoms` — deposits plus REALIZED gains (physical
+        // supply yield, already in principal; loan interest crystallised
+        // into principal at claim/settle). The accrued-but-unpaid
+        // loan-rate ESTIMATE lives only in `total_assets_atoms` and is NOT
+        // redeemable here.
+        //
+        // Paying the asset-side NAV instead would (a) hand the exiter
+        // other LPs' idle principal as not-yet-earned interest and let
+        // them escape the loan's default/tail risk, and (b) drift the
+        // principal basis off physical marginfi backing, because
+        // `total_principal` would fall by LESS than the atoms removed —
+        // weakening the per-profile idle isolation over time. So the
+        // payout, the `total_assets` debit, and the `total_principal`
+        // debit are all the realized `principal_decrement`. The estimate
+        // stays in `total_assets_atoms` and is realized to whoever REMAINS
+        // when the loan settles (claim_repayment trues `total_assets` up
+        // against that same estimate, so nothing is double-counted).
+        let principal_decrement: u64 = (params
             .shares_to_burn
-            .checked_mul(profile.total_assets_atoms as u128)
+            .checked_mul(profile.total_principal_atoms as u128)
             .and_then(|x| x.checked_div(profile.total_shares))
-            .ok_or(ProgramError::ArithmeticOverflow)?;
-        require!(
-            atoms_u128 <= u64::MAX as u128,
-            ProgramError::ArithmeticOverflow,
-            "computed atoms_out {} overflows u64",
-            atoms_u128
-        )?;
-        let atoms_out_raw = atoms_u128 as u64;
+            .ok_or(ProgramError::ArithmeticOverflow)?)
+            as u64;
         // Allow a zero-atom burn ONLY when the profile is fully impaired
         // (assets wiped to 0 by bad debt while shares remain). This lets
         // shareholders clear their dead shares and reclaim their seat instead
         // of the position being permanently locked. A 0 from dust shares on a
         // still-funded profile (total_assets > 0) is still rejected.
         require!(
-            atoms_out_raw > 0 || profile.total_assets_atoms == 0,
+            principal_decrement > 0 || profile.total_assets_atoms == 0,
             YdeltaError::InvalidArgument,
-            "computed atoms_out is 0 — shares too small to redeem any atoms"
+            "computed payout is 0 — shares too small to redeem any atoms"
         )?;
 
-        // On a full exit (burning every share) the profile's `total_assets`
-        // can marginally exceed the live marginfi balance due to the adapter's
+        // On a full exit (burning every share) the bookkeeping basis can
+        // marginally exceed the live marginfi balance due to the adapter's
         // share-rounding on deposit/accrual. Cap the payout at what the
-        // integration account actually holds — the final-burn reconciliation
-        // below zeroes the per-profile totals anyway, so the rounding dust is
-        // not stranded as an unredeemable last share.
+        // integration account actually holds — the final-burn
+        // reconciliation below zeroes the per-profile totals anyway, so the
+        // rounding dust is not stranded as an unredeemable last share.
         let burns_last_share: bool = profile.total_shares == params.shares_to_burn;
         let atoms_out = if burns_last_share {
-            atoms_out_raw.min(mfi_atoms)
+            principal_decrement.min(mfi_atoms)
         } else {
-            atoms_out_raw
+            principal_decrement
         };
 
         // ─── Per-profile liquidity gate ───
@@ -230,34 +243,6 @@ pub fn process_global_vault_withdraw(
             atoms_out
         )?;
 
-        // Proportional principal reduction so post-withdraw share price
-        // equals pre-withdraw share price (no dilution).
-        let principal_decrement: u64 = (params
-            .shares_to_burn
-            .checked_mul(profile.total_principal_atoms as u128)
-            .and_then(|x| x.checked_div(profile.total_shares))
-            .ok_or(ProgramError::ArithmeticOverflow)?)
-            as u64;
-
-        // ─── Principal-decrement cap ───
-        //
-        // A withdrawal may only reduce the IDLE portion of principal —
-        // it must never push `total_principal` below `deployed +
-        // encumbered`. The proportional `principal_decrement` could
-        // exceed `profile_idle` when a profile has accrued loan yield
-        // (the depositor's shares redeem yield-inflated assets while
-        // principal is largely deployed). Reject in that case — the
-        // depositor must wait for loans to close / orders to cancel.
-        require!(
-            principal_decrement <= profile_idle,
-            YdeltaError::VaultInsufficientIdleAtoms,
-            "principal_decrement ({}) exceeds profile idle ({}) — withdrawal \
-             would strand deployed/encumbered capital; wait for loans to \
-             close or orders to cancel",
-            principal_decrement,
-            profile_idle
-        )?;
-
         // ─── Forbid burning the last share with capital in flight ───
         //
         // The final-burn reconciliation below zeroes `total_principal_atoms`
@@ -283,20 +268,26 @@ pub fn process_global_vault_withdraw(
             .total_shares
             .checked_sub(params.shares_to_burn)
             .ok_or(ProgramError::ArithmeticOverflow)?;
+        // Realized-only: both basis and NAV fall by exactly the atoms
+        // paid out, so the principal basis tracks physical marginfi
+        // backing 1:1 (no drift) and the unrealized loan-rate estimate
+        // retained in `total_assets_atoms` is left for the remaining
+        // shareholders. `atoms_out == principal_decrement` except on the
+        // last-share cap, where the final-burn reconciliation zeroes both.
         profile.total_assets_atoms = profile
             .total_assets_atoms
             .checked_sub(atoms_out)
             .ok_or(ProgramError::ArithmeticOverflow)?;
         profile.total_principal_atoms = profile
             .total_principal_atoms
-            .checked_sub(principal_decrement)
+            .checked_sub(atoms_out)
             .ok_or(ProgramError::ArithmeticOverflow)?;
 
         (
             atoms_out,
             profile.total_shares,
             profile.total_assets_atoms,
-            principal_decrement,
+            atoms_out,
         )
     };
 

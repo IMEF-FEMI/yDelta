@@ -7,13 +7,11 @@
 //! rests as expected.
 
 use hypertree::NIL;
-use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 
 use ydelta::state::market_helpers::FLAG_OB_ONLY;
 use ydelta::state::{OrderType, Side};
 
-use crate::test_utils::marginfi_fixture::mainnet;
 use crate::test_utils::market_fixture::MarketFixture;
 
 #[tokio::test]
@@ -24,19 +22,9 @@ async fn ob_only_flag_accepted_by_place_order() {
     fixture.claim_seat(&alice).await;
     fixture.claim_seat(&bob).await;
 
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
+    // Quote-only: lenders fund via vaults, not seat debt-deposits. This
+    // test only needs Bob's borrower bid against an empty asks tree, so
+    // seed his collateral directly.
     fixture
         .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
         .await;

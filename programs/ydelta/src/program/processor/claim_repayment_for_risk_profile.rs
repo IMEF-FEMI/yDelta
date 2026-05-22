@@ -87,12 +87,18 @@ pub fn process_claim_repayment_for_risk_profile(
              (must be 0 — claim is post-settlement only)",
             header.outstanding_debt_atoms
         )?;
-        // Fixed-term lock-up: lender cannot drain until maturity, even
-        // if the borrower repaid early.
+        // The lender may drain as soon as the loan is fully resolved.
+        // An EARLY borrower repay (state already `Repaid`, funds already
+        // deposited into the lender integration account by `repay.rs`)
+        // is claimable immediately — once the debt is gone there is no
+        // economic reason to lock the lender's capital to the original
+        // term (interest accrues to repay time, not to maturity, so the
+        // lock earned nothing). Loans that reach `outstanding == 0` any
+        // other way (e.g. a matured settlement) still require maturity.
         require!(
-            now_unix_ts >= header.matures_at_unix,
+            header.state == LoanState::Repaid as u8 || now_unix_ts >= header.matures_at_unix,
             YdeltaError::LoanNotMatured,
-            "claim_repayment_for_risk_profile: now ({}) < matures_at_unix ({})",
+            "claim_repayment_for_risk_profile: loan not repaid and now ({}) < matures_at_unix ({})",
             now_unix_ts,
             { header.matures_at_unix }
         )?;

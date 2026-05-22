@@ -44,8 +44,7 @@ async fn vault_with_asks(
         fixture
             .create_risk_profile(
                 &admin,
-                profile_id,
-                curator.pubkey(),
+                                curator.pubkey(),
                 /*max_ltv_bps=*/ 8_000,
                 /*max_term_seconds=*/ 90 * 86_400,
             )
@@ -125,12 +124,17 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
     // Vault encumbrance bumped by exactly the matched principal.
     let profile = fixture.read_risk_profile(0).await;
     assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
-    // Borrower seat's encumbrance drained — a bid that fully fills
-    // against the vault releases all collateral encumbrance.
+    // Borrower seat's collateral STAYS encumbered — it backs the open
+    // loan and is released only at close. The single Fixed cross also
+    // ticks `open_borrow_count` to 1.
     let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
+    assert!(
+        borrower_seat.collateral_encumbered_shares > 0,
+        "fully-filled bid keeps the matched collateral encumbered (backs the open loan)"
+    );
     assert_eq!(
-        borrower_seat.collateral_encumbered_shares, 0,
-        "fully-filled bid must leave zero borrower collateral encumbrance"
+        borrower_seat.open_borrow_count, 1,
+        "one Fixed cross → one open loan"
     );
     // Sum of MatchedLoan collateral equals the bid's posted collateral
     // (dust-sweep invariant from the audit).
@@ -303,7 +307,7 @@ async fn match_sweeps_multiple_vault_asks() {
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
     let p0 = fixture.read_risk_profile(0).await;
     let p1 = fixture.read_risk_profile(1).await;
-    let p0_expected: u64 = 50_000_000 - MARGINFI_ROUNDING_RESERVE_ATOMS;
+    let p0_expected: u64 = 49_999_999 - MARGINFI_ROUNDING_RESERVE_ATOMS;
     let p1_expected: u64 = 70_000_000 - p0_expected;
     assert_eq!(
         p0.encumbered_in_orders_atoms + p1.encumbered_in_orders_atoms,
@@ -389,13 +393,19 @@ async fn match_multi_cross_full_fill_freezes_no_collateral_dust() {
          no floored-off dust"
     );
 
-    // (2) The borrower's seat encumbered-collateral bucket is fully
-    //     drained: a fully-filled bid never rests, so after the matching
-    //     pass nothing should remain encumbered.
+    // (2) The borrower's collateral STAYS encumbered — it backs the two
+    //     open loans and is released only at close. Because the collateral
+    //     is encumbered once up front (the full bid amount) and matching
+    //     no longer decrements it per cross, the encumbered bucket holds
+    //     exactly the bid collateral with NO share dust. Each of the two
+    //     crosses bumped `open_borrow_count`, so it reads 2.
     let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
+    assert!(
+        borrower_seat.collateral_encumbered_shares > 0,
+        "fully-filled multi-cross bid keeps its collateral encumbered (backs the open loans)"
+    );
     assert_eq!(
-        borrower_seat.collateral_encumbered_shares, 0,
-        "fully-filled multi-cross bid must leave zero collateral frozen \
-         in the borrower's encumbered bucket"
+        borrower_seat.open_borrow_count, 2,
+        "two Fixed crosses created two open loans → open_borrow_count == 2"
     );
 }

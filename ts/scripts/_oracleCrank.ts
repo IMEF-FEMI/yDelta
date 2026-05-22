@@ -218,8 +218,17 @@ async function crankSwitchboardPull(
   const program = await sb.AnchorUtils.loadProgramFromConnection(conn, wallet);
   const pullFeed = new sb.PullFeed(program, pullFeedPubkey);
   const queue = await sb.Queue.loadDefault(program);
-  const crossbar = CrossbarClient.default();
-  const gateway = (await queue.fetchGatewayFromCrossbar(crossbar)).gatewayUrl;
+  // Private-endpoint overrides so a self-hosted Crossbar (e.g. on Railway)
+  // can replace the rate-limited public infra:
+  //   YDELTA_SWITCHBOARD_CROSSBAR — base URL of your own Crossbar instance
+  //   YDELTA_SWITCHBOARD_GATEWAY  — pin one oracle gateway (skip discovery)
+  const _cbUrl = process.env.YDELTA_SWITCHBOARD_CROSSBAR?.trim();
+  const crossbar = _cbUrl ? new CrossbarClient(_cbUrl, true) : CrossbarClient.default();
+  const _gwPin = process.env.YDELTA_SWITCHBOARD_GATEWAY?.trim();
+  const gateway =
+    _gwPin && _gwPin.length > 0
+      ? _gwPin
+      : (await queue.fetchGatewayFromCrossbar(crossbar)).gatewayUrl;
   log(`[oracle/swb] cranking pull feed ${pullFeedPubkey.toBase58()}`);
 
   const [ixs, _responses, _success, luts] = await pullFeed.fetchUpdateIx({
@@ -273,8 +282,17 @@ export async function buildSwitchboardUpdateIxs(
   const wallet = new NodeWallet(payer);
   const program = await sb.AnchorUtils.loadProgramFromConnection(conn, wallet);
   const queue = await sb.Queue.loadDefault(program);
-  const crossbar = CrossbarClient.default();
-  const gateway = (await queue.fetchGatewayFromCrossbar(crossbar)).gatewayUrl;
+  // Private-endpoint overrides so a self-hosted Crossbar (e.g. on Railway)
+  // can replace the rate-limited public infra:
+  //   YDELTA_SWITCHBOARD_CROSSBAR — base URL of your own Crossbar instance
+  //   YDELTA_SWITCHBOARD_GATEWAY  — pin one oracle gateway (skip discovery)
+  const _cbUrl = process.env.YDELTA_SWITCHBOARD_CROSSBAR?.trim();
+  const crossbar = _cbUrl ? new CrossbarClient(_cbUrl, true) : CrossbarClient.default();
+  const _gwPin = process.env.YDELTA_SWITCHBOARD_GATEWAY?.trim();
+  const gateway =
+    _gwPin && _gwPin.length > 0
+      ? _gwPin
+      : (await queue.fetchGatewayFromCrossbar(crossbar)).gatewayUrl;
 
   const ixs: TransactionInstruction[] = [];
   const luts: AddressLookupTableAccount[] = [];

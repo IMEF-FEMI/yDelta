@@ -234,6 +234,18 @@ pub fn process_settle_matured_loan(
         )?;
     }
 
+    // Snapshot the market debt vault's PRE-STAGE balance. `market_debt_vault`
+    // is a long-lived shared market PDA that may already hold atoms
+    // (e.g. dust from a prior flow, a forced transfer). The keeper-refund
+    // sweep below must return only the keeper's own over-stake
+    // (`staged − consumed`), never a pre-existing balance that isn't
+    // theirs — so refund the delta over this snapshot, not the absolute
+    // post-repay balance.
+    let debt_vault_pre_stage: u64 = {
+        let d = market_debt_vault.info.try_borrow_data()?;
+        u64::from_le_bytes(d[64..72].try_into().expect("slice is 8 bytes"))
+    };
+
     // Transfer liquidator debt atoms into the market staging vault.
     transfer_user_to_vault(
         token_program.info,
@@ -329,13 +341,16 @@ pub fn process_settle_matured_loan(
 
             // Sweep the unconsumed staging headroom back to the keeper.
             // `repay_all` pulls exactly the live liability from
-            // `market_debt_vault`; any `staged_atoms − live_liability`
-            // remainder is the keeper's own over-stake and is refunded so
-            // settling a loan never silently costs the keeper atoms.
-            let vault_remainder: u64 = {
+            // `market_debt_vault`; the keeper's own over-stake is whatever
+            // they staged that the repay didn't consume — i.e. the current
+            // balance MINUS the pre-stage snapshot. Refunding the absolute
+            // balance would hand the keeper any pre-existing market dust
+            // that isn't theirs, so refund only the delta.
+            let vault_now: u64 = {
                 let d = market_debt_vault.info.try_borrow_data()?;
                 u64::from_le_bytes(d[64..72].try_into().expect("slice is 8 bytes"))
             };
+            let vault_remainder: u64 = vault_now.saturating_sub(debt_vault_pre_stage);
             if vault_remainder > 0 {
                 transfer_signed(
                     token_program.info,

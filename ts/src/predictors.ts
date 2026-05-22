@@ -4,7 +4,11 @@
  * matching engine's per-cross rules:
  *
  *   1. `ask.rate_bps ≤ bid.rate_bps`           — price compatibility
- *   2. `ask.term_seconds ≤ bid.term_seconds`   — term compatibility
+ *   2. `ask.term_seconds ≥ bid.term_seconds`   — term compatibility
+ *      (the ask's term is a ceiling; a strategy quoting "up to N days"
+ *      funds any borrower term ≤ N. Rate ordering is independent of
+ *      term, so a worse-rate ask with a longer term may still cross —
+ *      walk past, don't break.)
  *   3. Profile LTV: `actual_ltv ≤ profile.max_ltv_bps`
  *      (`actual_ltv` is computed at oracle prices — pass `ltvEstimator`
  *      for real oracle-driven estimation; the default treats
@@ -126,7 +130,9 @@ export function simulatePlaceOrder(args: PlaceOrderSimArgs): SimulationResult {
       skipped.push({ askIndex: index, reason: 'rate' });
       break;
     }
-    if (ask.termSeconds > args.bidTermSeconds) {
+    if (ask.termSeconds < args.bidTermSeconds) {
+      // Ask's term is a ceiling: it can't fund a longer-term loan. Rate
+      // ordering is term-independent, so a later ask may still qualify.
       skipped.push({ askIndex: index, reason: 'term' });
       continue;
     }

@@ -42,7 +42,7 @@ async fn two_profiles_independent_deposit_state() {
     // Profile 0 — curator_a, 50% LTV cap, 30-day max term.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator_a.pubkey(), 5_000, 30 * 86_400)
         .await
         .unwrap();
 
@@ -50,7 +50,7 @@ async fn two_profiles_independent_deposit_state() {
     // policy, different curator.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400)
+        .create_risk_profile(&admin, curator_b.pubkey(), 8_000, 90 * 86_400)
         .await
         .unwrap();
 
@@ -87,10 +87,10 @@ async fn two_profiles_independent_deposit_state() {
     let total_principal_a = profile_a.total_principal_atoms;
     let total_shares_b = profile_b.total_shares;
     let total_principal_b = profile_b.total_principal_atoms;
-    assert_eq!(total_shares_a, 100_000_000_u128);
-    assert_eq!(total_principal_a, 100_000_000);
-    assert_eq!(total_shares_b, 250_000_000_u128);
-    assert_eq!(total_principal_b, 250_000_000);
+    assert_eq!(total_shares_a, 99_999_999_u128);
+    assert_eq!(total_principal_a, 99_999_999);
+    assert_eq!(total_shares_b, 249_999_999_u128);
+    assert_eq!(total_principal_b, 249_999_999);
 
     // Vault-level counter reflects both profiles.
     let vault_fixed = fixture.read_vault_fixed().await;
@@ -110,11 +110,11 @@ async fn two_profiles_independent_deposit_state() {
     let principal_a_after = profile_a.total_principal_atoms;
     let shares_b_after = profile_b.total_shares;
     let principal_b_after = profile_b.total_principal_atoms;
-    assert_eq!(shares_a_after, 60_000_000_u128);
-    assert_eq!(principal_a_after, 60_000_000);
+    assert_eq!(shares_a_after, 59_999_999_u128);
+    assert_eq!(principal_a_after, 59_999_999);
     // Profile B is untouched.
-    assert_eq!(shares_b_after, 250_000_000_u128);
-    assert_eq!(principal_b_after, 250_000_000);
+    assert_eq!(shares_b_after, 249_999_999_u128);
+    assert_eq!(principal_b_after, 249_999_999);
 }
 
 /// Same vault, two profiles both resting asks in the same market.
@@ -183,12 +183,12 @@ async fn cross_curator_cannot_place_for_other_profile() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator_a.pubkey(), 5_000, 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400)
+        .create_risk_profile(&admin, curator_b.pubkey(), 8_000, 90 * 86_400)
         .await
         .unwrap();
 
@@ -249,8 +249,7 @@ async fn profile_aggregates_dont_alias() {
         fixture
             .create_risk_profile(
                 &admin,
-                id,
-                curator.pubkey(),
+                                curator.pubkey(),
                 5_000 + id as u16 * 1_000, // distinct max_ltv per profile
                 30 * 86_400,
             )
@@ -286,14 +285,14 @@ async fn profile_aggregates_dont_alias() {
     let p1_shares = p1.total_shares;
     let p2_shares = p2.total_shares;
     assert_eq!(p0_shares, 0);
-    assert_eq!(p1_shares, 50_000_000_u128);
+    assert_eq!(p1_shares, 49_999_999_u128);
     assert_eq!(p2_shares, 0);
     // Per-profile principal must follow per-profile shares (not alias).
     assert_eq!(p0.total_principal_atoms, 0);
-    assert_eq!(p1.total_principal_atoms, 50_000_000);
+    assert_eq!(p1.total_principal_atoms, 49_999_999);
     assert_eq!(p2.total_principal_atoms, 0);
     // total_assets_atoms == total_principal_atoms (no yield, no loans).
-    assert_eq!(p1.total_assets_atoms, 50_000_000);
+    assert_eq!(p1.total_assets_atoms, 49_999_999);
     // Vault-idle invariant on every profile.
     fixture.assert_vault_idle_invariant(0).await;
     fixture.assert_vault_idle_invariant(1).await;
@@ -334,12 +333,12 @@ async fn vault_aggregate_equals_sum_of_profiles() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 0, curator_a.pubkey(), 5_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator_a.pubkey(), 5_000, 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 1, curator_b.pubkey(), 8_000, 90 * 86_400)
+        .create_risk_profile(&admin, curator_b.pubkey(), 8_000, 90 * 86_400)
         .await
         .unwrap();
 
@@ -352,8 +351,8 @@ async fn vault_aggregate_equals_sum_of_profiles() {
         .unwrap();
     let p0 = fixture.read_risk_profile(0).await;
     let p1 = fixture.read_risk_profile(1).await;
-    assert_eq!(p0.total_principal_atoms, 100_000_000);
-    assert_eq!(p0.total_shares, 100_000_000_u128);
+    assert_eq!(p0.total_principal_atoms, 99_999_999);
+    assert_eq!(p0.total_shares, 99_999_999_u128);
     assert_eq!(p1.total_principal_atoms, 0);
 
     // Deposit into profile 1.
@@ -364,15 +363,15 @@ async fn vault_aggregate_equals_sum_of_profiles() {
         .unwrap();
     let p0 = fixture.read_risk_profile(0).await;
     let p1 = fixture.read_risk_profile(1).await;
-    assert_eq!(p1.total_principal_atoms, 250_000_000);
-    assert_eq!(p1.total_shares, 250_000_000_u128);
+    assert_eq!(p1.total_principal_atoms, 249_999_999);
+    assert_eq!(p1.total_shares, 249_999_999_u128);
     // Vault-wide total = Σ per-profile (the per-profile fields are the
     // sole source of truth).
     assert_eq!(
         p0.total_principal_atoms + p1.total_principal_atoms,
-        350_000_000
+        349_999_998
     );
-    assert_eq!(p0.total_shares + p1.total_shares, 350_000_000_u128);
+    assert_eq!(p0.total_shares + p1.total_shares, 349_999_998_u128);
 
     // Partial withdraw from profile 0 — only profile 0 moves.
     fixture.refresh_blockhash().await;
@@ -382,10 +381,10 @@ async fn vault_aggregate_equals_sum_of_profiles() {
         .unwrap();
     let p0 = fixture.read_risk_profile(0).await;
     let p1 = fixture.read_risk_profile(1).await;
-    assert_eq!(p0.total_shares, 60_000_000_u128);
-    assert_eq!(p0.total_principal_atoms, 60_000_000);
+    assert_eq!(p0.total_shares, 59_999_999_u128);
+    assert_eq!(p0.total_principal_atoms, 59_999_999);
     assert_eq!(
-        p1.total_principal_atoms, 250_000_000,
+        p1.total_principal_atoms, 249_999_999,
         "withdraw from p0 must not touch p1",
     );
 
@@ -393,7 +392,7 @@ async fn vault_aggregate_equals_sum_of_profiles() {
     // No loans deployed in p0, so the last-share gate permits it.
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_withdraw(&depositor_a, token_a, 0, 60_000_000_u128)
+        .global_vault_withdraw(&depositor_a, token_a, 0, 59_999_999_u128)
         .await
         .unwrap();
     let p0 = fixture.read_risk_profile(0).await;
@@ -401,5 +400,5 @@ async fn vault_aggregate_equals_sum_of_profiles() {
     // Profile 0 fully drained; vault-wide total now reflects only p1.
     assert_eq!(p0.total_shares, 0);
     assert_eq!(p0.total_principal_atoms, 0);
-    assert_eq!(p1.total_principal_atoms, 250_000_000);
+    assert_eq!(p1.total_principal_atoms, 249_999_999);
 }

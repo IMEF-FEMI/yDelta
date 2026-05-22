@@ -7,10 +7,12 @@
 //!
 //! These tests pin two invariants on an IOC cross:
 //!   1. Borrower seat: the collateral encumbered by `place_order` for
-//!      the *matched* slice is released atom-for-atom at match time
-//!      (the snapshot used to encumber is the same one used to
-//!      decrement), so a fully-matched bid leaves the borrower's
-//!      `collateral_encumbered_shares` back at zero.
+//!      the *matched* slice STAYS encumbered for the life of the loan it
+//!      backs — matching no longer pulls it out per cross. A fully-matched
+//!      bid moves its collateral `withdrawable → encumbered` and leaves it
+//!      there (released only at repay/settle/liquidate), and bumps
+//!      `open_borrow_count` once per loan created. A *dropped* residual
+//!      (OB_ONLY / empty book) is the one case that returns to withdrawable.
 //!   2. Vault side: the crossed profile's
 //!      `encumbered_in_orders_atoms` is bumped by exactly the matched
 //!      principal, and `total_principal_atoms` is untouched until the
@@ -20,12 +22,12 @@ use solana_sdk::signer::Signer;
 
 use crate::test_utils::{mainnet, MarketFixture};
 
-/// A borrower bid fully matched by a vault ask: the borrower seat's
-/// collateral encumbrance returns to zero (match-time decrement is
-/// byte-symmetric with the place-time encumber) and the vault profile
-/// records the matched principal as encumbered.
+/// A borrower bid fully matched by a vault ask: the matched collateral
+/// stays in the borrower seat's `encumbered` bucket (it backs the open
+/// loan), `open_borrow_count` ticks to 1, and the vault profile records
+/// the matched principal as encumbered.
 #[tokio::test]
-async fn borrower_encumbrance_released_on_full_match() {
+async fn borrower_encumbrance_retained_on_full_match() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
@@ -43,7 +45,7 @@ async fn borrower_encumbrance_released_on_full_match() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, 0, curator.pubkey(), 8_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator.pubkey(), 8_000, 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -96,13 +98,29 @@ async fn borrower_encumbrance_released_on_full_match() {
         .await
         .unwrap();
 
-    // Borrower seat: the IOC bid never rests, so the place-time
-    // collateral encumbrance is fully released by the match-time
-    // decrement — back to exactly the pre-cross value.
+    // Borrower seat: the matched collateral STAYS encumbered for the
+    // life of the loan it backs (it is released only at close). Pin the
+    // conservation identity — every collateral share that left
+    // `withdrawable` landed in `encumbered`, none vanished — and the
+    // open-loan counter ticks to 1 for the single Fixed cross.
     let post = fixture.read_seat(&borrower.pubkey()).await;
+    assert!(
+        post.collateral_encumbered_shares > 0,
+        "matched collateral must remain encumbered, not released, while the loan is open"
+    );
     assert_eq!(
-        post.collateral_encumbered_shares, pre.collateral_encumbered_shares,
-        "fully-matched IOC bid must leave zero collateral encumbrance on the borrower seat"
+        post.collateral_encumbered_shares,
+        pre.collateral_withdrawable_shares - post.collateral_withdrawable_shares,
+        "every collateral share that left withdrawable must be encumbered (conservation)"
+    );
+    assert_eq!(
+        post.collateral_withdrawable_shares + post.collateral_encumbered_shares,
+        pre.collateral_withdrawable_shares,
+        "total seat collateral (withdrawable + encumbered) is conserved across the match"
+    );
+    assert_eq!(
+        post.open_borrow_count, 1,
+        "one Fixed cross created one open loan → open_borrow_count == 1"
     );
 
     // Vault side: the crossed profile is encumbered by exactly the
@@ -114,7 +132,7 @@ async fn borrower_encumbrance_released_on_full_match() {
         "vault profile encumbered for exactly the matched principal"
     );
     assert_eq!(
-        profile.total_principal_atoms, 100_000_000,
+        profile.total_principal_atoms, 99_999_999,
         "total_principal_atoms unchanged until the cranker settles"
     );
     assert_eq!(

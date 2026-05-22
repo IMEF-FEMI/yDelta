@@ -31,27 +31,10 @@ use crate::test_utils::market_fixture::MarketFixture;
 #[tokio::test]
 async fn bid_unfilled_residual_p2pool_borrows() {
     let fixture = MarketFixture::new().await;
-    let alice = fixture.create_trader().await;
     let bob = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
     fixture.claim_seat(&bob).await;
-
-    // Alice (lender) deposits USDC so the lender-side marginfi-account
-    // has assets — irrelevant for the borrow CPI itself but mirrors the
-    // realistic setup.
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
+    // (Quote-only: no lender seat debt-deposit — the P2Pool borrow's
+    // deposit-back CPI inits the lender-side marginfi balance slot.)
 
     // Bob (borrower) deposits wSOL collateral onto the
     // **borrower-side** marginfi-account so marginfi's solvency
@@ -242,10 +225,13 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     // `deposit_atoms` (40 atoms) idle. The matching engine reserves
     // `MARGINFI_ROUNDING_RESERVE_ATOMS = 1` per profile to absorb
     // marginfi v0.1.8's deposit-share-mint rounding tax — see the
-    // doc-comment on that constant — so the cross caps at
-    // `deposit_atoms - 1` and the residual rolls to P2Pool.
+    // doc-comment on that constant. The deposit itself also floors one
+    // atom on the share mint, so the cross caps at
+    // `deposit_atoms - 1 (deposit floor) - reserve` and the residual
+    // rolls to P2Pool.
+    use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
     let deposit_atoms: u64 = 40;
-    let expected_fixed_principal: u64 = deposit_atoms - 1;
+    let expected_fixed_principal: u64 = deposit_atoms - 1 - MARGINFI_ROUNDING_RESERVE_ATOMS;
     fixture
         .provide_vault_liquidity(
             &admin,
@@ -382,26 +368,9 @@ async fn open_p2pool_loan_for_repay(
     principal_atoms: u64,
     collateral_atoms: u64,
 ) -> (solana_sdk::signature::Keypair, Pubkey) {
-    // A lender deposits USDC first so the lender-side marginfi account
-    // already carries a balance slot — the P2Pool borrow's deposit-back
-    // CPI reuses that slot instead of paying the extra CUs of a fresh
-    // balance-slot init inside place_order.
-    let alice = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
+    // (Quote-only: lenders fund via vaults, not seat debt-deposits — direct
+    // debt deposits into a market seat are rejected. The P2Pool borrow's
+    // deposit-back CPI inits the lender-side balance slot on first use.)
     let bob = fixture.create_trader().await;
     fixture.claim_seat(&bob).await;
 
@@ -560,6 +529,116 @@ async fn p2pool_full_repay_zeroes_liability_and_closes_pda() {
     );
 }
 
+/// Multiple P2Pool loans on ONE market share a single per-market
+/// borrower marginfi account, so their liabilities commingle. Each loan
+/// must close on ITS OWN slice retiring — not on the shared account-total
+/// hitting zero. Regression guard for the bug where, with ≥2 P2Pool
+/// loans, only the loan repaid with `repay_all` could close and the rest
+/// were stranded `Active` (a follow-up repay tripped the "liability is 0"
+/// guard, orphaning them forever). Also pins the open-loan counter:
+/// `open_borrow_count` ticks up per loan opened and down per loan closed.
+#[tokio::test]
+async fn p2pool_multiple_loans_each_close_independently() {
+    let fixture = MarketFixture::new().await;
+    let principal_atoms: u64 = 1_000;
+    let collateral_each: u64 = 60_000;
+    let n: u64 = 3;
+
+    // One borrower, one seat, collateral for all N loans deposited up
+    // front (each bid encumbers `collateral_each` from withdrawable).
+    let bob = fixture.create_trader().await;
+    fixture.claim_seat(&bob).await;
+    let bob_wsol = Pubkey::new_unique();
+    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), n * collateral_each + 1_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&bob, bob_wsol, /*is_debt=*/ false, n * collateral_each)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Open N P2Pool loans (no resting asks → full residual borrows),
+    // each cranked into a `LoanFixed` PDA at its sequence.
+    for seq in 0..n {
+        fixture
+            .place_order_with_flags(
+                &bob,
+                Side::Bid,
+                OrderType::Limit,
+                800,
+                30 * 86_400,
+                principal_atoms,
+                collateral_each,
+                /*flags=*/ 0,
+            )
+            .await
+            .unwrap();
+        fixture.refresh_blockhash().await;
+        fixture.crank_matched_loan(seq).await.unwrap();
+        fixture.refresh_blockhash().await;
+    }
+
+    // Fund the repay ATA (borrowed atoms went to the lender side, not bob).
+    let bob_usdc = Pubkey::new_unique();
+    fixture.put_token_account(bob_usdc, mainnet::usdc_mint(), bob.pubkey(), 100_000_000);
+    fixture.refresh_blockhash().await;
+
+    // All N live: shared liability > 0, count == N, each loan Active.
+    assert!(p2pool_liability_shares(&fixture).await > 0);
+    assert_eq!(
+        fixture.read_seat(&bob.pubkey()).await.open_borrow_count,
+        n as u32,
+        "N P2Pool loans open → open_borrow_count == N"
+    );
+    for seq in 0..n {
+        assert_eq!(fixture.read_loan(seq).await.state, LoanState::Active as u8);
+        assert!(!loan_account_is_closed(&fixture, seq).await);
+    }
+
+    // Repay each in turn. Each closes ITS OWN PDA; siblings stay Active
+    // until repaid; the count ticks down one per close. (Under the old
+    // account-total close gate only the final `repay_all` loan closed.)
+    for seq in 0..n {
+        fixture
+            .repay(&bob, seq, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true)
+            .await
+            .unwrap();
+        fixture.refresh_blockhash().await;
+
+        assert!(
+            loan_account_is_closed(&fixture, seq).await,
+            "P2Pool loan {seq} must close on its own slice retiring"
+        );
+        for later in (seq + 1)..n {
+            assert_eq!(
+                fixture.read_loan(later).await.state,
+                LoanState::Active as u8,
+                "sibling loan {later} must stay Active until repaid"
+            );
+            assert!(!loan_account_is_closed(&fixture, later).await);
+        }
+        assert_eq!(
+            fixture.read_seat(&bob.pubkey()).await.open_borrow_count,
+            (n - seq - 1) as u32,
+            "open_borrow_count decrements once per closed loan"
+        );
+    }
+
+    // The last loan's `repay_all` zeroes the shared liability — no orphan
+    // dust — and every collateral share is released back to withdrawable.
+    assert_eq!(
+        p2pool_liability_shares(&fixture).await,
+        0,
+        "the last loan's repay_all must zero the shared liability — no orphaned residual"
+    );
+    let seat = fixture.read_seat(&bob.pubkey()).await;
+    assert_eq!(seat.open_borrow_count, 0);
+    assert_eq!(
+        seat.collateral_encumbered_shares, 0,
+        "all collateral released to withdrawable after every loan closed"
+    );
+}
+
 /// Full matured settlement on a P2Pool loan must retire the marginfi
 /// liability to exactly zero and close/refund the loan PDA.
 #[cfg(feature = "test-sbf")]
@@ -619,4 +698,64 @@ async fn p2pool_full_liquidation_zeroes_liability_and_closes_pda() {
 
     assert_eq!(p2pool_liability_shares(&fixture).await, 0);
     assert!(loan_account_is_closed(&fixture, 0).await);
+}
+
+/// CONFIRMS the collateral-commitment bug: a P2Pool borrow must keep the
+/// borrower's collateral committed (it backs the live marginfi liability),
+/// NOT return it to `withdrawable`. The residual arm currently calls
+/// `unencumber_for_order`, wrongly freeing the collateral — so the seat shows
+/// it as withdrawable while marginfi's solvency check still blocks it.
+///
+/// Expected (post-fix): after the borrow, the locked collateral leaves
+/// `withdrawable` and shows in `encumbered`. This test FAILS on the current
+/// (buggy) code, demonstrating the issue is real.
+#[tokio::test]
+async fn p2pool_borrow_keeps_collateral_committed() {
+    let fixture = MarketFixture::new().await;
+    let bob = fixture.create_trader().await;
+    fixture.claim_seat(&bob).await;
+
+    // Bob deposits 10_000 wSOL collateral onto the borrower marginfi account.
+    let bob_wsol = Pubkey::new_unique();
+    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), 100_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&bob, bob_wsol, /*is_debt=*/ false, 10_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    let pre = fixture.read_seat(&bob.pubkey()).await;
+    assert_eq!(pre.collateral_encumbered_shares, 0, "nothing encumbered before the bid");
+    let pre_withdrawable = pre.collateral_withdrawable_shares;
+
+    // No asks → the full residual borrows from marginfi (P2Pool). The bid
+    // locks 5_000 collateral, which now backs that live liability.
+    fixture
+        .place_order_with_flags(
+            &bob,
+            Side::Bid,
+            OrderType::Limit,
+            800,
+            30 * 86_400,
+            /*principal_atoms=*/ 100,
+            /*collateral_atoms=*/ 5_000,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+
+    let post = fixture.read_seat(&bob.pubkey()).await;
+    assert!(
+        post.collateral_encumbered_shares > 0,
+        "P2Pool borrow must keep the backing collateral committed (encumbered), \
+         got 0 — collateral was wrongly returned to withdrawable",
+    );
+    assert!(
+        post.collateral_withdrawable_shares < pre_withdrawable,
+        "withdrawable collateral must drop by the amount backing the loan \
+         (pre={}, post={})",
+        pre_withdrawable,
+        post.collateral_withdrawable_shares,
+    );
 }

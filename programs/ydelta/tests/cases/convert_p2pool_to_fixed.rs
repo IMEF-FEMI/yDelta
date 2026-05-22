@@ -51,26 +51,8 @@ async fn open_p2pool_loan(
     principal_atoms: u64,
     collateral_atoms: u64,
 ) -> solana_sdk::signature::Keypair {
-    // A lender deposits USDC first so the lender-side marginfi account
-    // already carries a balance slot — the P2Pool borrow's deposit-back
-    // CPI then reuses that slot instead of paying the extra CUs of a
-    // fresh `MarginfiAccountInitialize` balance slot inside place_order.
-    let alice = fixture.create_trader().await;
-    fixture.claim_seat(&alice).await;
-    let alice_usdc = Pubkey::new_unique();
-    fixture.put_token_account(
-        alice_usdc,
-        mainnet::usdc_mint(),
-        alice.pubkey(),
-        100_000_000,
-    );
-    fixture.refresh_blockhash().await;
-    fixture
-        .deposit(&alice, alice_usdc, /*is_debt=*/ true, 10_000_000)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
+    // (Quote-only: lenders fund via vaults, not seat debt-deposits — the
+    // P2Pool borrow's deposit-back CPI inits the lender-side balance slot.)
     let bob = fixture.create_trader().await;
     fixture.claim_seat(&bob).await;
 
@@ -114,6 +96,13 @@ async fn open_p2pool_loan(
 /// Full conversion: a vault ask with ample idle absorbs the entire
 /// P2Pool liability. The P2Pool PDA must be closed (data zeroed) and the
 /// borrower's marginfi liability driven to exactly zero.
+///
+/// A *full* P2Pool→Fixed refinance retires the entire variable liability.
+/// The per-market lender deposit-back (≈ the borrowed principal) is ~1
+/// atom short of the live liability after marginfi's share-floor, so the
+/// repay-rounding shortfall is topped up from the crossed vault's idle
+/// (the new fixed lender funds the remainder) — see the funding block in
+/// `convert_p2pool_to_fixed`.
 #[tokio::test]
 async fn full_conversion_closes_p2pool_pda() {
     let fixture = MarketFixture::new().await;
@@ -172,7 +161,7 @@ async fn full_conversion_closes_p2pool_pda() {
     // valid "closed" outcome.
     let (loan_addr, _) = ydelta::state::loan::loan_pda(&fixture.market.pubkey(), 0);
     let loan_account = {
-        let mut ctx = fixture.context.borrow_mut();
+        let ctx = fixture.context.borrow_mut();
         ctx.banks_client.get_account(loan_addr).await.unwrap()
     };
     match loan_account {
@@ -261,13 +250,18 @@ async fn partial_conversion_keeps_p2pool_active() {
         converted.lender_rate_bps, 600,
         "converted Fixed loan adopts the crossed ask's rate"
     );
-    // Converted principal is capped by the 40-atom profile idle minus
-    // the matching engine's per-profile marginfi-rounding reserve.
+    // Converted principal is capped by the crossed profile's idle minus
+    // the matching engine's per-profile marginfi-rounding reserve. The
+    // vault was funded with 40 atoms; the marginfi deposit share-floor
+    // credits 39 idle, and the matcher reserves
+    // `MARGINFI_ROUNDING_RESERVE_ATOMS` on top.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
+    const VAULT_DEPOSIT_ATOMS: u64 = 40;
+    let floored_idle = VAULT_DEPOSIT_ATOMS - 1; // marginfi deposit share-floor
     assert_eq!(
         converted.principal_debt_atoms,
-        40 - MARGINFI_ROUNDING_RESERVE_ATOMS,
-        "converted principal == profile idle minus marginfi-rounding reserve"
+        floored_idle - MARGINFI_ROUNDING_RESERVE_ATOMS,
+        "converted principal == floored profile idle minus marginfi-rounding reserve"
     );
     // Conservation must hold on the new Fixed loan at promotion.
     fixture.assert_loan_conservation_holds(1).await;
@@ -328,11 +322,10 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
     let result = fixture
         .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
         .await;
-    assert!(
-        result.is_err(),
-        "convert must be rejected — the only ask's profile cap (1% LTV) \
-         is breached by the cross"
-    );
+    // The per-cross profile-LTV gate SKIPS the only ask, so the matcher
+    // crosses nothing and the processor's "no asks crossed" guard fires
+    // with InvalidArgument — not just any error.
+    crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
     // Stamping more strictly: the exact error path depends on whether
     // the processor falls back to "no crosses" or the LTV gate fires
     // directly. Both paths leave the P2Pool loan completely untouched.

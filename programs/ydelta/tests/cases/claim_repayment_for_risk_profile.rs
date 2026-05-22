@@ -66,7 +66,7 @@ async fn setup_through_promote(
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, PROFILE_ID, curator.pubkey(), 8_000, TERM_SECONDS)
+        .create_risk_profile(&admin, curator.pubkey(), 8_000, TERM_SECONDS)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -282,7 +282,7 @@ async fn last_share_burn_rejected_while_loan_deployed() {
     );
     // Genesis 1:1 mint — the sole depositor holds every share.
     assert_eq!(
-        profile.total_shares, VAULT_DEPOSIT_ATOMS as u128,
+        profile.total_shares, (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "test invariant: depositor holds the entire share supply"
     );
 
@@ -328,31 +328,53 @@ async fn last_share_burn_rejected_while_loan_deployed() {
     );
 }
 
+/// Early borrower repay unlocks the lender's claim BEFORE maturity.
+/// Once the borrower has fully repaid (`outstanding == 0`, state
+/// `Repaid`, funds already in the lender integration account) there is
+/// no economic reason to keep the lender's capital term-locked, so
+/// `claim_repayment_for_risk_profile` succeeds pre-maturity and closes
+/// the loan PDA. (Previously this was rejected with `LoanNotMatured`.)
 #[tokio::test]
-async fn claim_rejected_pre_maturity() {
+async fn claim_allowed_pre_maturity_after_early_repay() {
     let fixture = MarketFixture::new().await;
     let (_admin, _depositor, _curator, borrower, borrower_usdc) =
         setup_through_promote(&fixture).await;
 
+    // Repay in full WITHOUT advancing to maturity — the loan is now
+    // Repaid but still well inside its term.
     fixture
         .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Don't time-warp. Lock-up requires now >= matures_at_unix. Pass
-    // an explicit cranker_refund so the loader's "trailing accounts"
-    // check passes and we genuinely exercise the loan-state gate
-    // (not just a missing-accounts failure that masks the real path).
+    // Pin the clock to a definite PRE-maturity instant so the test
+    // genuinely exercises the early-claim path (not an at/after-maturity
+    // fluke). matures_at − 100s is still inside the term post-repay.
+    let loan = fixture.read_loan(0).await;
+    fixture
+        .set_clock_unix_timestamp(loan.matures_at_unix - 100)
+        .await;
+    fixture.refresh_blockhash().await;
+
+    // Claim must SUCCEED pre-maturity for a repaid loan, and close the
+    // PDA (rent refunded to the passed cranker_refund target).
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
-    let result = fixture
+    fixture
         .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
-        .await;
-    // Pre-maturity rejection must surface LoanNotMatured exactly — a
-    // generic is_err() would also accept e.g. InvalidArgument from
-    // a different code path.
-    crate::assert_custom_error!(result, ydelta::program::YdeltaError::LoanNotMatured);
+        .await
+        .unwrap();
+
+    let (loan_addr, _) = loan_pda(&fixture.market.pubkey(), 0);
+    let post_account = {
+        let ctx = fixture.context.borrow_mut();
+        ctx.banks_client.get_account(loan_addr).await.unwrap()
+    };
+    assert!(
+        post_account.is_none(),
+        "early-repaid loan PDA must close on a pre-maturity claim",
+    );
 }
 
 #[tokio::test]
@@ -399,7 +421,7 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     // exactly VAULT_DEPOSIT_ATOMS shares.
     let profile_pre = fixture.read_risk_profile(PROFILE_ID).await;
     assert_eq!(
-        profile_pre.total_shares, VAULT_DEPOSIT_ATOMS as u128,
+        profile_pre.total_shares, (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "test invariant: genesis SP=1.0, shares == atoms after first deposit"
     );
 
@@ -467,7 +489,7 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     // The depositor's claim on the vault is the SAME number of shares,
     // but each share now backs more atoms — that's yield realization.
     assert_eq!(
-        profile_post_claim.total_shares, VAULT_DEPOSIT_ATOMS as u128,
+        profile_post_claim.total_shares, (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "total_shares must not change between deposit and yield realization"
     );
 
