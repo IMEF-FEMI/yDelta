@@ -152,7 +152,9 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
     );
     // Conservation identity at promote-time.
     let _ = loan_data;
-    fixture.assert_loan_conservation_holds(cranking_sequence).await;
+    fixture
+        .assert_loan_conservation_holds(cranking_sequence)
+        .await;
 
     // Bob's seat is now credited with amount_to_shares(net_principal).
     let bank_data = fixture.account_data(mainnet::usdc_bank()).await;

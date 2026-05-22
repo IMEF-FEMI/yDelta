@@ -249,7 +249,7 @@ async fn profile_aggregates_dont_alias() {
         fixture
             .create_risk_profile(
                 &admin,
-                                curator.pubkey(),
+                curator.pubkey(),
                 5_000 + id as u16 * 1_000, // distinct max_ltv per profile
                 30 * 86_400,
             )

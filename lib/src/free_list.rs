@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::{get_mut_helper, DataIndex, Get, NIL};
 #[cfg(debug_assertions)]
 use crate::get_helper;
+use crate::{get_mut_helper, DataIndex, Get, NIL};
 
 // FreeList is a linked list that keeps track of all the available nodes that
 // can be filled with ClaimedSeats and RestingOrders.

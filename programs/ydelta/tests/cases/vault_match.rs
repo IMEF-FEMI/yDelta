@@ -107,7 +107,10 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
         borrower_seat.collateral_encumbered_shares > 0,
         "matched collateral stays encumbered while the loan is open"
     );
-    assert_eq!(borrower_seat.open_borrow_count, 1, "one cross → one open loan");
+    assert_eq!(
+        borrower_seat.open_borrow_count, 1,
+        "one cross → one open loan"
+    );
 }
 
 /// Match-time idle-pool cap: the vault has only N atoms idle but the
@@ -269,7 +272,10 @@ async fn risk_profile_order_persists_after_full_fill() {
         borrower_seat.collateral_encumbered_shares > 0,
         "fully-filled IOC bid keeps the matched collateral encumbered (backs the open loan)"
     );
-    assert_eq!(borrower_seat.open_borrow_count, 1, "one cross → one open loan");
+    assert_eq!(
+        borrower_seat.open_borrow_count, 1,
+        "one cross → one open loan"
+    );
 }
 
 /// Once the profile's idle pool is exhausted, the matching engine

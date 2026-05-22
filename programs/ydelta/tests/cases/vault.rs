@@ -72,8 +72,7 @@ fn create_risk_profile_ix_has_four_accounts() {
     let mint = Pubkey::new_unique();
     let payer = Keypair::new();
     let curator = Pubkey::new_unique();
-    let ix =
-        create_risk_profile_instruction(&mint, &payer.pubkey(), &curator, 5_000, 30 * 86_400);
+    let ix = create_risk_profile_instruction(&mint, &payer.pubkey(), &curator, 5_000, 30 * 86_400);
     // payer (signer) + global_config + vault PDA + system_program.
     assert_eq!(
         ix.accounts.len(),

@@ -282,7 +282,8 @@ async fn last_share_burn_rejected_while_loan_deployed() {
     );
     // Genesis 1:1 mint — the sole depositor holds every share.
     assert_eq!(
-        profile.total_shares, (VAULT_DEPOSIT_ATOMS - 1) as u128,
+        profile.total_shares,
+        (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "test invariant: depositor holds the entire share supply"
     );
 
@@ -421,7 +422,8 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     // exactly VAULT_DEPOSIT_ATOMS shares.
     let profile_pre = fixture.read_risk_profile(PROFILE_ID).await;
     assert_eq!(
-        profile_pre.total_shares, (VAULT_DEPOSIT_ATOMS - 1) as u128,
+        profile_pre.total_shares,
+        (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "test invariant: genesis SP=1.0, shares == atoms after first deposit"
     );
 
@@ -489,7 +491,8 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     // The depositor's claim on the vault is the SAME number of shares,
     // but each share now backs more atoms — that's yield realization.
     assert_eq!(
-        profile_post_claim.total_shares, (VAULT_DEPOSIT_ATOMS - 1) as u128,
+        profile_post_claim.total_shares,
+        (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "total_shares must not change between deposit and yield realization"
     );
 

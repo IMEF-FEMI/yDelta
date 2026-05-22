@@ -38,7 +38,12 @@ pub const MAX_LIQUIDATION_KEEPER_BPS: u16 = 5_000;
 pub fn validate_fee_config_overrides(params: &FeeConfigOverrides) -> ProgramResult {
     fn check_bps(value: Option<u16>) -> ProgramResult {
         if let Some(v) = value {
-            require!(v <= 10_000, YdeltaError::InvalidFeeConfig, "bps {} > 10000", v)?;
+            require!(
+                v <= 10_000,
+                YdeltaError::InvalidFeeConfig,
+                "bps {} > 10000",
+                v
+            )?;
         }
         Ok(())
     }

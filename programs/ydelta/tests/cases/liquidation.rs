@@ -11,15 +11,15 @@ use ydelta::program::instruction_builders::check_liquidatable_instruction::{
     check_ltv_liquidatable_instruction, check_maturity_liquidatable_instruction,
 };
 use ydelta::program::instruction_builders::protocol_fee_claim_instruction::protocol_fee_claim_instruction;
+#[cfg(feature = "test-sbf")]
+use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
 use ydelta::program::instruction_builders::{
     liquidate_loan_instruction::liquidate_loan_instruction,
     settle_matured_loan_instruction::settle_matured_loan_instruction,
 };
-use ydelta::program::YdeltaInstruction;
-#[cfg(feature = "test-sbf")]
-use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
 #[cfg(feature = "test-sbf")]
 use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
+use ydelta::program::YdeltaInstruction;
 #[cfg(feature = "test-sbf")]
 use ydelta::state::loan::LoanState;
 
@@ -347,7 +347,10 @@ async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
     let solvent_result = fixture
         .liquidate_loan(&keeper, 0, keeper_usdc, keeper_wsol, /*repay_max=*/ 0)
         .await;
-    crate::assert_custom_error!(solvent_result, ydelta::program::YdeltaError::LoanStillSolvent);
+    crate::assert_custom_error!(
+        solvent_result,
+        ydelta::program::YdeltaError::LoanStillSolvent
+    );
 
     // (2) Crash wSOL → $0.001. fp18 scale: 0.001 USD = 10^15.
     // Aggressive crash so the LTV breach is unambiguous regardless
@@ -414,9 +417,8 @@ async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
     let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
     let bank = Bank::try_from_account_data(&bank_data).unwrap();
     let asv = wrapped_i80f48_to_u128(bank.asset_share_value);
-    let lender_atoms = ydelta::math::from_scaled_floor(
-        ydelta::math::mul_scale(lender_shares, asv).unwrap(),
-    );
+    let lender_atoms =
+        ydelta::math::from_scaled_floor(ydelta::math::mul_scale(lender_shares, asv).unwrap());
     assert!(
         (loan_after.accumulated_protocol_fee_atoms as u128) <= lender_atoms,
         "protocol_fee accumulator ({}) exceeds atoms physically in lender_marginfi_account ({})",

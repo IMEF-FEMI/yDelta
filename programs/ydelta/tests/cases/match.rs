@@ -44,7 +44,7 @@ async fn vault_with_asks(
         fixture
             .create_risk_profile(
                 &admin,
-                                curator.pubkey(),
+                curator.pubkey(),
                 /*max_ltv_bps=*/ 8_000,
                 /*max_term_seconds=*/ 90 * 86_400,
             )

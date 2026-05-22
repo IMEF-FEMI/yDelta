@@ -36,7 +36,7 @@ async fn vault_genesis_round_trip() {
     fixture
         .create_risk_profile(
             &admin,
-                        curator.pubkey(),
+            curator.pubkey(),
             /*max_ltv_bps=*/ 8_000,
             /*max_term_seconds=*/ 30 * 86_400,
         )
@@ -216,7 +216,7 @@ async fn create_risk_profile_rejects_non_admin() {
     let result = fixture
         .create_risk_profile(
             &interloper, // not the admin
-                        curator.pubkey(),
+            curator.pubkey(),
             8_000,
             30 * 86_400,
         )

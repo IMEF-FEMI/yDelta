@@ -90,7 +90,13 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
     // Read grace_period_seconds off the market for accrual.
     let grace_period_seconds: u32 = market.get_fixed()?.fee_config.grace_period_seconds;
 
-    let (borrower_seat_index, loan_type, body_outstanding, collateral_atoms, collateral_snapshot_fp48) = {
+    let (
+        borrower_seat_index,
+        loan_type,
+        body_outstanding,
+        collateral_atoms,
+        collateral_snapshot_fp48,
+    ) = {
         let loan_data: &mut RefMut<&mut [u8]> = &mut loan.info.try_borrow_mut_data()?;
         let header: &mut LoanFixed = bytemuck::from_bytes_mut(&mut loan_data[..LOAN_FIXED_SIZE]);
         require!(

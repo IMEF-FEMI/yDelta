@@ -319,8 +319,8 @@ pub fn process_convert_p2pool_to_fixed(
             lender_marginfi_account.info,
             debt_bank.info.key,
         )?;
-        let lender_asset_atoms = MarginfiV18Adapter
-            .shares_to_amount(&[debt_bank.info.clone()], lender_asset_shares)?;
+        let lender_asset_atoms =
+            MarginfiV18Adapter.shares_to_amount(&[debt_bank.info.clone()], lender_asset_shares)?;
         let from_lender = MarginfiV18Adapter.withdraw_atoms_full(
             &withdraw_accounts,
             lender_asset_atoms,

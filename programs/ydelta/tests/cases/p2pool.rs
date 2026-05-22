@@ -600,7 +600,9 @@ async fn p2pool_multiple_loans_each_close_independently() {
     // account-total close gate only the final `repay_all` loan closed.)
     for seq in 0..n {
         fixture
-            .repay(&bob, seq, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true)
+            .repay(
+                &bob, seq, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true,
+            )
             .await
             .unwrap();
         fixture.refresh_blockhash().await;
@@ -726,7 +728,10 @@ async fn p2pool_borrow_keeps_collateral_committed() {
     fixture.refresh_blockhash().await;
 
     let pre = fixture.read_seat(&bob.pubkey()).await;
-    assert_eq!(pre.collateral_encumbered_shares, 0, "nothing encumbered before the bid");
+    assert_eq!(
+        pre.collateral_encumbered_shares, 0,
+        "nothing encumbered before the bid"
+    );
     let pre_withdrawable = pre.collateral_withdrawable_shares;
 
     // No asks → the full residual borrows from marginfi (P2Pool). The bid

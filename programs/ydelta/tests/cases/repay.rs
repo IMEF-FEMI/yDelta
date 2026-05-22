@@ -144,7 +144,8 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     assert!(
         loan_post.principal_retired_atoms >= loan_post.principal_debt_atoms,
         "full repay must retire >= gross principal (got retired={}, principal={})",
-        loan_post.principal_retired_atoms, loan_post.principal_debt_atoms,
+        loan_post.principal_retired_atoms,
+        loan_post.principal_debt_atoms,
     );
 
     // Bob's seat: collateral credited back at the loan's place-time
@@ -177,19 +178,26 @@ async fn legacy_collateral_in_withdrawable_repays_without_double_credit() {
 
     // Forge the legacy shape: move the loan's encumbered collateral into
     // withdrawable (encumbered → 0), as if it had never been encumbered.
-    fixture.legacy_collateral_to_withdrawable(&bob.pubkey()).await;
+    fixture
+        .legacy_collateral_to_withdrawable(&bob.pubkey())
+        .await;
     let seat_pre = fixture.read_seat(&bob.pubkey()).await;
     assert_eq!(
         seat_pre.collateral_encumbered_shares, 0,
         "legacy shape: nothing encumbered"
     );
     let withdrawable_pre = seat_pre.collateral_withdrawable_shares;
-    assert!(withdrawable_pre > 0, "legacy collateral sits in withdrawable");
+    assert!(
+        withdrawable_pre > 0,
+        "legacy collateral sits in withdrawable"
+    );
     assert_eq!(seat_pre.open_borrow_count, 1, "loan still open pre-repay");
 
     // Repay full under the new code.
     fixture
-        .repay(&bob, 0, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true)
+        .repay(
+            &bob, 0, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true,
+        )
         .await
         .unwrap();
 

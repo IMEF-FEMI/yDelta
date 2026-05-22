@@ -322,7 +322,6 @@ pub fn oracle_price_args<'info>(
     out
 }
 
-
 #[derive(Clone)]
 pub struct MarginfiProgram<'a, 'info> {
     pub info: &'a AccountInfo<'info>,

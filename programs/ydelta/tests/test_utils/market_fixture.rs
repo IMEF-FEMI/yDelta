@@ -17,9 +17,7 @@ use std::cell::{RefCell, RefMut};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use hypertree::{
-    HyperTreeReadOperations, HyperTreeValueIteratorTrait, RedBlackTreeReadOnly, NIL,
-};
+use hypertree::{HyperTreeReadOperations, HyperTreeValueIteratorTrait, RedBlackTreeReadOnly, NIL};
 use solana_program::pubkey::Pubkey;
 use solana_program_test::{ProgramTest, ProgramTestContext};
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
@@ -36,7 +34,8 @@ use ydelta::program::instruction_builders::{
     claim_seat_instruction::claim_seat_instruction,
     create_market_instructions::create_market_instructions,
     create_risk_profile_instruction::create_risk_profile_instruction,
-    create_vault_instruction::create_vault_instruction, deposit_instruction::deposit_instruction,
+    create_vault_instruction::create_vault_instruction,
+    deposit_instruction::deposit_instruction,
     global_vault_deposit_instruction::global_vault_deposit_instruction,
     global_vault_withdraw_instruction::global_vault_withdraw_instruction,
     liquidate_loan_instruction::liquidate_loan_instruction,
@@ -1704,7 +1703,8 @@ impl MarketFixture {
         let owed_side: u128 =
             (loan.outstanding_debt_atoms as u128) + (loan.principal_retired_atoms as u128);
         assert_eq!(
-            claim_side, owed_side,
+            claim_side,
+            owed_side,
             "loan_conservation violated on seq={}: \
              outstanding({}) + retired({}) = {} != \
              lender_claimable({}) + protocol_fee({}) + curator_fee({}) = {}",
@@ -1726,8 +1726,8 @@ impl MarketFixture {
     /// physically backed.
     pub async fn assert_vault_idle_invariant(&self, profile_id: u8) {
         let p = self.read_risk_profile(profile_id).await;
-        let deployed_plus_encumbered: u128 = (p.deployed_principal_atoms as u128)
-            + (p.encumbered_in_orders_atoms as u128);
+        let deployed_plus_encumbered: u128 =
+            (p.deployed_principal_atoms as u128) + (p.encumbered_in_orders_atoms as u128);
         assert!(
             (p.total_principal_atoms as u128) >= deployed_plus_encumbered,
             "vault_idle invariant violated on profile {}: \
