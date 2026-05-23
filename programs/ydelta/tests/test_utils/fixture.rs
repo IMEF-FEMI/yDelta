@@ -585,15 +585,23 @@ impl TestFixture {
         {
             let node = get_mut_helper_seat(dyn_bytes, idx);
             let seat = node.get_mut_value();
+            // Scale to I80F48 to match what marginfi actually credits on
+            // deposit — the seat-share fields and the program's
+            // `atoms_to_shares_at_snapshot` both work in this unit.
+            // Callers pass `shares` as a whole-share count; we shift here
+            // so existing tests don't need to thread the 2^48 scale.
+            let scaled = shares
+                .checked_shl(48)
+                .expect("seed shares too large for I80F48");
             if is_debt {
                 seat.debt_withdrawable_shares = seat
                     .debt_withdrawable_shares
-                    .checked_add(shares)
+                    .checked_add(scaled)
                     .expect("share overflow");
             } else {
                 seat.collateral_withdrawable_shares = seat
                     .collateral_withdrawable_shares
-                    .checked_add(shares)
+                    .checked_add(scaled)
                     .expect("share overflow");
             }
         }

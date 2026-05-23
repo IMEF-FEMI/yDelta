@@ -8,7 +8,7 @@
 //! These tests pin two invariants on an IOC cross:
 //!   1. Borrower seat: the collateral encumbered by `place_order` for
 //!      the *matched* slice STAYS encumbered for the life of the loan it
-//!      backs — matching no longer pulls it out per cross. A fully-matched
+//!      backs — matching does not pull it out per cross. A fully-matched
 //!      bid moves its collateral `withdrawable → encumbered` and leaves it
 //!      there (released only at repay/settle/liquidate), and bumps
 //!      `open_borrow_count` once per loan created. A *dropped* residual

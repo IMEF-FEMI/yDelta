@@ -157,21 +157,44 @@ fn update_balance(
 /// plumbing is exercised.
 pub const PLACEHOLDER_SHARE_PRICE_FP48: u128 = 1u128 << 48;
 
-/// Convert an atom count to fp48 share count at a given share-price
-/// snapshot. `shares = atoms / share_price` in fp48 math; equivalently
-/// `shares = atoms * SCALE / snapshot` where `SCALE = 2^48`. Cannot
-/// overflow: `atoms` is u64, so `atoms << 48 ≤ 2^112`, which fits in u128
-/// with headroom — there is no saturation path.
+/// Convert an atom count to I80F48-scaled shares at a given share-price
+/// snapshot. The result is stored on the seat's `*_(withdrawable|encumbered)
+/// _shares` fields, which mirror marginfi's internal I80F48 share
+/// representation (value × 2^48) — the same scale produced by
+/// `MarginfiV18Adapter::amount_to_asset_shares` (`to_scaled` + `div_scale`),
+/// which is what `deposit` / `withdraw` write through.
 ///
-/// Returns 0 when `snapshot_fp48` is 0 (sentinel used by the vault
-/// path; see `place_order_for_risk_profile`).
+/// Math: shares_i80f48 = (atoms / real_sv) × 2^48
+///                     = (atoms × 2^48 / sv_fp48) × 2^48
+///                     = (atoms × 2^96) / sv_fp48
+/// Computed via `div_scale((atoms << 48), sv_fp48)` which internally
+/// shifts left by 48 again and divides, in u256, so no overflow for any
+/// real-world atom/sv combination.
+///
+/// Returns 0 when `snapshot_fp48` is 0 (sentinel used by the vault path;
+/// see `place_order_for_risk_profile`).
+///
+/// History: returned PLAIN shares (`(atoms << 48) / sv_fp48`) until the
+/// May-2026 unit-mismatch fix. Plain shares are ~2^48 too small for the
+/// I80F48-scaled seat fields, so encumber/unencumber against withdrawable
+/// was a silent no-op (the subtraction was lost in the high bits) and the
+/// encumbered tally showed a near-zero number that the UI converted back
+/// as ~0 atoms — letting a borrower with an open loan still withdraw the
+/// full underlying collateral. All callers (encumber_for_order,
+/// unencumber_for_order, release_loan_collateral, liquidate, repay) get
+/// the right unit just by using this helper.
 pub fn atoms_to_shares_at_snapshot(atoms: u64, snapshot_fp48: u128) -> u128 {
     if snapshot_fp48 == 0 {
         return 0;
     }
-    // (atoms << 48) / snapshot.  atoms is u64 ≤ 2^64; (atoms << 48) ≤ 2^112,
-    // fits in u128 with headroom.
-    ((atoms as u128) << 48) / snapshot_fp48
+    // `(atoms << 48)` ≤ 2^112; `div_scale` does the second `<< 48` in u256,
+    // so the full `(atoms << 96) / sv_fp48` never overflows the intermediate.
+    // The quotient ≤ 2^112 (for sv ≥ 1) which fits in u128. Bubbling an
+    // error up here would force every caller (~10 sites) to add `?`; the
+    // existing 0-snapshot guard already returns 0, so we keep the
+    // infallible signature and fall back to 0 on the practically-impossible
+    // overflow.
+    crate::math::div_scale((atoms as u128) << 48, snapshot_fp48).unwrap_or(0)
 }
 
 /// Move funds `withdrawable → encumbered` for an order being placed.
@@ -285,18 +308,17 @@ fn unencumber_for_order(
     Ok(())
 }
 
-/// Release a closing P2Pool loan's collateral from the borrower seat's
+/// Release a closing loan's collateral from the borrower seat's
 /// `encumbered` bucket: `seized_shares` (= `total - returned`) leave the
 /// protocol via liquidation/settlement; `returned_shares` go back to
-/// `withdrawable`. Capped by the seat's live encumbered balance so loans
-/// opened before this accounting existed (collateral already withdrawable,
-/// encumbered == 0) are a safe no-op — never double-crediting.
+/// `withdrawable`. Capped by the seat's live encumbered balance, so a loan
+/// whose collateral is not in the encumbered bucket (already withdrawable,
+/// encumbered == 0) is a safe no-op — never double-crediting.
 ///
 /// ALL loan collateral — Fixed crosses and the P2Pool residual alike —
-/// stays seat-encumbered while the loan is live (the encumber happens once
-/// up front in `match_borrower_bid`; matching no longer pulls it out per
-/// cross). This is the single symmetric release used by every close path
-/// (repay / settle / liquidate) for both loan types.
+/// stays seat-encumbered while the loan is live (encumbered once up front
+/// in `match_borrower_bid`). This is the single symmetric release used by
+/// every close path (repay / settle / liquidate) for both loan types.
 pub fn release_loan_collateral(
     dynamic: &mut [u8],
     seat_index: DataIndex,
@@ -453,7 +475,7 @@ pub fn match_order(
     // STAYS in the borrower seat's `encumbered` bucket for the life of
     // every loan it backs — Fixed crosses and the P2Pool residual alike
     // — and is released `encumbered → withdrawable` only at loan close
-    // (repay / settle / liquidate). Matching no longer decrements the
+    // (repay / settle / liquidate). Matching does not decrement the
     // encumbrance per cross; the per-cross collateral-atom split below
     // only sizes each loan's `collateral_atoms` (for release-time
     // accounting), not the seat bucket. A dropped IOC residual is the
@@ -722,9 +744,9 @@ pub fn match_order(
         // match_borrower_bid), pre-recorded at place-time so the
         // loan's release at close is byte-symmetric with the encumber.
         let taker_snapshot = args.taker_share_price_snapshot_fp48;
-        // Collateral encumbrance is NOT decremented per cross any more —
-        // it stays in the borrower seat's `encumbered` bucket for the
-        // life of the loan this cross creates, released at close. Only
+        // Collateral encumbrance is NOT decremented per cross — it stays
+        // in the borrower seat's `encumbered` bucket for the life of the
+        // loan this cross creates, released at close. Only
         // the per-cross collateral-atom split (`matched_collateral_taker`
         // / `total_collateral_for_match`, computed above) is recorded on
         // the loan node so close-time release can size itself; the dust

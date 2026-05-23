@@ -1239,15 +1239,19 @@ impl MarketFixture {
         {
             let node = get_mut_helper_seat(dyn_bytes, idx);
             let seat = node.get_mut_value();
+            // Scale to I80F48 — see the matching helper in fixture.rs.
+            let scaled = shares
+                .checked_shl(48)
+                .expect("seed shares too large for I80F48");
             if is_debt {
                 seat.debt_withdrawable_shares = seat
                     .debt_withdrawable_shares
-                    .checked_add(shares)
+                    .checked_add(scaled)
                     .expect("share overflow");
             } else {
                 seat.collateral_withdrawable_shares = seat
                     .collateral_withdrawable_shares
-                    .checked_add(shares)
+                    .checked_add(scaled)
                     .expect("share overflow");
             }
         }
@@ -1265,13 +1269,11 @@ impl MarketFixture {
             .set_account(&self.market.pubkey(), &acc.into());
     }
 
-    /// Force a seat into the "legacy" collateral shape: move ALL of its
-    /// `collateral_encumbered_shares` into `collateral_withdrawable_shares`
-    /// (leaving encumbered at 0). Reproduces a loan opened by a program
-    /// build that predated the match-time collateral encumber, where a
-    /// live loan's collateral sits in `withdrawable` instead of
-    /// `encumbered`. Used to prove close-time `release_loan_collateral`
-    /// is a safe no-op for such loans (no double-credit, no stranding).
+    /// Force a seat into the collateral shape where a live loan's
+    /// collateral sits in `collateral_withdrawable_shares` with
+    /// `collateral_encumbered_shares == 0`: move ALL encumbered shares
+    /// into withdrawable. Used to prove close-time `release_loan_collateral`
+    /// is a safe no-op for such a seat (no double-credit, no stranding).
     pub async fn legacy_collateral_to_withdrawable(&self, owner: &Pubkey) {
         let mut data = {
             let client: RefMut<ProgramTestContext> = self.context.borrow_mut();

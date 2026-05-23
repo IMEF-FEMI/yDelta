@@ -396,7 +396,7 @@ async fn match_multi_cross_full_fill_freezes_no_collateral_dust() {
     // (2) The borrower's collateral STAYS encumbered — it backs the two
     //     open loans and is released only at close. Because the collateral
     //     is encumbered once up front (the full bid amount) and matching
-    //     no longer decrements it per cross, the encumbered bucket holds
+    //     does not decrement it per cross, the encumbered bucket holds
     //     exactly the bid collateral with NO share dust. Each of the two
     //     crosses bumped `open_borrow_count`, so it reads 2.
     let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;

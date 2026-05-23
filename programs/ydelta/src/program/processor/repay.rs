@@ -146,11 +146,11 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         // Repay retires THIS loan's slice and closes THIS loan, independent
         // of the siblings.
         //
-        // (The previous design keyed the close on the ACCOUNT-TOTAL
-        // liability hitting zero. With ≥2 P2Pool loans that meant only the
-        // one repaid with `repay_all` could ever close; the rest were
-        // stranded `Active` — a follow-up repay tripped the "liability is 0"
-        // guard. Closing per-loan-slice fixes that.)
+        // Keying the close on the per-loan slice (not the account total) is
+        // essential with ≥2 siblings: gating it on the account-total
+        // liability hitting zero would let only the loan repaid with
+        // `repay_all` close and strand the rest `Active` — a follow-up
+        // repay would trip the "liability is 0" guard below.
         let loan_shares: u128 = {
             let l: Ref<LoanFixed> = loan.get_fixed()?;
             l.borrower_marginfi_borrow_shares
@@ -317,8 +317,8 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
                 let da = get_mut_dynamic_account::<MarketFixed>(market_data);
                 // Release the seat collateral that backed this loan
                 // (encumbered → withdrawable). min-capped inside the helper,
-                // so a legacy loan whose collateral was never encumbered (it
-                // sits in `withdrawable` already) is a safe no-op.
+                // so a loan whose collateral is not in the encumbered bucket
+                // is a safe no-op.
                 if collateral_atoms > 0 {
                     let collateral_shares =
                         crate::state::market_helpers::atoms_to_shares_at_snapshot(
@@ -422,16 +422,13 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         // the place_order encumber (the live bank value would drift the
         // payout by the share-value growth over the loan's life).
         //
-        // Fixed-cross collateral now stays seat-encumbered for the
-        // loan's life (matching no longer pulls it out per cross), so
-        // this is a MOVE (encumbered → withdrawable) via
-        // `release_loan_collateral` — NOT a net add. A net add would
-        // double-credit a properly-encumbered loan (collateral counted
-        // in both buckets). `release_loan_collateral` is min-capped, so
-        // a legacy loan whose collateral was never encumbered (it sits
-        // in `withdrawable` already) is a safe no-op — the collateral
-        // simply stays withdrawable, exactly where the old program left
-        // it.
+        // Fixed-cross collateral stays seat-encumbered for the loan's
+        // life, so this is a MOVE (encumbered → withdrawable) via
+        // `release_loan_collateral`, not a net add — a net add would
+        // double-credit a properly-encumbered loan (counted in both
+        // buckets). The helper is min-capped, so a loan whose collateral
+        // is not in the encumbered bucket is a safe no-op (it stays
+        // withdrawable).
         let collateral_snapshot_fp48: u128 = {
             let loan_data = loan.info.try_borrow_data()?;
             let header: &LoanFixed = bytemuck::from_bytes(&loan_data[..LOAN_FIXED_SIZE]);

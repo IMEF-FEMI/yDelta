@@ -331,10 +331,10 @@ async fn last_share_burn_rejected_while_loan_deployed() {
 
 /// Early borrower repay unlocks the lender's claim BEFORE maturity.
 /// Once the borrower has fully repaid (`outstanding == 0`, state
-/// `Repaid`, funds already in the lender integration account) there is
-/// no economic reason to keep the lender's capital term-locked, so
+/// `Repaid`, funds already in the lender integration account) the
+/// lender's capital is no longer term-locked, so
 /// `claim_repayment_for_risk_profile` succeeds pre-maturity and closes
-/// the loan PDA. (Previously this was rejected with `LoanNotMatured`.)
+/// the loan PDA.
 #[tokio::test]
 async fn claim_allowed_pre_maturity_after_early_repay() {
     let fixture = MarketFixture::new().await;

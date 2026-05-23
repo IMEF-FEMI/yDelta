@@ -69,6 +69,15 @@ export interface Bank {
   oracleMaxAgeSeconds: number;
   /** Confidence cap × u32::MAX; divide by 2^32 − 1 for a 0..1 fraction. */
   oracleMaxConfidenceRawU32: number;
+  /**
+   * Current interest rates from marginfi's on-chain `BankCache`, in bps.
+   * `cachedLendingRateBps` is the supplier (deposit) APR; `borrowing` is what
+   * borrowers pay; `base` is the pre-fee curve output. marginfi refreshes
+   * these on every accrue.
+   */
+  cachedBaseRateBps: number;
+  cachedLendingRateBps: number;
+  cachedBorrowingRateBps: number;
 }
 
 // Bank body offsets (post 8-byte anchor disc):
@@ -87,7 +96,27 @@ export interface Bank {
 //     +314 oracle_keys[5]             5 × Pubkey
 //     +504 oracle_max_age             u16
 //     +508 oracle_max_confidence      u32
+//   @1368 BankCache (current rates, u32 each, milli-scaled):
+//     +0  base_rate                   u32   (body 1368)
+//     +4  lending_rate (supply APR)   u32   (body 1372)
+//     +8  borrowing_rate              u32   (body 1376)
 const BANK_CONFIG_BODY_OFFSET = 288;
+// BankCache rate offsets within the bank body. Located against the live
+// mainnet USDC + SOL banks (lending < base < borrowing, both plausible) — the
+// v2 layout the in-repo IDL fixture describes does NOT match the deployed
+// program here, so these are pinned empirically rather than from that fixture.
+const BANK_CACHE_BASE_RATE = 1368;
+const BANK_CACHE_LENDING_RATE = 1372;
+const BANK_CACHE_BORROWING_RATE = 1376;
+
+/**
+ * marginfi caches rate APRs as a u32 via `milli_to_u32`: `u32 = apr/10 ×
+ * u32::MAX` (so apr 1.0 → u32::MAX/10). Inverse, returned in bps:
+ * `bps = u32 × 100_000 / u32::MAX`.
+ */
+function milliRateToBps(raw: number): number {
+  return (raw * 100_000) / 0xffff_ffff;
+}
 
 function checkDiscriminator(data: Uint8Array | Buffer, expected: Uint8Array, label: string): void {
   for (let i = 0; i < ANCHOR_DISC_LEN; i++) {
@@ -125,7 +154,32 @@ export function decodeBank(data: Uint8Array | Buffer): Bank {
     oracleKeys,
     oracleMaxAgeSeconds: readU16(dv, BANK_CONFIG_BODY_OFFSET + 504),
     oracleMaxConfidenceRawU32: readU32(dv, BANK_CONFIG_BODY_OFFSET + 508),
+    cachedBaseRateBps: milliRateToBps(readU32(dv, BANK_CACHE_BASE_RATE)),
+    cachedLendingRateBps: milliRateToBps(readU32(dv, BANK_CACHE_LENDING_RATE)),
+    cachedBorrowingRateBps: milliRateToBps(readU32(dv, BANK_CACHE_BORROWING_RATE)),
   };
+}
+
+/**
+ * Convert a nominal annual rate (APR, bps) to a compounded APY (bps), matching
+ * marginfi's UI convention of hourly compounding (`(1 + apr/N)^N − 1`, N =
+ * 24×365). marginfi caches rates as APRs but displays the compounded APY.
+ */
+export function aprToApyBps(aprBps: number): number {
+  if (aprBps <= 0) return 0;
+  const N = 24 * 365;
+  const apr = aprBps / 10_000;
+  return ((1 + apr / N) ** N - 1) * 10_000;
+}
+
+/**
+ * marginfi supply (deposit) APY for this bank, in bps — the rate idle deposits
+ * earn from marginfi, matching marginfi's displayed APY. Read from the bank's
+ * cached `lending_rate_apr` (refreshed on every accrue; already folds in
+ * utilization + the fee split) and compounded to APY.
+ */
+export function marginfiSupplyApyBps(bank: Bank): number {
+  return aprToApyBps(Math.max(0, bank.cachedLendingRateBps));
 }
 
 export function bankPrimaryOracle(bank: Bank): PublicKey {

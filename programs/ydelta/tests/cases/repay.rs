@@ -164,13 +164,11 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     assert_eq!(bob_seat_post.open_borrow_count, 0);
 }
 
-/// Legacy-shape safety: a Fixed loan whose collateral sits in the seat's
-/// `withdrawable` bucket with `encumbered == 0` — exactly how loans opened
-/// before the match-time collateral encumber existed look on-chain — must
-/// still repay cleanly. The close-time `release_loan_collateral` is
-/// min-capped, so here it is a no-op: the collateral is NEITHER
-/// double-credited NOR stranded, and the loan still closes. This is the
-/// property the 6pGq grandfather (mainnet legacy loans) relied on.
+/// A Fixed loan whose collateral sits in the seat's `withdrawable` bucket
+/// with `encumbered == 0` must still repay cleanly. The close-time
+/// `release_loan_collateral` is min-capped, so when nothing is encumbered
+/// it is a no-op: the collateral is NEITHER double-credited NOR stranded,
+/// and the loan still closes.
 #[tokio::test]
 async fn legacy_collateral_in_withdrawable_repays_without_double_credit() {
     let fixture = MarketFixture::new().await;
@@ -193,7 +191,7 @@ async fn legacy_collateral_in_withdrawable_repays_without_double_credit() {
     );
     assert_eq!(seat_pre.open_borrow_count, 1, "loan still open pre-repay");
 
-    // Repay full under the new code.
+    // Repay full.
     fixture
         .repay(
             &bob, 0, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true,
