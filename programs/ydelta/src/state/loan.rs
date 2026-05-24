@@ -68,13 +68,6 @@ pub struct LoanFixed {
     pub debt_index_at_last_accrual: u128,
 
     pub principal_debt_atoms: u64,
-    // H-4: `outstanding_debt_atoms` is the **Fixed-loan** ledger mirror.
-    // For `LoanType::P2Pool`, this field is NOT authoritative — `accrue_loan`
-    // is a no-op for P2Pool (canonical source is marginfi's per-account
-    // liability shares × bank LSV). Always route P2Pool reads through
-    // `crate::state::ltv::loan_live_outstanding_atoms`, which gates on
-    // `loan_type` and returns the live marginfi-derived value with the
-    // C-2 per-loan attribution applied.
     pub outstanding_debt_atoms: u64,
     pub lender_claimable_atoms: u64,
     pub collateral_atoms: u64,
@@ -158,10 +151,6 @@ impl LoanFixed {
         Ok(())
     }
 
-    // H-3: predicates dispatch on `loan_state()?` and return Result so an
-    // unknown state byte surfaces a hard error instead of silently making
-    // BOTH predicates report `false` (which would let a corrupted loan
-    // pass `!is_repaid()` checks and continue accruing).
     pub fn is_active(&self) -> Result<bool, ProgramError> {
         Ok(matches!(self.loan_state()?, LoanState::Active))
     }
@@ -320,26 +309,10 @@ impl LoanFixed {
     }
 }
 
-/// H-4: For `LoanType::Fixed` this advances `last_accrued_unix` and bumps
-/// `outstanding_debt_atoms`, `lender_claimable_atoms`,
-/// `accumulated_protocol_fee_atoms`, and `accumulated_curator_fee_atoms`
-/// by the interest accrued since the last call. For `LoanType::P2Pool`
-/// this is intentionally a **no-op** for the ledger fields (only
-/// `last_accrued_unix` ticks). P2Pool debt's canonical source is marginfi's
-/// per-account liability shares × bank LSV; any P2Pool consumer that
-/// needs the live outstanding atoms MUST go through
-/// `crate::state::ltv::loan_live_outstanding_atoms`, which gates on
-/// `loan_type` and slices the shared marginfi account by the per-loan
-/// share (C-2 attribution). Never read `loan.outstanding_debt_atoms`
-/// directly on a P2Pool loan — it stays at its promotion-time value.
 pub fn accrue_loan(loan: &mut LoanFixed, now: i64, _grace_period_seconds: u32) -> ProgramResult {
     if now == loan.last_accrued_unix {
         return Ok(());
     }
-    // M-19: hard-error on time rewind. `last_accrued_unix` must be
-    // monotonic; a clock injection / buggy sysvar could otherwise mask
-    // later accrual bugs. The pre-fix `if now <= last_accrued_unix
-    // { return Ok(()); }` swallowed rewinds silently.
     require!(
         now > loan.last_accrued_unix,
         YdeltaError::InvalidArgument,
@@ -576,9 +549,6 @@ pub fn apply_partial_resolution(
     Ok((lender_portion, protocol_portion, curator_portion))
 }
 
-// M-20: checked math. The u128 arithmetic is bounded by current field
-// sizes (u64 × u64 fits in u128) but checked_* defends against future
-// field-size changes that could silently overflow.
 fn protocol_already_retired(loan: &LoanFixed) -> Result<u64, ProgramError> {
     let total_claim = (loan.lender_claimable_atoms as u128)
         .checked_add(loan.accumulated_protocol_fee_atoms as u128)
@@ -800,10 +770,6 @@ mod tests {
         assert_eq!(borrower, lender + curator + spread);
     }
 
-    /// M-19 regression: pre-fix time-rewind was a silent no-op (the
-    /// loan body stayed unchanged but the rewind was swallowed). Post-fix,
-    /// rewind hard-errors so a corrupted clock injection can't mask
-    /// later accrual bugs. Equal-time still no-ops.
     #[test]
     fn accrue_time_rewind_hard_errors() {
         let mut loan = fresh_loan();
@@ -1050,11 +1016,6 @@ mod tests {
         assert_ne!(pda1, pda3);
     }
 
-    /// H-3 regression: `is_active()` / `is_repaid()` must error on an
-    /// unknown state byte, not silently report both as `false`. Pre-fix
-    /// a corrupted/forged `state` byte ∉ {0, 3} let `if !is_repaid()`
-    /// keep treating the loan as alive AND `if is_active()` treat it as
-    /// dead — logic inversions could coexist for the same byte.
     #[test]
     fn predicates_error_on_unknown_state_byte() {
         let mut loan = fresh_loan();

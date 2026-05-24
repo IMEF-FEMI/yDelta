@@ -279,27 +279,6 @@ async fn promote_matched_loan_keeps_borrower_and_fee_claims_backed() {
     );
 }
 
-/// H-1 regression: `curator_fee_bps` must be snapshotted at MATCH time
-/// (when lender capital is already encumbered), not at PROMOTION time.
-///
-/// Pre-fix, `process_matched_loan` read `market.fee_config.curator_fee_bps`
-/// live — so a compromised admin who flipped the bps between match and
-/// crank locked the already-committed lender capital into the new (e.g.
-/// 100%) fee, retroactively zeroing depositor yield.
-///
-/// Post-fix, the bps is captured into `MatchedLoan.curator_fee_bps_snapshot`
-/// inside the matching engine and read off the node by the cranker.
-/// The admin's mid-flight `SetFeeConfig` must have NO effect on already-
-/// matched loans.
-///
-/// Setup:
-///   1. Set `curator_fee_bps = 1_000` (10%).
-///   2. `provide_vault_liquidity` — rests the vault ask, does NOT crank.
-///   3. Borrower bid crosses the ask → MatchedLoan inserted into queue.
-///   4. Admin flips `curator_fee_bps` to 9_000 (90%) — the front-run.
-///   5. `crank_matched_loan_for_risk_profile` promotes the queued match.
-///   6. Assert `loan.curator_fee_bps_snapshot == 1_000` — the value
-///      that was live at MATCH time, NOT the post-front-run 9_000.
 #[tokio::test]
 async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
     let fixture = MarketFixture::new().await;

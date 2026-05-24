@@ -702,31 +702,6 @@ async fn p2pool_full_liquidation_zeroes_liability_and_closes_pda() {
     assert!(loan_account_is_closed(&fixture, 0).await);
 }
 
-/// C-2 regression: sibling P2Pool loans share a single per-market borrower
-/// marginfi account, so their USDC liabilities commingle on-chain. Per-loan
-/// LTV (used by `liquidate_loan`) must score each loan against ITS OWN
-/// slice of the shared liability — `loan.borrower_marginfi_borrow_shares
-/// .min(account_total)` — never the account-level aggregate. Without that
-/// attribution, a small/over-collateralized loan would be wrongly liquidated
-/// the moment a sibling's debt grew, because its "outstanding" would read
-/// as the whole shared total.
-///
-/// Setup (one borrower, two P2Pool loans on the same market):
-///   * Loan A: 100 atoms USDC debt against 200_000 atoms wSOL collateral
-///     (~2_000 : 1 atom ratio — very safe).
-///   * Loan B: 1_000 atoms USDC debt against 60_000 atoms wSOL collateral
-///     (~60 : 1 ratio — solvent at the mainnet wSOL price, but borderline).
-///
-/// Crash wSOL to ~$10 (fp18 = 1e19). Under the C-2 fix:
-///   * `liquidate_loan(A)` must return `LoanStillSolvent`: A's slice (100
-///     atoms) against A's 200_000 wSOL collateral is well above maint.
-///   * `liquidate_loan(B)` must succeed: B's slice (1_000 atoms) against
-///     60_000 wSOL collateral is past the cliff at $10/SOL.
-///
-/// Pre-fix (account-aggregated outstanding), both loans would compute
-/// outstanding ≈ 1_100 atoms — so A's tiny collateral footprint relative
-/// to that inflated debt would falsely trip the liquidation gate, even
-/// though A on its own is dramatically over-collateralized.
 #[cfg(feature = "test-sbf")]
 #[tokio::test]
 async fn sibling_p2pool_loan_decay_does_not_liquidate_safe_loan() {

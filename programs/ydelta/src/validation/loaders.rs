@@ -190,9 +190,6 @@ impl<'a, 'info> ClaimSeatContext<'a, 'info> {
         let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
         require_market_not_paused(&market)?;
         let system_program_ai = next_account_info(account_iter)?;
-        // M-9: pin the system program identity. Asymmetric pattern
-        // pre-fix (only ClaimSeat checked); harmless today since Solana
-        // resolves at runtime, but the defense-in-depth gap is closed.
         let _ = Program::new(system_program_ai, &system_program::id())?;
         let system_program = Program::new(system_program_ai, &system_program::id())?;
 
@@ -257,10 +254,6 @@ impl<'a, 'info> DepositContext<'a, 'info> {
         drop(market_fixed);
 
         let token_account_info = next_account_info(account_iter)?;
-        // M-10: validate ownership BEFORE slicing bytes for side detection.
-        // The 32 bytes happen to be the mint key today after
-        // `TokenAccountInfo::new_with_owner` validates, but the
-        // read-before-validate pattern is wrong on principle.
         require!(
             token_account_info.owner == &spl_token::id()
                 || token_account_info.owner == &spl_token_2022::id(),
@@ -359,9 +352,6 @@ impl<'a, 'info> DepositContext<'a, 'info> {
 
         let user_account_ai = next_account_info(account_iter)?;
         let system_program_ai = next_account_info(account_iter)?;
-        // M-9: pin the system program identity. Asymmetric pattern
-        // pre-fix (only ClaimSeat checked); harmless today since Solana
-        // resolves at runtime, but the defense-in-depth gap is closed.
         let _ = Program::new(system_program_ai, &system_program::id())?;
         let _ = crate::validation::user_account::ensure_user_account_for_signer(
             &payer,
@@ -442,7 +432,6 @@ impl<'a, 'info> WithdrawContext<'a, 'info> {
         drop(market_fixed);
 
         let token_account_info = next_account_info(account_iter)?;
-        // M-10: validate ownership BEFORE slicing bytes (see Deposit loader above).
         require!(
             token_account_info.owner == &spl_token::id()
                 || token_account_info.owner == &spl_token_2022::id(),
@@ -573,9 +562,6 @@ impl<'a, 'info> WithdrawContext<'a, 'info> {
 
         let user_account_ai = next_account_info(account_iter)?;
         let system_program_ai = next_account_info(account_iter)?;
-        // M-9: pin the system program identity. Asymmetric pattern
-        // pre-fix (only ClaimSeat checked); harmless today since Solana
-        // resolves at runtime, but the defense-in-depth gap is closed.
         let _ = Program::new(system_program_ai, &system_program::id())?;
         let _ = crate::validation::user_account::ensure_user_account_for_signer(
             &payer,
@@ -751,9 +737,6 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
 
         let user_account_ai = next_account_info(account_iter)?;
         let system_program_ai = next_account_info(account_iter)?;
-        // M-9: pin the system program identity. Asymmetric pattern
-        // pre-fix (only ClaimSeat checked); harmless today since Solana
-        // resolves at runtime, but the defense-in-depth gap is closed.
         let _ = Program::new(system_program_ai, &system_program::id())?;
         let _ = crate::validation::user_account::ensure_user_account_for_signer(
             &payer,
@@ -1181,7 +1164,7 @@ impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
     /// Loader for the stateless seat→vault sweeper. `risk_profile_id` is
     /// passed via the ix params (not the account list) because the seat
     /// is internal to market.dynamic and looked up by composite key, not
-    /// by account address. No loan PDA accepted — see [[repay-claim-split]].
+    /// by account address.
     pub fn load(
         accounts: &'a [AccountInfo<'info>],
         _risk_profile_id: u8,
@@ -1405,9 +1388,8 @@ pub(crate) struct RepayContext<'a, 'info> {
     pub user_account_ai: &'a AccountInfo<'info>,
     pub cranker_refund: &'a AccountInfo<'info>,
     /// Fixed-loan close-out updates the lender vault's risk-profile
-    /// accumulators on full repay (per the repay/claim split). Always
-    /// required for Fixed loans; never read for P2Pool (the SDK omits
-    /// the slot for P2Pool repays). See [[repay-claim-split]] memory.
+    /// accumulators on full repay. Required for Fixed loans; never read
+    /// for P2Pool (the SDK omits the slot for P2Pool repays).
     pub global_vault:
         Option<YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>>,
 }
@@ -1551,9 +1533,6 @@ impl<'a, 'info> RepayContext<'a, 'info> {
 
         let user_account_ai = next_account_info(account_iter)?;
         let system_program_ai = next_account_info(account_iter)?;
-        // M-9: pin the system program identity. Asymmetric pattern
-        // pre-fix (only ClaimSeat checked); harmless today since Solana
-        // resolves at runtime, but the defense-in-depth gap is closed.
         let _ = Program::new(system_program_ai, &system_program::id())?;
         let _ = crate::validation::user_account::ensure_user_account_for_signer(
             &payer,
@@ -1644,9 +1623,8 @@ pub(crate) struct SettleMaturedLoanContext<'a, 'info> {
     pub marginfi_program: MarginfiProgram<'a, 'info>,
     pub cranker_refund: &'a AccountInfo<'info>,
     /// Fixed-loan close-out updates the lender vault's risk-profile on
-    /// full liquidate/settle (mirrors the repay/claim split). Required
-    /// for Fixed loans; SDK omits the slot for P2Pool. See
-    /// [[repay-claim-split]] memory.
+    /// full liquidate/settle. Required for Fixed loans; SDK omits the
+    /// slot for P2Pool.
     pub global_vault:
         Option<YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>>,
 }
@@ -2236,9 +2214,6 @@ impl<'a, 'info> GlobalVaultDepositContext<'a, 'info> {
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
         let user_account_ai = next_account_info(account_iter)?;
         let system_program_ai = next_account_info(account_iter)?;
-        // M-9: pin the system program identity. Asymmetric pattern
-        // pre-fix (only ClaimSeat checked); harmless today since Solana
-        // resolves at runtime, but the defense-in-depth gap is closed.
         let _ = Program::new(system_program_ai, &system_program::id())?;
 
         let vault_key = *vault.info.key;
@@ -2386,9 +2361,6 @@ impl<'a, 'info> GlobalVaultWithdrawContext<'a, 'info> {
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
         let user_account_ai = next_account_info(account_iter)?;
         let system_program_ai = next_account_info(account_iter)?;
-        // M-9: pin the system program identity. Asymmetric pattern
-        // pre-fix (only ClaimSeat checked); harmless today since Solana
-        // resolves at runtime, but the defense-in-depth gap is closed.
         let _ = Program::new(system_program_ai, &system_program::id())?;
 
         let vault_key = *vault.info.key;
@@ -3027,9 +2999,6 @@ impl<'a, 'info> TransferProtocolAdminContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        // M-8: route through `load_global_config_no_pause` so the PDA
-        // address is checked (pre-fix relied on owner+discriminator
-        // only; load_global_config_no_pause adds the PDA assert).
         let global_config = load_global_config_no_pause(account_iter)?;
         Ok(Self {
             payer,
@@ -3047,7 +3016,6 @@ impl<'a, 'info> AcceptProtocolAdminContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        // M-8: PDA-address check via load_global_config_no_pause.
         let global_config = load_global_config_no_pause(account_iter)?;
         Ok(Self {
             payer,
@@ -3065,7 +3033,6 @@ impl<'a, 'info> SetGlobalPauseContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        // M-8: PDA-address check via load_global_config_no_pause.
         let global_config = load_global_config_no_pause(account_iter)?;
         Ok(Self {
             payer,

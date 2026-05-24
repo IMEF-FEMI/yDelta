@@ -132,12 +132,6 @@ async fn setup_through_promote(
     (admin, depositor, curator, borrower, borrower_usdc)
 }
 
-/// Per the repay/claim split: full repay closes the loan PDA in-place
-/// and applies all risk-profile decrements + rent refund to the original
-/// cranker. The curator's `claim_repayment_for_risk_profile` is now a
-/// stateless seat→vault sweeper that runs separately to move atoms from
-/// the per-market `lender_marginfi_account` into the vault's integration
-/// account. No time gate; no loan PDA access.
 #[tokio::test]
 async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
     let fixture = MarketFixture::new().await;

@@ -136,8 +136,7 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
         borrower_seat.open_borrow_count, 1,
         "one Fixed cross → one open loan"
     );
-    // Sum of MatchedLoan collateral equals the bid's posted collateral
-    // (dust-sweep invariant from the audit).
+    // Sum of MatchedLoan collateral equals the bid's posted collateral.
     assert_eq!(
         fixture.sum_matched_loan_collateral().await,
         50_000_000,

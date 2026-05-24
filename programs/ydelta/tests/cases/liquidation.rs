@@ -399,11 +399,6 @@ async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
         .await
         .expect("liquidate_loan must succeed at breached LTV");
 
-    // Per the repay/claim split, full liquidation now closes the loan
-    // PDA in-place (it used to wait for claim_repayment_for_risk_profile).
-    // Assert closure directly; the loan body's accumulators have already
-    // been migrated to the market-level `accumulated_protocol_fee_shares`
-    // and the lender vault's risk-profile decrements during liquidate.
     assert!(
         fixture.loan_account_is_closed(0).await,
         "full liquidation must close the loan PDA in-place",
@@ -476,8 +471,6 @@ async fn settle_matured_loan_after_grace_seizes_collateral() {
         .await
         .expect("settle_matured_loan must succeed past grace window");
 
-    // Per the repay/claim split, full settlement closes the loan PDA
-    // in-place. Asserting closed = trivially-repaid.
     assert!(
         fixture.loan_account_is_closed(0).await,
         "full settle_matured_loan must close the loan PDA in-place",
@@ -642,7 +635,6 @@ async fn liquidator_keeper_balance_grows_after_settlement() {
         keeper_wsol_pre,
         keeper_wsol_post
     );
-    // Per the repay/claim split, full settle closes the loan PDA in-place.
     assert!(
         fixture.loan_account_is_closed(0).await,
         "full settle_matured_loan must close the loan PDA in-place",
@@ -710,9 +702,6 @@ async fn protocol_accrues_fee_on_liquidate_loan() {
         .await
         .expect("liquidate_loan must succeed at breached LTV");
 
-    // Per the repay/claim split, full liquidation closes the loan PDA;
-    // the loan body's `accumulated_protocol_fee_atoms` got migrated to
-    // the MARKET's `accumulated_protocol_fee_shares` (shares not atoms).
     assert!(
         fixture.loan_account_is_closed(0).await,
         "full liquidation must close the loan PDA",

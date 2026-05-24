@@ -717,9 +717,6 @@ impl MarketFixture {
     ) -> Result<(), solana_program_test::BanksClientError> {
         let loan = self.read_loan_in(market_pk, sequence).await;
         let cranker_refund = loan.created_by;
-        // Per the repay/claim split: Fixed loans need the lender's global
-        // vault for the full-repay close-out path; P2Pool repays omit the
-        // slot. The loader keys on the loan's stored loan_type.
         let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
         let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
             Some(&gv_pk)
@@ -984,12 +981,6 @@ impl MarketFixture {
     pub async fn set_clock_unix_timestamp(&self, new_unix_ts: i64) {
         let ctx: RefMut<ProgramTestContext> = self.context.borrow_mut();
         let mut clock: solana_sdk::clock::Clock = ctx.banks_client.get_sysvar().await.unwrap();
-        // T-12: assert forward-only time travel. Production accrual paths
-        // (accrue_loan, accrue_risk_profile) treat time-rewind as
-        // corruption (M-19); the fixture must match that invariant so
-        // tests can't construct states production can't reach. If a test
-        // legitimately needs to test a pre-maturity scenario, it should
-        // CAPTURE the target timestamp BEFORE advancing past it.
         assert!(
             new_unix_ts >= clock.unix_timestamp,
             "set_clock_unix_timestamp: rewind from {} to {} forbidden (T-12)",

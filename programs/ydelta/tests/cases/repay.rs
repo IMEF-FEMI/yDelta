@@ -136,8 +136,6 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
         .await
         .unwrap();
 
-    // Per the repay/claim split, full repay closes the loan PDA — there's
-    // no body to read for state == Repaid. The close itself IS the signal.
     assert!(
         fixture.loan_account_is_closed(0).await,
         "full repay must close the loan PDA",
@@ -162,17 +160,6 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     assert_eq!(bob_seat_post.open_borrow_count, 0);
 }
 
-/// H-5 regression: the pre-fix `release_loan_collateral` clamped a
-/// loan's recorded collateral against the seat's encumbered bucket via
-/// `min(total, encumbered)`. That silently dropped state when the seat
-/// was under-encumbered (corruption from a prior bug, manual mutation,
-/// or a stale migration). Post-fix, the close-time helper hard-errors
-/// with `InsufficientEncumberedCollateral` (Custom 53) — surfacing the
-/// corruption rather than hiding it.
-///
-/// Test: forge the under-encumbered shape by yanking the loan's
-/// collateral from `encumbered` into `withdrawable`, then attempt a
-/// full repay. The repay tx must reject with `InsufficientEncumberedCollateral`.
 #[tokio::test]
 async fn under_encumbered_seat_blocks_full_repay_close() {
     let fixture = MarketFixture::new().await;

@@ -20,10 +20,6 @@ const REPAY_EXPLICIT_ACCOUNTS: usize = 7;
 #[derive(Default, Clone, Copy)]
 pub struct MarginfiV18Adapter;
 
-/// H-12: hard-error on negative input. Bank share values cannot
-/// legitimately be negative; a negative bit pattern means corruption or
-/// a forged input. Returning a silent zero let downstream consumers
-/// (LTV, share-burn, etc.) accept the position as "no exposure".
 pub fn wrapped_i80f48_to_u128(w: WrappedI80F48) -> Result<u128, ProgramError> {
     let bits = w.to_i128_bits();
     if bits < 0 {
@@ -45,13 +41,6 @@ fn borrow_bank(bank_data: &[u8]) -> Result<&Bank, ProgramError> {
         .map_err(|_| AdapterError::InvalidIntegrationAccount.into())
 }
 
-/// H-10: assert a bank-shaped account is OWNED BY the marginfi program
-/// before we trust any byte we read off it. Adapter read helpers used to
-/// rely on `Bank::try_from_account_data`'s discriminator check only —
-/// every current caller pre-validates via `MarginfiBankInfo::new`, but
-/// the trait surface is published, so one new caller (or a refactor that
-/// drops the loader) would reopen this as attacker-chosen
-/// `asset_share_value` / weights. Defense-in-depth: check owner here.
 fn assert_marginfi_owned(
     bank_info: &solana_program::account_info::AccountInfo,
 ) -> Result<(), ProgramError> {
@@ -96,14 +85,6 @@ fn read_liability_shares_u128(
     }
 }
 
-/// H-15: marginfi health-check "remaining accounts" pairs are READ-ONLY
-/// and NON-SIGNING by contract (the marginfi processor only ever reads
-/// bank + oracle bytes from them). Pre-fix this helper forwarded
-/// `is_writable` and `is_signer` from arbitrary `AccountInfo`s — a
-/// malicious or buggy caller could mark a remaining-account writable
-/// (e.g., to set up a follow-on attack via a hand-crafted CPI). Forcing
-/// both flags false on every meta closes that defense gap without
-/// affecting any legitimate read.
 fn account_infos_to_metas(infos: &[AccountInfo]) -> Vec<AccountMeta> {
     infos
         .iter()
@@ -125,10 +106,6 @@ impl LendingProtocol for MarginfiV18Adapter {
         if accounts.len() < DEPOSIT_EXPLICIT_ACCOUNTS + 1 {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
-        // M-26: pin the marginfi program account explicitly so a clearer
-        // error surfaces if a caller passes the wrong program slot.
-        // The Solana runtime would catch it via the ix's program_id at
-        // CPI dispatch — this is defense-in-depth + better error text.
         if accounts[DEPOSIT_EXPLICIT_ACCOUNTS].key != &marginfi_mocks::ID {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
@@ -177,7 +154,6 @@ impl LendingProtocol for MarginfiV18Adapter {
         if accounts.len() < WITHDRAW_EXPLICIT_ACCOUNTS + 1 {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
-        // M-26: pin the marginfi program account.
         if accounts[WITHDRAW_EXPLICIT_ACCOUNTS].key != &marginfi_mocks::ID {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
@@ -204,10 +180,6 @@ impl LendingProtocol for MarginfiV18Adapter {
         let expected_atoms = expected_atoms_u128 as u64;
 
         let pre_destination = token_balance_of(destination_token_account)?;
-        // H-14: snapshot marginfi-account asset_shares BEFORE the CPI so
-        // we can compute `actual_shares_burned = pre - post` and return
-        // it. Callers that maintain their own share-count bookkeeping
-        // MUST decrement by the returned actual burn, not by the input.
         let pre_asset_shares = read_asset_shares_u128(marginfi_account, &bank_pk)?;
 
         let ix = withdraw_ix(
@@ -249,7 +221,6 @@ impl LendingProtocol for MarginfiV18Adapter {
         if accounts.len() < BORROW_EXPLICIT_ACCOUNTS + 1 {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
-        // M-26: pin the marginfi program account.
         if accounts[BORROW_EXPLICIT_ACCOUNTS].key != &marginfi_mocks::ID {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
@@ -299,7 +270,6 @@ impl LendingProtocol for MarginfiV18Adapter {
         if accounts.len() < REPAY_EXPLICIT_ACCOUNTS + 1 {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
-        // M-26: pin the marginfi program account.
         if accounts[REPAY_EXPLICIT_ACCOUNTS].key != &marginfi_mocks::ID {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
@@ -470,7 +440,6 @@ impl MarginfiV18Adapter {
         if accounts.len() < WITHDRAW_EXPLICIT_ACCOUNTS + 1 {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
-        // M-26: pin the marginfi program account.
         if accounts[WITHDRAW_EXPLICIT_ACCOUNTS].key != &marginfi_mocks::ID {
             return Err(AdapterError::InvalidIntegrationAccount.into());
         }
@@ -609,7 +578,6 @@ fn repay_atoms_inner<'info>(
     if accounts.len() < REPAY_EXPLICIT_ACCOUNTS + 1 {
         return Err(AdapterError::InvalidIntegrationAccount.into());
     }
-    // M-26: pin the marginfi program account.
     if accounts[REPAY_EXPLICIT_ACCOUNTS].key != &marginfi_mocks::ID {
         return Err(AdapterError::InvalidIntegrationAccount.into());
     }
@@ -641,9 +609,6 @@ fn repay_atoms_inner<'info>(
     invoke_signed(&ix, accounts, signer_seeds)?;
 
     let post_liability = read_liability_shares_u128(marginfi_account, &bank_pk)?;
-    // M-24: checked_sub. post > pre is impossible in healthy state (repay
-    // can only shrink liability) but possible with a corrupted bank or
-    // forged account. Pre-fix returned 0, masking the corruption.
     pre_liability
         .checked_sub(post_liability)
         .ok_or_else(|| {
@@ -657,10 +622,6 @@ fn repay_atoms_inner<'info>(
 }
 
 pub(crate) fn token_balance_of(info: &AccountInfo) -> Result<u64, ProgramError> {
-    // M-25: assert SPL token program owner. The byte-slice read drives
-    // the ±1-atom drift gate in withdraw/repay; an attacker-controlled
-    // account whose bytes look like an SPL Token account could otherwise
-    // spoof the gate.
     if info.owner != &spl_token::id() && info.owner != &spl_token_2022::id() {
         return Err(AdapterError::InvalidIntegrationAccount.into());
     }
@@ -703,9 +664,6 @@ mod tests {
         assert_eq!(scaled, 0);
     }
 
-    /// H-12 regression: negative I80F48 must hard-error (not silently
-    /// return 0 / "no exposure"). Pre-fix, a corrupted/forged bank with
-    /// negative share value passed through as a zero balance.
     #[test]
     fn negative_i80f48_errors() {
         let neg = WrappedI80F48::from_i128_bits(-1i128 << 48);

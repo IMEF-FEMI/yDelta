@@ -322,9 +322,6 @@ pub fn process_global_vault_withdraw(
         seat.last_updated_unix = now;
         let zeroed = seat.shares == 0;
         if zeroed {
-            // H-9: propagate ArithmeticOverflow if the counter ever
-            // desyncs from the tree. NIL return = profile-id was already
-            // gone (idempotent), which is fine to ignore here.
             remove_risk_profile_depositor_seat(
                 header,
                 dynamic,

@@ -188,10 +188,6 @@ pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResul
 }
 
 fn oracle_timestamp_acceptable(age: i64, effective_max_age: i64) -> bool {
-    // M-23: exclusive `<` matches marginfi's reference check. Pre-fix
-    // `<=` gave us a 1-second window of legitimacy that marginfi itself
-    // would reject; the inconsistency could surface as an oracle being
-    // "fresh enough for yDelta but stale for marginfi".
     age >= -MAX_FUTURE_SKEW_SECS && age < effective_max_age
 }
 
@@ -203,14 +199,6 @@ const PYTH_MAX_EXPONENT: i32 = 2;
 
 const PYTH_VERIFY_TAG_FULL: u8 = 1;
 
-// M-22 (deferred): pinning the exact on-disk size of Pyth-Full
-// requires cross-validation against the Pyth Solana SDK's
-// `PriceUpdateV2` layout (which the audit didn't quote a fixed
-// number for). The current `data.len() < publish_time_offset + 8`
-// check inside `decode_pyth_push` catches truncation but not a
-// future longer payload that shifts trailing offsets. Tracked
-// here so a future PR can pin the exact `data.len() == EXPECTED`
-// once SDK-aligned.
 
 const CONF_INTERVAL_MULTIPLE_BPS: u128 = 21_200;
 const STD_DEV_MULTIPLE_BPS: u128 = 19_600;
@@ -219,10 +207,6 @@ const BPS_DIVISOR: u128 = 10_000;
 const DEFAULT_MAX_CONF_PCT_BPS: u128 = 1_000;
 const U32_MAX_AS_U128: u128 = u32::MAX as u128;
 
-/// H-16: PRIVATE byte-offset decoder. The owner check lives in
-/// `read_oracle_price` — DO NOT call this from outside the module
-/// without first checking the source account is owned by
-/// `PYTH_PUSH_PROGRAM_ID`.
 fn decode_pyth_push(data: &[u8], oracle_max_confidence_u32: u32) -> AdapterResult<(u128, i64)> {
     if data.len() < PYTH_VERIFICATION_LEVEL_OFFSET + 1 {
         return Err(AdapterError::InvalidIntegrationAccount.into());
@@ -287,12 +271,6 @@ const SWB_PRECISION: u32 = 18;
 const SWB_MIN_SAMPLE_SIZE_OFFSET: usize = SWB_DISC_LEN + 2207;
 const SWB_RESULT_NUM_SAMPLES_OFFSET: usize = SWB_DISC_LEN + 2352;
 
-/// H-16: PRIVATE byte-offset decoder. The owner check lives in
-/// `read_oracle_price` (the only public entry point) — DO NOT expose
-/// this function publicly or call it from outside this module without
-/// performing the SWITCHBOARD_ON_DEMAND_PROGRAM_ID owner check on the
-/// source account first. Attacker-chosen `result_value` / `std_dev` /
-/// `last_update_ts` would flow straight into LTV / liquidation math.
 fn decode_switchboard_pull(
     data: &[u8],
     oracle_max_confidence_u32: u32,

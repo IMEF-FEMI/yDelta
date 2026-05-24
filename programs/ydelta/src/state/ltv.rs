@@ -183,10 +183,6 @@ pub fn assert_past_grace_period(
     grace_period_seconds: u32,
     now_unix_ts: i64,
 ) -> Result<(), ProgramError> {
-    // M-21: checked_add. SetFeeConfig caps grace_period_seconds at
-    // MAX_GRACE_PERIOD_SECONDS (90d), so saturation is bounded — but a
-    // saturated i64::MAX would lock the loan from ever settling. Hard
-    // error on overflow surfaces the corruption.
     let grace_end = loan
         .matures_at_unix
         .checked_add(grace_period_seconds as i64)

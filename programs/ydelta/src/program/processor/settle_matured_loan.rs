@@ -452,9 +452,6 @@ pub fn process_settle_matured_loan(
     })?;
 
     // ===== Fixed-loan close-out (mirrors repay's full-repay close path) =====
-    // Per the repay/claim split, full settlement of a Fixed loan applies
-    // the same per-loan risk-profile decrements + protocol-fee/curator-fee
-    // accounting + lender-seat credit + PDA close as a full borrower repay.
     if loan_type == LoanType::Fixed && fixed_credited_shares > 0 {
         let (
             lender_seat_index,

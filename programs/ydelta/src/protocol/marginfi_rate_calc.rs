@@ -4,12 +4,6 @@ use crate::math::{div_scale, mul_scale, SCALE};
 use crate::protocol::AdapterError;
 use crate::require;
 
-/// H-11: assert a bank/group account is OWNED BY the marginfi program
-/// before trusting any byte at a fixed offset. The byte-offset readers
-/// in this file lack any discriminator check (they read raw offsets),
-/// so without an owner check a forged account could feed
-/// attacker-chosen utilization, interest curve, and group-fee values
-/// into the projected-LSV math.
 fn assert_marginfi_owned(account: &AccountInfo) -> Result<(), ProgramError> {
     if account.owner != &marginfi_mocks::ID {
         solana_program::msg!(
@@ -66,9 +60,6 @@ fn read_wrapped_i80f48_fp48(data: &[u8], body_offset: usize) -> Result<u128, Pro
     let mut buf = [0u8; 16];
     buf.copy_from_slice(&data[offset..offset + 16]);
     let bits = i128::from_le_bytes(buf);
-    // H-12: bank share/rate values cannot legitimately be negative.
-    // Silently mapping to 0 let downstream consumers (LTV, interest curve)
-    // see a "no-exposure" position from corrupt or forged input.
     if bits < 0 {
         solana_program::msg!(
             "read_wrapped_i80f48_fp48: negative I80F48 bit pattern ({}) at offset {} — refusing silent 0",
@@ -231,16 +222,6 @@ fn util_centi_u32_to_fp48(util: u32) -> Result<u128, ProgramError> {
     crate::math::mul_div(util as u128, SCALE, u32::MAX as u128, false)
 }
 
-/// H-13: mirror marginfi's reference lerp. Pre-fix this function
-/// silently accepted degenerate inputs that marginfi rejects:
-///   - `end_x <= start_x` → pre-fix returned `start_y` (silent flatten),
-///     marginfi rejects.
-///   - `target_x ∉ [start_x, end_x]` → pre-fix clamped, marginfi rejects.
-///   - `end_y < start_y` (negative slope) → pre-fix returned `start_y`,
-///     marginfi rejects.
-/// The divergence meant projected LSV used by the borrow-curve math
-/// drifted from what marginfi actually charges. All three are now hard
-/// errors so the two paths stay byte-identical.
 fn lerp_fp48(
     start_x: u128,
     start_y: u128,
@@ -288,10 +269,6 @@ fn interest_rate_curve_legacy(
     let optimal_ur = cfg.optimal_utilization_rate_fp48;
     let plateau_ir = cfg.plateau_interest_rate_fp48;
     let max_ir = cfg.max_interest_rate_fp48;
-    // M-27: error on degenerate config. Marginfi returns None (errors)
-    // for `optimal_ur == 0` or `denom == 0` (full util plateau);
-    // pre-fix yDelta silently returned the plateau / max rate, which
-    // would diverge from what marginfi actually charges.
     if optimal_ur == 0 {
         solana_program::msg!(
             "interest_rate_curve_legacy: degenerate config — optimal_utilization_rate = 0"
@@ -334,9 +311,6 @@ fn interest_rate_curve_seven_point(
         }
         let point_util_fp48 = util_centi_u32_to_fp48(point_util_u32)?;
         let point_rate_fp48 = rate_milli_u32_to_fp48(point_rate_u32)?;
-        // M-28: assert points are sorted by utilization. An out-of-order
-        // bank config would produce different projections than marginfi
-        // (which iterates in array order assuming sortedness).
         require!(
             point_util_fp48 > prev_util_fp48,
             crate::program::YdeltaError::InvalidArgument,
@@ -587,9 +561,6 @@ mod tests {
         assert!(drift < 10, "new_lsv {} ≉ 2.0 fp48", new_lsv);
     }
 
-    /// H-13 regression: lerp_fp48 must mirror marginfi's rejects.
-    /// Pre-fix returned `start_y` on degenerate inputs (silent flatten);
-    /// post-fix errors on each of the three reject cases.
     #[test]
     fn lerp_fp48_rejects_marginfi_invariant_violations() {
         // (1) end_x <= start_x: degenerate segment.

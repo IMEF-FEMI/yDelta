@@ -13,13 +13,6 @@ use crate::state::vault::{
 use crate::validation::pdas::get_market_signer_address;
 use crate::validation::token_checkers::get_vault_address;
 
-/// H-19: `bank_oracles` is a SLICE matching the debt bank's
-/// `expected_oracle_account_count()`. The loader reads exactly that many
-/// from the trailing-oracle region; passing a different count shifts the
-/// downstream accounts (mint, token_program, marginfi_group, marginfi_program)
-/// and the loader rejects. SDK callers MUST consult the bank config and
-/// pass the correct number of oracle keys (single-oracle banks like
-/// mainnet USDC + wSOL use `&[oracle_pk]`).
 #[allow(clippy::too_many_arguments)]
 pub fn claim_repayment_for_risk_profile_instruction(
     payer: &Pubkey,

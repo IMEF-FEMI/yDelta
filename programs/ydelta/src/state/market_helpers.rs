@@ -59,9 +59,6 @@ pub fn release_address_on_market_fixed(
     let mut free_list: FreeList<MarketUnusedFreeListPadding> =
         FreeList::new(dynamic, fixed.free_list_head_index);
     free_list.add(index);
-    // M-15: read head back from the freelist rather than assuming `index`
-    // became the new head. Coincidentally correct today; brittle to a
-    // future FreeList::add refactor.
     fixed.free_list_head_index = free_list.get_head();
 }
 
@@ -225,8 +222,6 @@ fn unencumber_for_order(
                 BalanceSign::Plus,
                 principal_shares,
             )?;
-            // M-16: checked_sub — drift surfaces as ArithmeticOverflow
-            // rather than silently saturating past zero.
             seat.open_lend_count = seat
                 .open_lend_count
                 .checked_sub(1)
@@ -244,9 +239,6 @@ fn unencumber_for_order(
 /// `encumbered`), and silently clamping the release would permanently
 /// strand the difference (neither released to withdrawable nor seized).
 ///
-/// H-5: pre-fix used `total.min(encumbered)` which papered over the
-/// corruption. Per the closed-program memory there's no live state, so
-/// fail-closed is safe and surfaces the bug rather than hiding it.
 pub fn release_loan_collateral(
     dynamic: &mut [u8],
     seat_index: DataIndex,
@@ -283,10 +275,6 @@ pub fn get_seat_index_with_hint(
     if let Some(idx) = hint {
         if is_not_nil!(idx) {
             let seat: &ClaimedSeat = get_helper_seat(dynamic, idx).get_value();
-            // M-14: enforce owner_kind on the hint path. The fallback
-            // tree lookup builds a USER probe, but the hint path skipped
-            // that check — a wrong hint could route to a risk-profile
-            // seat in a future code path.
             if seat.owner == *signer
                 && seat.owner_kind == OWNER_KIND_USER
                 && seat.risk_profile_id == 0
@@ -405,9 +393,6 @@ pub fn match_order(
         let mut profile_max_term_seconds: u32 = 0;
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
-            // M-5: hard-runtime invariant. debug_assert_eq! was compiled
-            // out in release. Only risk-profile vault asks rest on the
-            // orderbook; anything else is corruption.
             require!(
                 lender_seat.owner_kind == crate::state::OWNER_KIND_RISK_PROFILE,
                 YdeltaError::IncorrectAccount,
@@ -447,11 +432,6 @@ pub fn match_order(
                 current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                 continue;
             }
-            // M-11: re-validate the maker's resting-order term against
-            // the profile's CURRENT max_term_seconds. If the curator
-            // lowered the cap after the ask was placed, the stale ask
-            // is no longer matchable — skip the maker instead of
-            // honoring the over-term ask.
             if profile_max_term_seconds > 0 && maker.term_seconds > profile_max_term_seconds {
                 current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                 continue;
@@ -580,10 +560,6 @@ pub fn match_order(
         node.lender_rate_bps = lender_rate;
         node.loan_type = 0;
         node.flags = vault_flag;
-        // H-1: snapshot curator_fee_bps at MATCH time, not promotion time.
-        // Lender capital is encumbered the moment this node is inserted;
-        // promoting against a later `fee_config.curator_fee_bps` would let
-        // a compromised admin retroactively reroute already-committed yield.
         node.curator_fee_bps_snapshot = fixed.fee_config.curator_fee_bps;
         node.lender_debt_share_price_snapshot_fp48 = lender_debt_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 = borrower_collateral_snapshot;
@@ -706,8 +682,6 @@ impl<'a> MarketRefMut<'a> {
         let mut tree = ClaimedSeatTree::new(dynamic, fixed.claimed_seats_root_index, NIL);
         tree.insert(free_addr, seat);
         fixed.claimed_seats_root_index = tree.get_root_index();
-        // H-9: checked_add — tree/counter desync surfaces as
-        // ArithmeticOverflow rather than silently saturating.
         fixed.position_count = fixed
             .position_count
             .checked_add(1)
@@ -771,7 +745,6 @@ impl<'a> MarketRefMut<'a> {
 
     pub fn rest_order(&mut self, order_index: DataIndex, order: RestingOrder) -> ProgramResult {
         let MarketRefMut { fixed, dynamic } = self;
-        // M-5: quote-only model rests only asks on the book.
         require!(
             order.side == Side::Ask as u8,
             YdeltaError::InvalidArgument,
@@ -1149,7 +1122,6 @@ pub fn cancel_order_by_index(
     };
     if owner_kind == crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE {
         let seat = get_mut_helper_seat(dynamic, order.trader_seat_index).get_mut_value();
-        // M-16: checked_sub on the risk-profile lender path too.
         seat.open_lend_count = seat
             .open_lend_count
             .checked_sub(1)
@@ -1266,9 +1238,6 @@ pub fn match_p2pool_residual_against_asks(
         let mut profile_max_ltv_bps: u16 = 0;
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
-            // M-5: hard-runtime invariant. debug_assert_eq! was compiled
-            // out in release. Only risk-profile vault asks rest on the
-            // orderbook; anything else is corruption.
             require!(
                 lender_seat.owner_kind == crate::state::OWNER_KIND_RISK_PROFILE,
                 YdeltaError::IncorrectAccount,
@@ -1413,9 +1382,6 @@ pub fn match_p2pool_residual_against_asks(
 
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_PRESETTLED
             | crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
-        // H-1: refinance crosses always have a vault lender — snapshot
-        // curator_fee_bps at match time so admin can't front-run yield
-        // routing between match and promotion.
         node.curator_fee_bps_snapshot = fixed.fee_config.curator_fee_bps;
         node.lender_debt_share_price_snapshot_fp48 = maker_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 =

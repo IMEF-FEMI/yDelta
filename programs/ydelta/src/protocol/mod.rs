@@ -44,13 +44,6 @@ pub trait LendingProtocol {
         signer_seeds: &[&[&[u8]]],
     ) -> Result<u128, ProgramError>;
 
-    /// H-14: returns `(actual_atoms_withdrawn, actual_shares_burned)`.
-    /// Caller's bookkeeping MUST decrement seat / share counts by
-    /// `actual_shares_burned`, NOT by the input `shares` — marginfi
-    /// runs its own intra-CPI accrual which bumps `asset_share_value`,
-    /// so the actual burn is `ceil(expected_atoms / new_asv)`, strictly
-    /// ≤ the input. Using the input would drift the recorded count
-    /// above the real marginfi count over time.
     fn withdraw<'info>(
         &self,
         accounts: &[AccountInfo<'info>],

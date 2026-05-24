@@ -475,11 +475,6 @@ pub fn process_liquidate_loan(
     }
 
     // ===== Fixed-loan close-out (mirrors repay's full-repay close path) =====
-    // Per the repay/claim split, full liquidation of a Fixed loan applies
-    // the same per-loan risk-profile decrements + protocol-fee/curator-fee
-    // accounting + lender-seat credit + PDA close as a full borrower repay.
-    // For Fixed PARTIAL liquidation, we just credit the lender seat with
-    // the deposited shares (no profile updates; loan stays alive).
     if loan_type == LoanType::Fixed && fixed_credited_shares > 0 {
         // Snapshot the FINAL (post-mutation) loan body. After the loan
         // body section above ran, accumulated_protocol_fee_atoms has the
@@ -690,10 +685,6 @@ pub fn compute_collateral_split(
     collateral_atoms: u64,
     bonus_bps: u16,
 ) -> Result<CollateralSplit, ProgramError> {
-    // H-21: re-assert the keeper-bps cap inline (defense-in-depth).
-    // SetFeeConfig enforces MAX_LIQUIDATION_KEEPER_BPS at config-write
-    // time, but the function is published — pinning here closes the
-    // gap for any future caller that bypasses the config gate.
     require!(
         bonus_bps <= crate::program::processor::fee_config_helpers::MAX_LIQUIDATION_KEEPER_BPS,
         YdeltaError::InvalidArgument,
@@ -768,14 +759,10 @@ mod split_tests {
 
     #[test]
     fn rejects_bonus_bps_above_full_scale() {
-        // H-21: cap is now MAX_LIQUIDATION_KEEPER_BPS (5_000), not 10_000.
         assert!(compute_collateral_split(100, 100, 10_001).is_err());
         assert!(compute_collateral_split(100, 100, u16::MAX).is_err());
     }
 
-    /// H-21 regression: anything above MAX_LIQUIDATION_KEEPER_BPS (5_000)
-    /// must be rejected by the function itself, even though SetFeeConfig
-    /// already enforces the cap at config-write time.
     #[test]
     fn rejects_bonus_bps_above_max_liquidation_keeper_cap() {
         use crate::program::processor::fee_config_helpers::MAX_LIQUIDATION_KEEPER_BPS;
@@ -783,7 +770,6 @@ mod split_tests {
         assert!(compute_collateral_split(50, 200, 10_000).is_err());
     }
 
-    /// H-21: at-or-below the cap still works.
     #[test]
     fn accepts_bonus_bps_at_keeper_cap() {
         use crate::program::processor::fee_config_helpers::MAX_LIQUIDATION_KEEPER_BPS;

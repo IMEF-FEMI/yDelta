@@ -21,10 +21,6 @@
 use ydelta::state::claimed_seat::{ClaimedSeat, OWNER_KIND_RISK_PROFILE, OWNER_KIND_USER};
 use solana_program::pubkey::Pubkey;
 
-/// T-2: pin that USER and RISK_PROFILE seats with the same `owner`
-/// pubkey live as distinct tree entries. Cmp ordering on `owner_kind`
-/// first makes them non-aliasing. Therefore no instruction can find
-/// one seat as both maker and taker.
 #[test]
 fn user_and_risk_profile_seats_with_same_owner_are_distinct() {
     let owner = Pubkey::new_unique();
@@ -37,9 +33,6 @@ fn user_and_risk_profile_seats_with_same_owner_are_distinct() {
     );
 }
 
-/// T-2: pin that risk-profile seats with different profile_ids are
-/// distinct even when owner + owner_kind match. A vault with multiple
-/// risk profiles cannot accidentally cross its own profiles via a self-match.
 #[test]
 fn risk_profile_seats_distinct_by_profile_id() {
     let owner = Pubkey::new_unique();

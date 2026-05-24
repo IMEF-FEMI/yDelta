@@ -386,20 +386,6 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         full
     };
 
-    // Per the repay/claim split (see [[repay-claim-split]] memory):
-    //   - On every Fixed repay (partial or full), credit the lender's
-    //     market seat with the post-deposit shares. The curator's
-    //     `claim_repayment_for_risk_profile` later sweeps the seat to
-    //     the global vault; it never reads the loan PDA.
-    //   - On full repay only, split protocol-fee shares out so they
-    //     stay claimable as `market.accumulated_protocol_fee_shares`
-    //     (those atoms do NOT flow to vault depositors). The remainder
-    //     credits the lender seat for the vault claim sweep.
-    //   - Partial repays credit ALL credited_shares to the seat. The
-    //     protocol/curator fee attribution is finalized at full-repay
-    //     close-out — this is acceptable because (a) origination_bps
-    //     defaults to 0 and (b) the discrepancy if a curator sweeps
-    //     before close is small relative to the principal flow.
     let protocol_fee_shares: u128 = if did_full_repay && loan_accumulated_protocol_fee_atoms > 0 {
         MarginfiV18Adapter
             .amount_to_asset_shares(&[debt_bank.info.clone()], loan_accumulated_protocol_fee_atoms)?

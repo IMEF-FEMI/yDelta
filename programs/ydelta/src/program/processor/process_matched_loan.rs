@@ -137,11 +137,6 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
         }
     };
 
-    // H-1: read the snapshot taken at match time (stored on the MatchedLoan
-    // node), NOT `market.fee_config.curator_fee_bps`. The market value can
-    // change between match and promotion — a compromised admin who flips it
-    // to 10_000 after the lender's capital is already encumbered would
-    // otherwise lock depositors into 0% yield retroactively.
     let curator_fee_bps_snapshot: u16 = if lender_kind == crate::state::OWNER_KIND_RISK_PROFILE {
         node.curator_fee_bps_snapshot
     } else {
@@ -344,10 +339,6 @@ fn do_vault_settle<'a, 'info>(
     )?;
     let mfi_atoms_pre: u64 =
         MarginfiV18Adapter.shares_to_amount(&[debt_bank.info.clone()], mfi_asset_shares_pre)?;
-    // M-12: fail fast if the vault's pre-withdraw balance can't even
-    // cover the loan's principal. The drain path then re-checks
-    // `actual_atoms >= principal_atoms` post-CPI, but that's CU wasted
-    // on a doomed marginfi.withdraw_atoms_full. Short-circuit here.
     require!(
         mfi_atoms_pre >= principal_atoms,
         YdeltaError::InvalidArgument,

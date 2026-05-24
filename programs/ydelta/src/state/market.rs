@@ -384,11 +384,6 @@ impl<Fixed: DerefOrBorrow<MarketFixed>, Dynamic: DerefOrBorrow<[u8]>>
         self.borrow_market().fixed.free_list_head_index != NIL
     }
 
-    /// M-13: typed variant — explicitly looks up a USER seat. Pre-fix
-    /// the single `lookup_seat_index` helper hard-coded `owner_kind=0`,
-    /// silently locking out risk-profile seats from the API. The split
-    /// (this + `lookup_risk_profile_seat_index`) makes the owner_kind
-    /// part of the function name so callers can't pick the wrong one.
     pub fn lookup_user_seat_index(&self, owner: &Pubkey) -> DataIndex {
         let MarketRef { fixed, dynamic } = self.borrow_market();
         let tree: ClaimedSeatTreeReadOnly =
@@ -400,9 +395,6 @@ impl<Fixed: DerefOrBorrow<MarketFixed>, Dynamic: DerefOrBorrow<[u8]>>
         ))
     }
 
-    /// M-13: typed variant for risk-profile seats. `owner` is the
-    /// owning GlobalVault pubkey; `risk_profile_id` distinguishes the
-    /// per-vault profile.
     pub fn lookup_risk_profile_seat_index(
         &self,
         global_vault: &Pubkey,

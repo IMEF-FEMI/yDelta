@@ -153,8 +153,6 @@ pub fn process_update_order_for_risk_profile(
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        // H-9: propagate ArithmeticOverflow if counter desyncs. NIL return
-        // (already absent) is fine to ignore — this path is idempotent.
         remove_risk_profile_order_ref(header, dynamic, market_key, params.profile_id)?;
     }
 

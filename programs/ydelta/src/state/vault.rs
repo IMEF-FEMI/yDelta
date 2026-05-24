@@ -496,12 +496,6 @@ pub fn get_mut_helper_risk_profile_order_ref(
 
 const ACCRUE_INDEX_SCALE: u128 = 1u128 << 48;
 
-/// H-7: fail-closed bank-share-value read. Pre-fix returned `0` on
-/// borrow error or bank parse failure, which combined with H-8's idle
-/// cast made a corrupted bank read look like "no NAV change" — silently
-/// nullifying depositor yield. Now returns `Result<u128, ProgramError>`
-/// and propagates errors so the caller halts instead of operating on
-/// a sentinel zero.
 pub fn read_bank_asset_share_value_fp48(
     bank_ai: &solana_program::account_info::AccountInfo,
 ) -> Result<u128, ProgramError> {
@@ -529,10 +523,6 @@ pub fn accrue_risk_profile(
         return Ok(());
     }
 
-    // M-17: checked_sub for symmetry with accrue_loan. The line-502
-    // guard (`if now <= profile.last_accrue_unix`) already prevents
-    // underflow in practice; this is defense-in-depth in case the gate
-    // is ever refactored.
     let elapsed: u128 = now
         .checked_sub(profile.last_accrue_unix)
         .filter(|d| *d >= 0)
@@ -597,10 +587,6 @@ pub fn accrue_risk_profile(
             .checked_add(idle_gain)
             .ok_or(ProgramError::ArithmeticOverflow)?;
     } else {
-        // H-8: loss path. Pre-fix used `(-idle_delta_atoms) as u64`
-        // which truncates for extreme negative i128. A 100% share-value
-        // crash combined with H-7's silent-zero made the loss invisible.
-        // checked_neg rejects i128::MIN; try_from rejects out-of-u64-range.
         let idle_loss: u64 = idle_delta_atoms
             .checked_neg()
             .and_then(|x| u64::try_from(x).ok())
@@ -753,8 +739,6 @@ pub fn upsert_risk_profile_depositor_seat(
     tree.insert(order_index, probe);
     fixed.claimed_seats_root_index = tree.get_root_index();
     drop(tree);
-    // H-9: checked_add — counter drift surfaces as ArithmeticOverflow
-    // rather than silently saturating (which would hide tree/counter desync).
     fixed.claimed_seat_count = fixed
         .claimed_seat_count
         .checked_add(1)
@@ -781,8 +765,6 @@ pub fn remove_risk_profile_depositor_seat(
     tree.remove_by_index(existing_idx);
     fixed.claimed_seats_root_index = tree.get_root_index();
     drop(tree);
-    // H-9: checked_sub — we just removed a real node, so counter ≥ 1.
-    // Underflow here means tree/counter desync (corruption).
     fixed.claimed_seat_count = fixed
         .claimed_seat_count
         .checked_sub(1)
@@ -845,7 +827,6 @@ pub fn insert_risk_profile_order_ref(
     tree.insert(order_index, order);
     fixed.market_orders_root_index = tree.get_root_index();
     drop(tree);
-    // H-9: checked_add (see add_risk_profile_depositor_seat).
     fixed.open_order_count = fixed
         .open_order_count
         .checked_add(1)
@@ -866,9 +847,6 @@ pub fn remove_risk_profile(
     if idx == NIL {
         return Ok(NIL);
     }
-    // M-18: fail-closed if a non-empty profile is requested for removal.
-    // The caller's responsibility was documented but unenforced; an
-    // internal assert prevents future callers from leaking funds.
     {
         let profile = get_helper_risk_profile(dynamic, idx).get_value();
         require!(
@@ -885,7 +863,6 @@ pub fn remove_risk_profile(
     tree.remove_by_index(idx);
     fixed.risk_profiles_root_index = tree.get_root_index();
     drop(tree);
-    // H-9: checked_sub.
     fixed.risk_profile_count = fixed
         .risk_profile_count
         .checked_sub(1)
@@ -917,7 +894,6 @@ pub fn remove_risk_profile_order_ref(
     tree.remove_by_index(idx);
     fixed.market_orders_root_index = tree.get_root_index();
     drop(tree);
-    // H-9: checked_sub.
     fixed.open_order_count = fixed
         .open_order_count
         .checked_sub(1)

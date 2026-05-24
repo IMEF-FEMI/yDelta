@@ -144,11 +144,6 @@ pub fn process_claim_repayment_for_risk_profile(
     for oracle_ai in &debt_oracle_ais.ais {
         withdraw_accounts.push((*oracle_ai).clone());
     }
-    // H-14: marginfi's intra-CPI accrual bumps asset_share_value, so the
-    // ACTUAL shares burned can be strictly less than the input `pending_shares`.
-    // Decrementing the seat by `pending_shares` (the input) would drift
-    // the seat's tracked balance ABOVE marginfi's real per-account balance.
-    // Use `actual_shares_burned` to keep the two in sync.
     let (actual_atoms, actual_shares_burned) =
         MarginfiV18Adapter.withdraw(&withdraw_accounts, pending_shares, &[market_signer_seeds])?;
 

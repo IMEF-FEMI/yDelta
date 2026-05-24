@@ -21,14 +21,6 @@ pub struct VaultSettleAddrs {
     pub market_signer: Pubkey,
     pub debt_liquidity_vault: Pubkey,
     pub debt_bank_liquidity_vault_authority: Pubkey,
-    /// H-18: MUST contain EXACTLY `bank.config.expected_oracle_account_count()`
-    /// keys (read from the debt bank's config). The loader uses
-    /// `MarginfiOracleAis::load` which consumes that many slots verbatim
-    /// — passing a different count shifts every trailing account
-    /// (debt_mint, token_program, marginfi_group, marginfi_program) and
-    /// the loader's pubkey checks reject the ix. SDK callers must consult
-    /// the bank config (single-oracle banks like mainnet USDC + wSOL pass
-    /// `vec![oracle_pk]`).
     pub debt_oracles: Vec<Pubkey>,
     pub debt_mint: Pubkey,
     pub token_program: Pubkey,

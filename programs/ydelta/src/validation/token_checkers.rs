@@ -17,9 +17,6 @@ impl<'a, 'info> MintAccountInfo<'a, 'info> {
     pub fn new(info: &'a AccountInfo<'info>) -> Result<MintAccountInfo<'a, 'info>, ProgramError> {
         check_spl_token_program_account(info.owner)?;
 
-        // M-32: try_borrow_data — `info.data.borrow()` panics on a
-        // concurrent borrow. The panic path would abort the tx with
-        // BorrowFailed instead of a clean Result.
         let mint: Mint = StateWithExtensions::<Mint>::unpack(&info.try_borrow_data()?)?.base;
         require!(
             mint.is_initialized,
@@ -69,10 +66,6 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
         Ok(Self { info })
     }
 
-    /// M-33: propagate as Result. Pre-fix used `.unwrap()` on borrow +
-    /// try_into; a concurrent borrow or short data would panic the
-    /// program (BorrowFailed / panic-induced abort) instead of returning
-    /// a clean error.
     pub fn get_owner(&self) -> Result<Pubkey, ProgramError> {
         let data = self.info.try_borrow_data()?;
         if data.len() < 64 {
@@ -84,7 +77,6 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
         Ok(Pubkey::new_from_array(arr))
     }
 
-    /// M-33: propagate as Result — see `get_owner` above.
     pub fn get_balance_atoms(&self) -> Result<u64, ProgramError> {
         let data = self.info.try_borrow_data()?;
         if data.len() < 72 {

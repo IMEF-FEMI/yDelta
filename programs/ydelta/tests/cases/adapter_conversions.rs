@@ -172,14 +172,6 @@ async fn amount_to_shares_at_higher_share_price_returns_fewer_shares() {
     assert_eq!(result.atoms_or_shares, 500u128 << 48);
 }
 
-/// H-10 regression: the adapter's read helpers used to trust any account
-/// whose bytes happened to deserialize as a Bank — relying on the
-/// discriminator check alone. Per H-10 they now require the bank account
-/// to be OWNED by the marginfi program. A forged bank with the correct
-/// disc + payload but the WRONG owner must be rejected.
-///
-/// Forge a bank with the right bytes but `owner = System Program` (not
-/// marginfi). The adapter ix must fail with `InvalidIntegrationAccount`.
 #[tokio::test]
 async fn forged_bank_with_wrong_owner_is_rejected() {
     use marginfi_mocks::discriminator::BANK_DISCRIMINATOR;

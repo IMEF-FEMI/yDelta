@@ -179,11 +179,6 @@ impl PartialOrd for RestingOrder {
 }
 
 impl PartialEq for RestingOrder {
-    // H-2: must mirror `Ord::cmp`'s field set or the `a == b ⇔ cmp == Equal`
-    // contract is violated (UB for any std container that assumes it). The
-    // ordering key is (rate_bps, sequence_number); `trader_seat_index` is
-    // irrelevant because `sequence_number` is already a per-market monotonic
-    // counter and uniquely identifies the order in valid state.
     fn eq(&self, other: &Self) -> bool {
         self.rate_bps == other.rate_bps
             && self.sequence_number == other.sequence_number
@@ -266,15 +261,6 @@ mod tests {
         assert!(!order_type_can_take(OrderType::PostOnly));
     }
 
-    /// H-2 regression: `Eq` and `Ord` must agree — `a == b ⇔ a.cmp(b) == Equal`.
-    /// Pre-fix, `eq` keyed on `(trader_seat_index, sequence_number)` while
-    /// `cmp` keyed on `(rate_bps, sequence_number)`, so the contract was
-    /// violable: e.g. two orders with same `(seat, seq)` but different rates
-    /// would compare equal yet not cmp-equal — undefined behavior for any
-    /// `BTreeSet`/`HashSet`/`std`-algorithm consumer.
-    ///
-    /// Cross-product the four observable-by-cmp/eq fields over a small set
-    /// of values and assert the contract for every ordered pair.
     #[test]
     fn eq_and_cmp_agree_for_all_field_permutations() {
         let trader_seats: &[u32] = &[0, 1];

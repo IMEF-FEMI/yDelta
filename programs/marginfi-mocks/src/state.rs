@@ -81,9 +81,6 @@ impl Default for Bank {
 
 impl Bank {
     pub fn try_from_account_data(data: &[u8]) -> Result<&Self, MarginfiMocksError> {
-        // M-31: require exact size. Accepting `>=` would silently absorb
-        // a future marginfi `Bank` layout growth — any new trailing
-        // fields would shift our byte-offset readers (M-29).
         if data.len() != BANK_ACCOUNT_SIZE {
             return Err(MarginfiMocksError::AccountTooSmall);
         }
@@ -187,7 +184,6 @@ pub struct BankConfigView<'a> {
 
 impl<'a> BankConfigView<'a> {
     pub fn try_from_account_data(data: &'a [u8]) -> Result<Self, MarginfiMocksError> {
-        // M-31: exact size — see Bank::try_from_account_data above.
         if data.len() != BANK_ACCOUNT_SIZE {
             return Err(MarginfiMocksError::AccountTooSmall);
         }
