@@ -1,5 +1,3 @@
-//! Cancel a vault profile's resting market order.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -44,7 +42,6 @@ pub fn process_cancel_order_for_risk_profile(
     let vault_key = *vault.info.key;
     let market_key = *market.info.key;
 
-    // ─── Curator gate + locate the vault order ───
     let order_sequence: u64 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
@@ -84,7 +81,6 @@ pub fn process_cancel_order_for_risk_profile(
         order_node.get_value().order_sequence_in_market
     };
 
-    // ─── Read taker_seat_index from market-side ClaimedSeat ───
     let taker_seat_index: hypertree::DataIndex = {
         let market_data: &std::cell::Ref<&mut [u8]> = &market.info.try_borrow_data()?;
         let market_dyn_offset = std::mem::size_of::<MarketFixed>();
@@ -101,7 +97,6 @@ pub fn process_cancel_order_for_risk_profile(
         idx
     };
 
-    // ─── Cancel market-side RestingOrder ───
     {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let da = get_mut_dynamic_account::<MarketFixed>(market_data);
@@ -120,13 +115,12 @@ pub fn process_cancel_order_for_risk_profile(
         )?;
     }
 
-    // ─── Remove vault-side RiskProfileOrderRef ───
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
         let removed_idx =
-            remove_risk_profile_order_ref(header, dynamic, market_key, params.profile_id);
+            remove_risk_profile_order_ref(header, dynamic, market_key, params.profile_id)?;
         require!(
             removed_idx != NIL,
             YdeltaError::InvalidArgument,

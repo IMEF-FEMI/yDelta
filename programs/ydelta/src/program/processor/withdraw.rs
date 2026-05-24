@@ -21,11 +21,9 @@ use super::shared::get_mut_dynamic_account;
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct WithdrawParams {
-    /// Atoms to withdraw. Ignored entirely when `withdraw_all == true`.
     pub amount_atoms: u64,
     pub trader_index_hint: Option<DataIndex>,
-    /// When true, drain the seat's entire `*_withdrawable_shares` balance
-    /// for the side selected by the token mint; `amount_atoms` is ignored.
+
     pub withdraw_all: bool,
 }
 
@@ -35,10 +33,7 @@ pub fn process_withdraw(
     data: &[u8],
 ) -> ProgramResult {
     let params = WithdrawParams::try_from_slice(data)?;
-    // The `amount_atoms > 0` guard only applies to the explicit-amount
-    // path. For `withdraw_all` the amount is ignored; an empty seat
-    // (0 withdrawable shares) is handled below as a clean no-op-error
-    // via the `expected_shares == 0` check.
+
     if !params.withdraw_all {
         require!(
             params.amount_atoms > 0,
@@ -77,17 +72,6 @@ pub fn process_withdraw(
         market.get_fixed()?.collateral_mint
     };
 
-    // ── Determine the share quantity to burn ────────────────────────
-    //
-    // Two paths:
-    //   * explicit amount — convert `amount_atoms` → shares (floored
-    //     `amount_to_asset_shares`); the seat is debited exactly those
-    //     shares.
-    //   * `withdraw_all`  — read the seat's entire `*_withdrawable_shares`
-    //     for the side and burn exactly that, ignoring `amount_atoms`.
-    //
-    // The seat-share debit and the physical atom movement are reconciled
-    // below per the rounding policy.
     let expected_shares: u128 = if params.withdraw_all {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let da = get_mut_dynamic_account::<MarketFixed>(market_data);
@@ -102,25 +86,12 @@ pub fn process_withdraw(
         MarginfiV18Adapter.amount_to_asset_shares(&[bank.info.clone()], params.amount_atoms)?
     };
 
-    // An empty seat under `withdraw_all` is a clean error rather than a
-    // 0-atom CPI: consistent with the explicit path's `amount > 0` guard
-    // and the seat-side `InsufficientWithdrawableBalance` style.
     require!(
         expected_shares > 0,
         YdeltaError::InsufficientWithdrawableBalance,
         "nothing withdrawable on this side"
     )?;
 
-    // Rounding policy: the seat is debited `expected_shares`, so the
-    // user must never be paid more than those shares are *worth* at the
-    // current bank price. `shares_to_amount` floors, so `expected_atoms`
-    // is the protocol-favourable ceiling on the payout. The adapter may
-    // hand back `actual_atoms = expected_atoms ± 1` (marginfi's
-    // `assert_within_one_token` drift tolerance); paying the raw
-    // `actual_atoms` when it is `expected_atoms + 1` would slowly drain
-    // the shared marginfi balance funded by other holders. We pay
-    // `min(actual_atoms, expected_atoms)` so the share-ledger debit and
-    // the atoms paid always agree in the protocol's favour.
     let expected_atoms: u64 =
         MarginfiV18Adapter.shares_to_amount(&[bank.info.clone()], expected_shares)?;
 
@@ -133,18 +104,10 @@ pub fn process_withdraw(
             payer.info.key,
             params.trader_index_hint,
         )?;
-        // Burns exactly `expected_shares` — for `withdraw_all` this is the
-        // seat's full `*_withdrawable_shares`, leaving the side at 0.
+
         da.withdraw_from_seat(seat_index, expected_shares, is_debt)?;
     }
 
-    // Build the marginfi `remaining_accounts` list dynamically: one
-    // `(bank, …oracles)` tuple per active balance, in the order marginfi
-    // iterates active balances (slot order — i.e. the order they appear
-    // in `MarginfiAccount.balances`). The oracle slice is variadic per
-    // the bank's `OracleSetup` (1 entry for Pyth-push / Switchboard-pull,
-    // more for multi-oracle setups). For now we only know about the two
-    // banks the market wraps.
     let active_pairs = build_active_bank_oracle_pairs(
         marginfi_account.info,
         debt_bank.info,
@@ -153,11 +116,6 @@ pub fn process_withdraw(
         collateral_oracle_ais.as_slice(),
     )?;
 
-    // Withdraw atoms from the bank's liquidity
-    // vault into the market's staging vault, signed by `market_signer`.
-    // Destination is the staging `vault`, NOT `trader_token`, because
-    // marginfi's withdraw destination doesn't have to be owned by the
-    // authority but the subsequent SPL transfer (vault → user) does.
     let mut adapter_accounts: Vec<AccountInfo> = vec![
         marginfi_group.info.clone(),
         marginfi_account.info.clone(),
@@ -176,17 +134,11 @@ pub fn process_withdraw(
         market_key.as_ref(),
         &[market_signer_bump],
     ];
-    let actual_atoms: u64 =
+    let (actual_atoms, _actual_shares_burned) =
         MarginfiV18Adapter.withdraw(&adapter_accounts, expected_shares, &[market_signer_seeds])?;
 
-    // Pay at most what the debited shares are worth. The staging
-    // `vault` keeps any +1-atom drift (it stays inside the protocol and
-    // is reconciled into the next withdraw / accounting pass) rather than
-    // being handed to the user.
     let payout_atoms: u64 = actual_atoms.min(expected_atoms);
 
-    // Transfer the payout from the staging vault to the user's wallet,
-    // signed by `market_signer` (the vault's owner).
     transfer_vault_to_user(
         token_program.info,
         vault.info,
@@ -207,12 +159,10 @@ pub fn process_withdraw(
         amount_atoms: payout_atoms,
     })?;
 
-    // Sync the signer's MarketPosition mirror.
     super::shared::sync_signer_market_position(market.info, user_account_ai, payer.info.key)?;
     Ok(())
 }
 
-/// Signed SPL transfer: vault → user, signed by `market_signer`.
 #[allow(clippy::too_many_arguments)]
 fn transfer_vault_to_user<'info>(
     token_program: &AccountInfo<'info>,
@@ -273,12 +223,6 @@ fn transfer_vault_to_user<'info>(
     }
 }
 
-/// Walk the marginfi-account's balances in slot order and collect the
-/// `(bank, …oracles)` AccountInfo tuple for each currently-active balance.
-/// `bank_pk` matches against the two banks ydelta knows about (debt and
-/// collateral lending pools). The oracle slice per bank is variadic per
-/// the bank's `OracleSetup`. Returns an empty vec if no balances are
-/// active (the marginfi-account was just initialized).
 fn build_active_bank_oracle_pairs<'a, 'info>(
     marginfi_account_ai: &'a AccountInfo<'info>,
     debt_bank_ai: &'a AccountInfo<'info>,
@@ -307,10 +251,6 @@ fn build_active_bank_oracle_pairs<'a, 'info>(
                 pairs.push((*ai).clone());
             }
         } else {
-            // Active balance on a bank ydelta doesn't know about. The
-            // matching/borrow flow only introduces balances on the
-            // two banks ydelta already tracks; anything else is
-            // unexpected state. Surface as an error.
             return Err(YdeltaError::IncorrectAccount.into());
         }
     }

@@ -9,13 +9,6 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Build a vault-admin `RemoveRiskProfile` instruction.
-///
-/// Removes the `RiskProfile` keyed by `profile_id` from the vault. The
-/// processor rejects with `VaultProfileNotEmpty` unless every balance
-/// field on the profile is zero, so this is safe to invoke even when a
-/// profile id is in doubt — the on-chain gate prevents accidental
-/// teardown of a live profile.
 pub fn remove_risk_profile_instruction(
     mint: &Pubkey,
     payer: &Pubkey,

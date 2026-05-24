@@ -1,5 +1,3 @@
-//! Insert a new `RiskProfile` into a vault.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -19,10 +17,6 @@ use crate::state::vault::{
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, RISK_PROFILE_BLOCK_SIZE};
 use crate::validation::loaders::CreateRiskProfileContext;
 
-/// `CreateRiskProfile` parameters. `profile_id` is **assigned by the
-/// program** from `GlobalVaultFixed.next_profile_id` — callers cannot
-/// request a specific id. The auto-assigned id is reported back via
-/// `RiskProfileCreatedLog.profile_id`.
 #[derive(BorshDeserialize, BorshSerialize, Clone)]
 pub struct CreateRiskProfileParams {
     pub curator: Pubkey,
@@ -42,7 +36,6 @@ pub fn process_create_risk_profile(
         _system_program: _,
     } = CreateRiskProfileContext::load(accounts)?;
 
-    // ─── Param validation ───
     require!(
         params.max_ltv_bps > 0 && params.max_ltv_bps < 10_000,
         YdeltaError::VaultProfileLtvOutOfRange,
@@ -54,9 +47,7 @@ pub fn process_create_risk_profile(
         YdeltaError::VaultProfileTermInvalid,
         "max_term_seconds must be > 0"
     )?;
-    // Pubkey::default() is unsignable, so a profile stamped with that
-    // curator can't be operated on or transferred — it would be a
-    // permanent dead slot. Reject at create time.
+
     require!(
         params.curator != Pubkey::default(),
         YdeltaError::InvalidArgument,
@@ -66,8 +57,6 @@ pub fn process_create_risk_profile(
 
     let vault_key = *vault.info.key;
 
-    // Realloc the vault to fit one more profile block, then expand the
-    // free list. Caller (global_vault_admin) pays the rent diff.
     let needs_grow: bool = {
         let vault_data: &Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let header: &GlobalVaultFixed =
@@ -96,12 +85,6 @@ pub fn process_create_risk_profile(
         vault_expand_profile_block(header, dynamic)?;
     }
 
-    // ─── Insert the profile ───
-    //
-    // `profile_id` is the vault's monotonic `next_profile_id` counter —
-    // not a caller input. The counter is bumped with `checked_add` so
-    // the 257th create on any vault hard-fails rather than wrapping the
-    // u8 and aliasing an existing profile_id.
     let assigned_profile_id: u8;
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
@@ -109,15 +92,12 @@ pub fn process_create_risk_profile(
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
         assigned_profile_id = header.next_profile_id;
-        // Advance the counter BEFORE inserting so even an
-        // immediately-following remove can't re-issue this id (the
-        // counter is monotonic regardless of removal).
+
         header.next_profile_id = header
             .next_profile_id
             .checked_add(1)
             .ok_or(YdeltaError::VaultProfileIdExists)?;
 
-        // Pop a 512-byte block off the profile free list.
         let order_index = get_free_profile_address_on_vault_fixed(header, dynamic);
         require!(
             order_index != NIL,
@@ -137,12 +117,6 @@ pub fn process_create_risk_profile(
         header.risk_profiles_root_index = tree.get_root_index();
         drop(tree);
 
-        // `checked_add` (not `saturating_add`): the live-profile count
-        // is load-bearing for off-chain indexers and the in-program
-        // `is_empty()` removal flow. A saturating overflow at u8::MAX
-        // would silently desync from the actual tree size; hard-fail
-        // instead. In practice this is unreachable — the
-        // `next_profile_id` cap above is the binding constraint.
         header.risk_profile_count = header
             .risk_profile_count
             .checked_add(1)

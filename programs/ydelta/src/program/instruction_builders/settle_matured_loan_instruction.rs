@@ -11,7 +11,6 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
-/// Build a permissionless `SettleMaturedLoan` instruction.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_matured_loan_instruction(
     market: &Pubkey,
@@ -33,6 +32,10 @@ pub fn settle_matured_loan_instruction(
     marginfi_program: &Pubkey,
     repay_atoms_max: u64,
     cranker_refund: &Pubkey,
+    // REQUIRED for Fixed loans (full-settle close-out updates the lender
+    // vault's risk profile + bumps pending_claim). MUST be `None` for
+    // P2Pool settlements — the loader only consumes this slot for Fixed.
+    global_vault: Option<&Pubkey>,
 ) -> Instruction {
     let (loan, _) = loan_pda(market, sequence);
     let (market_debt_vault, _) = get_vault_address(market, debt_mint);
@@ -73,6 +76,9 @@ pub fn settle_matured_loan_instruction(
         AccountMeta::new_readonly(*marginfi_program, false),
         AccountMeta::new(*cranker_refund, false),
     ]);
+    if let Some(gv) = global_vault {
+        accounts.push(AccountMeta::new(*gv, false));
+    }
     Instruction {
         program_id: crate::id(),
         accounts,

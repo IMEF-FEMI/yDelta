@@ -1,10 +1,3 @@
-//! Place a vault profile's market-side resting order.
-//!
-//! The vault-owned market `ClaimedSeat` is auto-created on the first
-//! order in a market. The resting ask is unbounded ("quote all idle") —
-//! `rest_vault_ask` stamps a sentinel `principal_atoms = u64::MAX` and
-//! the matching engine caps each cross by the profile's live idle pool.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -56,10 +49,6 @@ pub fn process_place_order_for_risk_profile(
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    // ─── Curator gate + profile policy (read from vault) ───
-    // The matching engine reads `RiskProfile.max_ltv_bps` live at match
-    // time, so the vault seat carries no LTV cache and there is no seat
-    // re-sync to run here.
     {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
@@ -92,11 +81,6 @@ pub fn process_place_order_for_risk_profile(
         )?;
     }
 
-    // ─── Resolve the vault-owned market ClaimedSeat (get-or-create) ───
-    //
-    // The seat is auto-created on the profile's first order in a market.
-    // Reserve free blocks for BOTH the new seat (when one is created)
-    // and the new RestingOrder.
     let seat_exists: bool = {
         let market_data: &std::cell::Ref<&mut [u8]> = &market.info.try_borrow_data()?;
         let market_dyn_offset = std::mem::size_of::<MarketFixed>();
@@ -106,18 +90,14 @@ pub fn process_place_order_for_risk_profile(
         let tree = ClaimedSeatTreeReadOnly::new(dynamic, header.claimed_seats_root_index, NIL);
         tree.lookup_index(&probe) != NIL
     };
-    // One block for the RestingOrder, plus one for the seat if absent.
+
     let blocks_needed = if seat_exists { 1 } else { 2 };
     expand_market_to_free_blocks(fee_payer.info, &market, blocks_needed)?;
 
-    // ─── Insert the market-side ClaimedSeat (if absent) + RestingOrder ───
     let order_sequence: u64 = {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let da = get_mut_dynamic_account::<MarketFixed>(market_data);
 
-        // Auto-create the vault-owned seat on first use. The seat
-        // carries no LTV cache — the matching engine reads
-        // `RiskProfile.max_ltv_bps` live at match time.
         let taker_seat_index = if seat_exists {
             let tree =
                 ClaimedSeatTreeReadOnly::new(da.dynamic, da.fixed.claimed_seats_root_index, NIL);
@@ -154,12 +134,6 @@ pub fn process_place_order_for_risk_profile(
             seat_idx
         };
 
-        // Vault asks are PostOnly makers by design — they never take.
-        // `rest_vault_ask` is a pure insert: it skips the per-seat
-        // encumber (the vault `ClaimedSeat` has no per-seat shares —
-        // the profile's idle pool backs the order, gated and encumbered
-        // inline by the matching engine at match time), runs no matching
-        // pass, and stamps the unbounded-ask sentinel principal.
         rest_vault_ask(
             da.fixed,
             da.dynamic,
@@ -174,8 +148,6 @@ pub fn process_place_order_for_risk_profile(
         )?
     };
 
-    // ─── Insert the vault-side RiskProfileOrderRef ───
-    // Make sure there's a free node block.
     let need_expand: bool = {
         let vault_data = vault.info.try_borrow_data()?;
         let header: &GlobalVaultFixed =
@@ -211,7 +183,7 @@ pub fn process_place_order_for_risk_profile(
             dynamic,
             market_key,
             params.profile_id,
-            /*side=*/ Side::Ask as u8,
+            Side::Ask as u8,
             params.rate_bps,
             params.term_seconds,
             order_sequence,

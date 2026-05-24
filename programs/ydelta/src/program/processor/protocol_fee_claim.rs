@@ -1,5 +1,3 @@
-//! Claim accumulated market protocol fees.
-
 use std::cell::RefMut;
 
 use solana_program::{
@@ -38,8 +36,6 @@ pub fn process_protocol_fee_claim(
 
     let market_key = *market.info.key;
 
-    // Snapshot + zero the accumulator under the same borrow so a
-    // mid-flight CPI revert can't leave us double-claimable.
     let fee_shares: u128 = {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let da = get_mut_dynamic_account::<MarketFixed>(market_data);
@@ -53,7 +49,6 @@ pub fn process_protocol_fee_claim(
     }
     let fee_atoms = MarginfiV18Adapter.shares_to_amount(&[debt_bank.info.clone()], fee_shares)?;
 
-    // ─── marginfi.withdraw lender_marginfi → market_debt_vault ───
     let market_signer_seeds: &[&[u8]] = &[
         MARKET_SIGNER_SEED,
         market_key.as_ref(),
@@ -69,22 +64,17 @@ pub fn process_protocol_fee_claim(
         debt_liquidity_vault.info.clone(),
         token_program.info.clone(),
         marginfi_program.info.clone(),
-        // Active-balance health check tuple `(debt_bank, …debt_oracles)`.
         debt_bank.info.clone(),
     ];
     for oracle_ai in &debt_oracle_ais.ais {
         withdraw_accounts.push((*oracle_ai).clone());
     }
-    let actual_atoms =
+    let (actual_atoms, _actual_shares_burned) =
         MarginfiV18Adapter.withdraw(&withdraw_accounts, fee_shares, &[market_signer_seeds])?;
 
-    // Never pay the admin more than the claimed fee shares were worth.
-    // If marginfi returns one atom above book value inside its drift
-    // gate, that surplus belongs to the lender-side pool, not the admin.
     let payout_atoms: u64 = actual_atoms.min(fee_atoms);
     let surplus_atoms: u64 = actual_atoms.saturating_sub(payout_atoms);
 
-    // ─── SPL transfer market_debt_vault → admin_debt_token ───
     if token_program.info.key == &spl_token_2022::id() {
         let ix = spl_token_2022::instruction::transfer_checked(
             token_program.info.key,

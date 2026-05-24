@@ -10,7 +10,6 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Build a vault-admin `UpdateRiskProfile` instruction.
 pub fn update_risk_profile_instruction(
     mint: &Pubkey,
     payer: &Pubkey,

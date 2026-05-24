@@ -187,7 +187,7 @@ pub fn process_instruction(
         }
         HarnessInstruction::Withdraw => {
             let params = WithdrawParams::try_from_slice(data)?;
-            let atoms = adapter.withdraw(accounts, params.shares, &[])?;
+            let (atoms, _shares_burned) = adapter.withdraw(accounts, params.shares, &[])?;
             emit_result(4, atoms as u128);
         }
         HarnessInstruction::Borrow => {

@@ -10,14 +10,6 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Build an `UpdateOrderForRiskProfile` ix. Curator-gated cancel-and-replace
-/// — sequence number is renewed (back of price-time priority).
-///
-/// Split-payer layout: `fee_payer` covers tx fee + any rent for
-/// vault/market dynamic-region expansion (rare on update — the
-/// in-flight cancel returns the old block to the free list, which the
-/// re-place reuses, so steady-state cost is just the tx fee).
-/// `curator` only signs.
 #[allow(clippy::too_many_arguments)]
 pub fn update_order_for_risk_profile_instruction(
     mint: &Pubkey,

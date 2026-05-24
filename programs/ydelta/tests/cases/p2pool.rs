@@ -356,7 +356,7 @@ async fn p2pool_liability_shares(fixture: &MarketFixture) -> u128 {
         .await;
     let mfi = MarginfiAccount::try_from_account_data(&data).unwrap();
     mfi.find_balance(&mainnet::usdc_bank())
-        .map(|b| wrapped_i80f48_to_u128(b.liability_shares))
+        .map(|b| wrapped_i80f48_to_u128(b.liability_shares).unwrap())
         .unwrap_or(0)
 }
 
@@ -700,6 +700,234 @@ async fn p2pool_full_liquidation_zeroes_liability_and_closes_pda() {
 
     assert_eq!(p2pool_liability_shares(&fixture).await, 0);
     assert!(loan_account_is_closed(&fixture, 0).await);
+}
+
+/// C-2 regression: sibling P2Pool loans share a single per-market borrower
+/// marginfi account, so their USDC liabilities commingle on-chain. Per-loan
+/// LTV (used by `liquidate_loan`) must score each loan against ITS OWN
+/// slice of the shared liability — `loan.borrower_marginfi_borrow_shares
+/// .min(account_total)` — never the account-level aggregate. Without that
+/// attribution, a small/over-collateralized loan would be wrongly liquidated
+/// the moment a sibling's debt grew, because its "outstanding" would read
+/// as the whole shared total.
+///
+/// Setup (one borrower, two P2Pool loans on the same market):
+///   * Loan A: 100 atoms USDC debt against 200_000 atoms wSOL collateral
+///     (~2_000 : 1 atom ratio — very safe).
+///   * Loan B: 1_000 atoms USDC debt against 60_000 atoms wSOL collateral
+///     (~60 : 1 ratio — solvent at the mainnet wSOL price, but borderline).
+///
+/// Crash wSOL to ~$10 (fp18 = 1e19). Under the C-2 fix:
+///   * `liquidate_loan(A)` must return `LoanStillSolvent`: A's slice (100
+///     atoms) against A's 200_000 wSOL collateral is well above maint.
+///   * `liquidate_loan(B)` must succeed: B's slice (1_000 atoms) against
+///     60_000 wSOL collateral is past the cliff at $10/SOL.
+///
+/// Pre-fix (account-aggregated outstanding), both loans would compute
+/// outstanding ≈ 1_100 atoms — so A's tiny collateral footprint relative
+/// to that inflated debt would falsely trip the liquidation gate, even
+/// though A on its own is dramatically over-collateralized.
+#[cfg(feature = "test-sbf")]
+#[tokio::test]
+async fn sibling_p2pool_loan_decay_does_not_liquidate_safe_loan() {
+    let fixture = MarketFixture::new().await;
+
+    // One borrower, one seat. Deposit enough wSOL collateral up front to
+    // cover both loans (260_000 atoms total). Wallet sized generously to
+    // avoid the mainnet liquidity-vault overflow seen in p2pool.rs.
+    let bob = fixture.create_trader().await;
+    fixture.claim_seat(&bob).await;
+    let bob_wsol = Pubkey::new_unique();
+    fixture.put_wsol_token_account(bob_wsol, bob.pubkey(), 2_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&bob, bob_wsol, /*is_debt=*/ false, 260_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // --- Loan A (safe): tiny debt, huge collateral.
+    let a_principal: u64 = 100;
+    let a_collateral: u64 = 200_000;
+    fixture
+        .place_order_with_flags(
+            &bob,
+            Side::Bid,
+            OrderType::Limit,
+            800,
+            30 * 86_400,
+            a_principal,
+            a_collateral,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture.crank_matched_loan(0).await.unwrap();
+    fixture.refresh_blockhash().await;
+
+    // --- Loan B (borderline): bigger debt, modest collateral.
+    let b_principal: u64 = 1_000;
+    let b_collateral: u64 = 60_000;
+    fixture
+        .place_order_with_flags(
+            &bob,
+            Side::Bid,
+            OrderType::Limit,
+            800,
+            30 * 86_400,
+            b_principal,
+            b_collateral,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture.crank_matched_loan(1).await.unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Sanity: both loans Active, shared marginfi account holds the sum.
+    let loan_a_pre = fixture.read_loan(0).await;
+    let loan_b_pre = fixture.read_loan(1).await;
+    assert_eq!(loan_a_pre.state, LoanState::Active as u8);
+    assert_eq!(loan_a_pre.loan_type, LoanType::P2Pool as u8);
+    assert_eq!(loan_a_pre.principal_debt_atoms, a_principal);
+    assert_eq!(loan_a_pre.collateral_atoms, a_collateral);
+    assert_eq!(loan_b_pre.state, LoanState::Active as u8);
+    assert_eq!(loan_b_pre.loan_type, LoanType::P2Pool as u8);
+    assert_eq!(loan_b_pre.principal_debt_atoms, b_principal);
+    assert_eq!(loan_b_pre.collateral_atoms, b_collateral);
+    // Each loan's recorded slice is non-zero, and their sum equals the
+    // shared account-level liability (within rounding) — proving the
+    // attribution is meaningful, not a copy of the aggregate.
+    assert!(loan_a_pre.borrower_marginfi_borrow_shares > 0);
+    assert!(loan_b_pre.borrower_marginfi_borrow_shares > 0);
+    let account_total_pre = p2pool_liability_shares(&fixture).await;
+    let slice_sum_pre =
+        loan_a_pre.borrower_marginfi_borrow_shares + loan_b_pre.borrower_marginfi_borrow_shares;
+    // Marginfi share-mint rounding lets the sum trail the account total
+    // by at most ~1 unit per borrow; assert near-equality.
+    assert!(
+        slice_sum_pre <= account_total_pre && account_total_pre - slice_sum_pre <= 2,
+        "per-loan slices must sum to the shared account total \
+         (loans={} + {} = {}, account_total={})",
+        loan_a_pre.borrower_marginfi_borrow_shares,
+        loan_b_pre.borrower_marginfi_borrow_shares,
+        slice_sum_pre,
+        account_total_pre,
+    );
+
+    // Fund a keeper to call liquidate_loan on each loan separately.
+    let keeper = fixture.create_trader().await;
+    let keeper_usdc = Pubkey::new_unique();
+    fixture.put_token_account(
+        keeper_usdc,
+        mainnet::usdc_mint(),
+        keeper.pubkey(),
+        100_000_000,
+    );
+    let keeper_wsol = Pubkey::new_unique();
+    fixture.put_wsol_token_account(keeper_wsol, keeper.pubkey(), 0);
+    fixture.refresh_blockhash().await;
+
+    // Crash wSOL to $10 (fp18 = 1e19). At that price:
+    //   * A: 200_000 wSOL × $10 / 1e9 = $0.002 USD collateral backing
+    //     100 USDC atoms = $0.0001 USD debt → ~5% LTV → comfortably safe
+    //     even with marginfi's maint asset weight applied.
+    //   * B: 60_000 wSOL × $10 / 1e9 = $0.0006 USD collateral backing
+    //     1_000 USDC atoms = $0.001 USD debt → ~167% LTV → underwater.
+    fixture
+        .set_swb_oracle_price_atoms(mainnet::sol_oracle(), 10_000_000_000_000_000_000_i128)
+        .await;
+    {
+        let cur = fixture
+            .context
+            .borrow()
+            .banks_client
+            .get_root_slot()
+            .await
+            .unwrap();
+        fixture.context.borrow_mut().warp_to_slot(cur + 1).unwrap();
+    }
+    fixture.refresh_blockhash().await;
+    fixture.refresh_oracle_freshness().await;
+
+    // (1) Liquidate A first — under the C-2 fix it must reject with
+    // `LoanStillSolvent` (Custom 40) because A's *own* slice is tiny
+    // relative to A's huge collateral. Pre-fix this would have succeeded
+    // because A would have scored against the full shared aggregate.
+    let a_result = fixture
+        .liquidate_loan(&keeper, 0, keeper_usdc, keeper_wsol, /*repay_max=*/ 0)
+        .await;
+    crate::assert_custom_error!(
+        a_result,
+        ydelta::program::YdeltaError::LoanStillSolvent
+    );
+
+    // A's state must be byte-identical: no debt retired, no collateral
+    // seized, no state transition.
+    let loan_a_after_failed_liq = fixture.read_loan(0).await;
+    assert_eq!(loan_a_after_failed_liq.state, LoanState::Active as u8);
+    assert_eq!(
+        loan_a_after_failed_liq.outstanding_debt_atoms,
+        loan_a_pre.outstanding_debt_atoms,
+    );
+    assert_eq!(
+        loan_a_after_failed_liq.collateral_atoms,
+        loan_a_pre.collateral_atoms,
+    );
+    assert_eq!(
+        loan_a_after_failed_liq.borrower_marginfi_borrow_shares,
+        loan_a_pre.borrower_marginfi_borrow_shares,
+    );
+
+    // (2) Liquidate B — its own slice IS underwater at $10/SOL, so this
+    // must succeed and fully retire the P2Pool liability, which closes
+    // and refunds the loan PDA (no lender-claim step exists for P2Pool).
+    fixture.refresh_blockhash().await;
+    fixture
+        .liquidate_loan(&keeper, 1, keeper_usdc, keeper_wsol, /*repay_max=*/ 0)
+        .await
+        .expect("liquidate_loan(B) must succeed — B's slice is past maint LTV");
+    assert!(
+        loan_account_is_closed(&fixture, 1).await,
+        "full P2Pool liquidation must close loan B's PDA"
+    );
+
+    // (3) Crucial: after B liquidates, A must still exist, be untouched,
+    // AND continue to refuse liquidation. A's PDA, slice, and collateral
+    // must be byte-identical to pre-B-liquidation.
+    assert!(
+        !loan_account_is_closed(&fixture, 0).await,
+        "B's liquidation must NOT touch loan A's PDA"
+    );
+    let loan_a_post = fixture.read_loan(0).await;
+    assert_eq!(loan_a_post.state, LoanState::Active as u8);
+    assert_eq!(
+        loan_a_post.outstanding_debt_atoms,
+        loan_a_pre.outstanding_debt_atoms,
+        "A's outstanding must not be touched by B's liquidation"
+    );
+    assert_eq!(
+        loan_a_post.collateral_atoms,
+        loan_a_pre.collateral_atoms,
+        "A's collateral must not be touched by B's liquidation"
+    );
+    assert_eq!(
+        loan_a_post.borrower_marginfi_borrow_shares,
+        loan_a_pre.borrower_marginfi_borrow_shares,
+        "A's recorded slice must not be touched by B's liquidation"
+    );
+
+    // And one more pass at A confirms the steady state — still solvent.
+    fixture.refresh_blockhash().await;
+    let a_result_after_b = fixture
+        .liquidate_loan(&keeper, 0, keeper_usdc, keeper_wsol, /*repay_max=*/ 0)
+        .await;
+    crate::assert_custom_error!(
+        a_result_after_b,
+        ydelta::program::YdeltaError::LoanStillSolvent
+    );
 }
 
 /// CONFIRMS the collateral-commitment bug: a P2Pool borrow must keep the

@@ -9,7 +9,6 @@ use crate::validation::{
     get_lender_integration_account_address, get_market_signer_address, get_vault_address,
 };
 
-/// Build an admin `ProtocolFeeClaim` instruction.
 #[allow(clippy::too_many_arguments)]
 pub fn protocol_fee_claim_instruction(
     market: &Pubkey,

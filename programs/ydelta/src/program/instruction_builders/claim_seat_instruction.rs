@@ -17,8 +17,6 @@ pub fn claim_seat_instruction(market: &Pubkey, payer: &Pubkey) -> Instruction {
             AccountMeta::new_readonly(global_config_pda().0, false),
             AccountMeta::new(*market, false),
             AccountMeta::new_readonly(system_program::id(), false),
-            // Signer's UserAccount PDA. Auto-created on first claim
-            // (signer pays rent).
             AccountMeta::new(user_account, false),
         ],
         data: YdeltaInstruction::ClaimSeat.to_vec(),

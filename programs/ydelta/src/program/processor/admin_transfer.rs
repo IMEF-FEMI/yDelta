@@ -1,16 +1,3 @@
-//! Two-step admin transfers for the three admin slots:
-//! `MarketFixed.admin`, `GlobalVaultFixed.global_vault_admin`, and per-profile
-//! `RiskProfile.curator`.
-//!
-//! Pattern: `transfer_*` (signer = current admin) sets `pending_*`;
-//! `accept_*` (signer = pending_*) promotes pending into the live slot
-//! and zeroes pending. Two steps prevent accidental transfer to a
-//! non-controlled key (whoever sets pending could fat-finger; the
-//! intended new admin must actively accept).
-//!
-//! All six ixs are admin-gated and pure header mutations — no CPIs, no
-//! atom flow.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};

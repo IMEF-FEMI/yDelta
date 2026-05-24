@@ -14,7 +14,6 @@ use crate::state::vault::{
     global_vault_staging_pda,
 };
 
-/// Build a `GlobalVaultDeposit` instruction.
 #[allow(clippy::too_many_arguments)]
 pub fn global_vault_deposit_instruction(
     mint: &Pubkey,

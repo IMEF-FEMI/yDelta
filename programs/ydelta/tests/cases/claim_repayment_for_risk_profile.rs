@@ -21,7 +21,6 @@ use solana_sdk::signer::Signer;
 
 use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
 use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
-use ydelta::state::loan::loan_pda;
 use ydelta::state::Side;
 
 use crate::test_utils::{mainnet, MarketFixture};
@@ -133,65 +132,30 @@ async fn setup_through_promote(
     (admin, depositor, curator, borrower, borrower_usdc)
 }
 
+/// Per the repay/claim split: full repay closes the loan PDA in-place
+/// and applies all risk-profile decrements + rent refund to the original
+/// cranker. The curator's `claim_repayment_for_risk_profile` is now a
+/// stateless seat→vault sweeper that runs separately to move atoms from
+/// the per-market `lender_marginfi_account` into the vault's integration
+/// account. No time gate; no loan PDA access.
 #[tokio::test]
 async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
     let fixture = MarketFixture::new().await;
     let (_admin, _depositor, _curator, borrower, borrower_usdc) =
         setup_through_promote(&fixture).await;
 
-    let cranker = fixture.payer.pubkey();
-
-    // Walk the test clock to maturity BEFORE repay so accrue_loan
-    // credits a full term's worth of lender interest. Otherwise
-    // marginfi share-rounding (±1 atom) can drag realised atoms below
-    // gross principal and fall into the bad-debt branch.
+    // Walk to maturity BEFORE repay so accrue_loan credits the full
+    // term's worth of lender interest. Snapshot matures_at now since
+    // the loan PDA closes during the repay below.
     let loan_post_promote = fixture.read_loan(0).await;
-    fixture
-        .set_clock_unix_timestamp(loan_post_promote.matures_at_unix)
-        .await;
+    let matures_at_unix = loan_post_promote.matures_at_unix;
+    fixture.set_clock_unix_timestamp(matures_at_unix).await;
     fixture.refresh_blockhash().await;
 
-    // Borrower fully repays.
-    fixture
-        .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-    // Conservation must hold across the full repay.
-    fixture.assert_loan_conservation_holds(0).await;
-    // Repaid loan: outstanding == 0; principal_retired_atoms tracks
-    // the cumulative atoms retired (principal + accrued interest),
-    // so it must be >= principal_debt_atoms (full retirement).
-    let loan_post_repay = fixture.read_loan(0).await;
-    assert_eq!(loan_post_repay.outstanding_debt_atoms, 0);
-    assert!(
-        loan_post_repay.principal_retired_atoms >= loan_post_repay.principal_debt_atoms,
-        "full repay must retire >= the gross principal (got retired={}, principal={})",
-        loan_post_repay.principal_retired_atoms,
-        loan_post_repay.principal_debt_atoms,
-    );
-
-    // Pre-claim: profile state holds the active loan; deployed != 0.
-    let profile_pre_claim = fixture.read_risk_profile(PROFILE_ID).await;
-    assert_eq!(
-        profile_pre_claim.deployed_principal_atoms, PRINCIPAL_ATOMS,
-        "deployed_principal_atoms should still hold the (now-repaid) loan's gross principal until claim",
-    );
-
-    // Lock-up: claim must run at now >= matures_at_unix. We're
-    // already at matures_at_unix from the pre-repay set_clock; nudge
-    // forward by 1 to satisfy the strict-≥ comparison consistently.
-    fixture
-        .set_clock_unix_timestamp(loan_post_promote.matures_at_unix + 1)
-        .await;
-    fixture.refresh_blockhash().await;
-
-    // Anyone can crank — use a fresh keypair (not curator/borrower/admin).
-    // Capture the rent-refund target's balance AFTER fund-airdrop side
-    // effects (create_trader airdrops lamports from fixture.payer) so
-    // the delta isolates the claim tx's effects.
-    let stranger = fixture.create_trader().await;
-    fixture.refresh_blockhash().await;
+    // Cranker (who paid for the LoanFixed rent at promotion-time) is
+    // `loan.created_by` — the test fixture's payer. Snapshot the balance
+    // BEFORE the repay tx that closes the PDA + refunds.
+    let cranker = fixture.payer.pubkey();
     let cranker_balance_pre = {
         let ctx = fixture.context.borrow_mut();
         ctx.banks_client
@@ -201,43 +165,23 @@ async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
             .map(|a| a.lamports)
             .unwrap_or(0)
     };
+
+    // Borrower fully repays. This is now the close event — loan PDA gone,
+    // risk-profile decrements applied, rent refunded to cranker.
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(cranker))
+        .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
-
-    // Profile aggregates settled.
-    let profile_post = fixture.read_risk_profile(PROFILE_ID).await;
-    assert_eq!(
-        profile_post.deployed_principal_atoms, 0,
-        "deployed_principal_atoms must zero out at claim",
-    );
-    assert_eq!(
-        profile_post.total_weighted_rate_bps, 0,
-        "total_weighted_rate_bps must zero out at claim (no active loans)",
-    );
+    fixture.refresh_blockhash().await;
     assert!(
-        profile_post.total_principal_atoms >= VAULT_DEPOSIT_ATOMS,
-        "total_principal_atoms must include realised interest (got {}, started at {})",
-        profile_post.total_principal_atoms,
-        VAULT_DEPOSIT_ATOMS,
+        fixture.loan_account_is_closed(0).await,
+        "full repay must close the loan PDA in-place",
     );
-    // Vault-idle invariant post-claim.
-    fixture.assert_vault_idle_invariant(PROFILE_ID).await;
-
-    // Loan PDA closed.
-    let (loan_addr, _) = loan_pda(&fixture.market.pubkey(), 0);
-    let post_account = {
-        let ctx = fixture.context.borrow_mut();
-        ctx.banks_client.get_account(loan_addr).await.unwrap()
-    };
-    assert!(
-        post_account.is_none(),
-        "loan PDA should be collected after closing claim with refund",
-    );
-
-    // Cranker rent refunded — net loss bounded by tx fees only.
-    let cranker_balance_post = {
+    // Cranker rent refunded by the repay tx (the close-and-refund
+    // happens in repay now, not claim). Note: borrower paid the tx fee
+    // for repay, not the cranker — so the cranker's balance should
+    // strictly grow by the rent without offsetting fees.
+    let cranker_balance_post_repay = {
         let ctx = fixture.context.borrow_mut();
         ctx.banks_client
             .get_account(cranker)
@@ -246,21 +190,57 @@ async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
             .map(|a| a.lamports)
             .unwrap_or(0)
     };
-    // Refund hit the target: cranker should be NET POSITIVE on this
-    // single tx — gained ~1.7M lamports of LoanFixed rent, minus the
-    // ~5k tx fee for the claim ix.
-    assert!(
-        cranker_balance_post > cranker_balance_pre,
-        "cranker_refund did not credit rent on loan PDA close (pre={}, post={})",
-        cranker_balance_pre,
-        cranker_balance_post,
-    );
-    let gained = cranker_balance_post - cranker_balance_pre;
+    let gained = cranker_balance_post_repay - cranker_balance_pre;
     assert!(
         gained > 1_000_000,
-        "cranker rent refund too small — got {}, expected > 1M lamports for a 256-byte LoanFixed",
+        "cranker rent refund too small after repay close — got {}, expected > 1M lamports for a LoanFixed PDA",
         gained,
     );
+
+    // Profile decrements applied at repay-close: deployed_principal == 0,
+    // total_weighted_rate_bps == 0, total_principal grew by realised interest.
+    let profile_post_repay = fixture.read_risk_profile(PROFILE_ID).await;
+    assert_eq!(
+        profile_post_repay.deployed_principal_atoms, 0,
+        "deployed_principal_atoms must zero out at repay-close (no longer waits for claim)",
+    );
+    assert_eq!(
+        profile_post_repay.total_weighted_rate_bps, 0,
+        "total_weighted_rate_bps must zero out at repay-close (no active loans)",
+    );
+    assert!(
+        profile_post_repay.total_principal_atoms >= VAULT_DEPOSIT_ATOMS,
+        "total_principal_atoms must include realised interest (got {}, started at {})",
+        profile_post_repay.total_principal_atoms,
+        VAULT_DEPOSIT_ATOMS,
+    );
+    // pending_claim_atoms holds the atoms in-transit (lender_marginfi →
+    // pending sweep by curator).
+    assert!(
+        profile_post_repay.pending_claim_atoms > 0,
+        "repay-close must mark atoms as pending sweep — got {}",
+        profile_post_repay.pending_claim_atoms,
+    );
+
+    // Now the curator's claim — pure seat sweeper. Anyone can call.
+    let stranger = fixture.create_trader().await;
+    fixture.refresh_blockhash().await;
+    fixture
+        .claim_repayment_for_risk_profile(&stranger, PROFILE_ID)
+        .await
+        .unwrap();
+
+    // Claim moved atoms from lender_marginfi_account to the vault's
+    // integration account; pending_claim_atoms decremented.
+    let profile_post_claim = fixture.read_risk_profile(PROFILE_ID).await;
+    assert!(
+        profile_post_claim.pending_claim_atoms < profile_post_repay.pending_claim_atoms,
+        "claim must shrink pending_claim_atoms (pre={}, post={})",
+        profile_post_repay.pending_claim_atoms,
+        profile_post_claim.pending_claim_atoms,
+    );
+    // Vault-idle invariant must still hold.
+    fixture.assert_vault_idle_invariant(PROFILE_ID).await;
 }
 
 /// Burning the LAST vault share while a loan is still
@@ -329,80 +309,87 @@ async fn last_share_burn_rejected_while_loan_deployed() {
     );
 }
 
-/// Early borrower repay unlocks the lender's claim BEFORE maturity.
-/// Once the borrower has fully repaid (`outstanding == 0`, state
-/// `Repaid`, funds already in the lender integration account) the
-/// lender's capital is no longer term-locked, so
-/// `claim_repayment_for_risk_profile` succeeds pre-maturity and closes
-/// the loan PDA.
+/// Under the repay/claim split there is NO maturity time gate on claim
+/// (it's a stateless seat sweeper). This test pins that the close happens
+/// at repay time regardless of where we are in the loan's term — early
+/// repay closes the PDA immediately, and a subsequent claim sweeps the
+/// seat shares to the vault.
 #[tokio::test]
 async fn claim_allowed_pre_maturity_after_early_repay() {
     let fixture = MarketFixture::new().await;
     let (_admin, _depositor, _curator, borrower, borrower_usdc) =
         setup_through_promote(&fixture).await;
 
-    // Repay in full WITHOUT advancing to maturity — the loan is now
-    // Repaid but still well inside its term.
+    // Snapshot matures_at BEFORE repay — under the repay/claim split,
+    // full repay closes the PDA.
+    let matures_at = fixture.read_loan(0).await.matures_at_unix;
+
+    // Repay in full WITHOUT advancing to maturity. The repay tx is the
+    // close event now; loan PDA is gone immediately, well inside the term.
     fixture
         .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
+    assert!(
+        fixture.loan_account_is_closed(0).await,
+        "early full repay must close the loan PDA immediately, regardless of term position",
+    );
 
-    // Pin the clock to a definite PRE-maturity instant so the test
-    // genuinely exercises the early-claim path (not an at/after-maturity
-    // fluke). matures_at − 100s is still inside the term post-repay.
-    let loan = fixture.read_loan(0).await;
-    fixture
-        .set_clock_unix_timestamp(loan.matures_at_unix - 100)
-        .await;
+    // Pin the clock PRE-maturity to prove there is no time gate on claim.
+    fixture.set_clock_unix_timestamp(matures_at - 100).await;
     fixture.refresh_blockhash().await;
 
-    // Claim must SUCCEED pre-maturity for a repaid loan, and close the
-    // PDA (rent refunded to the passed cranker_refund target).
+    // Claim sweeps the seat shares to the vault. Permissionless caller.
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, PROFILE_ID)
         .await
         .unwrap();
-
-    let (loan_addr, _) = loan_pda(&fixture.market.pubkey(), 0);
-    let post_account = {
-        let ctx = fixture.context.borrow_mut();
-        ctx.banks_client.get_account(loan_addr).await.unwrap()
-    };
-    assert!(
-        post_account.is_none(),
-        "early-repaid loan PDA must close on a pre-maturity claim",
-    );
 }
 
+/// Under the repay/claim split, claim is a stateless seat sweeper. It
+/// no longer reads any loan PDA, has no outstanding-balance gate, and
+/// has no time gate. Calling it when no atoms have accumulated on the
+/// seat must be a NO-OP (returns Ok, no state change) — this lets keeper
+/// bots poll the ix without worrying about specific timing.
+///
+/// Pre-fix-equivalent: the old ix rejected with InvalidArgument when
+/// outstanding > 0. That gate is now meaningless (the loan PDA isn't
+/// even passed in).
 #[tokio::test]
-async fn claim_rejected_when_outstanding_nonzero() {
+async fn claim_with_empty_seat_is_noop() {
     let fixture = MarketFixture::new().await;
     let (_admin, _depositor, _curator, _borrower, _borrower_usdc) =
         setup_through_promote(&fixture).await;
 
-    // Skip repay — outstanding > 0. Time-warp past maturity to
-    // isolate the "outstanding > 0" rejection from the lock-up gate.
-    let loan = fixture.read_loan(0).await;
-    fixture
-        .set_clock_unix_timestamp(loan.matures_at_unix + 1)
-        .await;
-    fixture.refresh_blockhash().await;
+    // No repay — borrower hasn't paid back, so no shares accumulated on
+    // the lender seat. Profile state pre-claim:
+    let profile_pre = fixture.read_risk_profile(PROFILE_ID).await;
 
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
-    // Pass a valid cranker_refund so the loader gate is satisfied
-    // and we exercise the outstanding-balance gate genuinely (not a
-    // missing-accounts failure that masks the real reject path).
-    let result = fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
-        .await;
-    // outstanding>0 rejection must surface InvalidArgument exactly
-    // (the explicit gate at the head of claim_repayment_for_risk_profile).
-    crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
+    // Must succeed (no-op), not error.
+    fixture
+        .claim_repayment_for_risk_profile(&stranger, PROFILE_ID)
+        .await
+        .expect("claim with empty seat must be a no-op, not error");
+
+    // Profile state untouched.
+    let profile_post = fixture.read_risk_profile(PROFILE_ID).await;
+    assert_eq!(
+        profile_post.deployed_principal_atoms, profile_pre.deployed_principal_atoms,
+        "no-op claim must not change deployed_principal_atoms",
+    );
+    assert_eq!(
+        profile_post.pending_claim_atoms, profile_pre.pending_claim_atoms,
+        "no-op claim must not change pending_claim_atoms",
+    );
+    assert_eq!(
+        profile_post.total_principal_atoms, profile_pre.total_principal_atoms,
+        "no-op claim must not change total_principal_atoms",
+    );
 }
 
 /// Vault yield realization for a depositor: deposit X atoms, run a loan
@@ -431,29 +418,27 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     // a full term's `accrue_loan` — otherwise the share-price gain is
     // sub-atom and the round-trip can return slightly less than the
     // deposit due to marginfi share-floor rounding.
-    let loan_post_promote = fixture.read_loan(0).await;
-    fixture
-        .set_clock_unix_timestamp(loan_post_promote.matures_at_unix)
-        .await;
+    // Snapshot matures_at BEFORE repay (PDA closes during repay under
+    // the repay/claim split).
+    let matures_at = fixture.read_loan(0).await.matures_at_unix;
+    fixture.set_clock_unix_timestamp(matures_at).await;
     fixture.refresh_blockhash().await;
 
-    // Borrower repays full → outstanding=0, lender_claimable holds
-    // principal + accrued lender interest.
+    // Borrower repays full → closes loan PDA, applies risk-profile
+    // decrements + total_principal/total_assets reconciliation.
     fixture
         .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Claim past maturity. Stranger cranks (permissionless).
-    fixture
-        .set_clock_unix_timestamp(loan_post_promote.matures_at_unix + 1)
-        .await;
-    fixture.refresh_blockhash().await;
+    // Claim is now a stateless seat sweep (no time gate). Stranger
+    // cranks. This moves the atoms from lender_marginfi_account to the
+    // vault's integration_account so depositors can withdraw them.
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, PROFILE_ID)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -573,7 +558,7 @@ async fn claim_reconciles_total_assets_to_realized_interest() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, 0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -704,24 +689,19 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
         .await;
     fixture.refresh_blockhash().await;
 
-    // Borrower repays — accrue_loan runs at the maturity timestamp.
+    // Borrower repays — accrue_loan runs at the maturity timestamp and
+    // closes the loan PDA, applying the per-loan curator fee
+    // accumulator directly to the profile (per repay/claim split).
     fixture
         .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // (2) Loan body now holds the per-loan curator slice.
-    let loan_post_repay = fixture.read_loan(0).await;
-    assert!(
-        loan_post_repay.accumulated_curator_fee_atoms > 0,
-        "accrue_loan must populate accumulated_curator_fee_atoms when \
-         curator_fee_bps_snapshot > 0 (got 0)"
-    );
-
-    // Expected curator share of lender interest (simple, single-segment):
+    // (2) Profile holds the curator slice — applied at repay-close, NOT
+    // at claim time. Computed expectation:
     //   lender_interest = principal × VAULT_RATE × term / (10_000 × Y)
-    //   curator_take = lender_interest × 1000 / 10_000
+    //   curator_take    = lender_interest × 1000 / 10_000
     const SECONDS_PER_YEAR: u128 = 365 * 24 * 60 * 60;
     let expected_lender_interest: u128 =
         PRINCIPAL_ATOMS as u128 * VAULT_RATE_BPS as u128 * TERM_SECONDS as u128
@@ -732,54 +712,34 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
         "test parameters too small to observe curator fee ({} atoms)",
         expected_curator_take
     );
-    let curator_drift = (loan_post_repay.accumulated_curator_fee_atoms as i128
-        - expected_curator_take as i128)
-        .abs();
-    assert!(
-        curator_drift <= 2,
-        "loan.accumulated_curator_fee_atoms drift > 2 atoms (got {}, expected {})",
-        loan_post_repay.accumulated_curator_fee_atoms,
-        expected_curator_take
-    );
-    // lender_claimable should be principal + 90% of lender_interest.
-    let expected_lender_net: u128 =
-        PRINCIPAL_ATOMS as u128 + (expected_lender_interest - expected_curator_take);
-    let lender_drift =
-        (loan_post_repay.lender_claimable_atoms as i128 - expected_lender_net as i128).abs();
-    assert!(
-        lender_drift <= 2,
-        "loan.lender_claimable_atoms drift > 2 atoms (got {}, expected {})",
-        loan_post_repay.lender_claimable_atoms,
-        expected_lender_net
-    );
-
-    // ── Claim past maturity. Stranger cranks. ──
-    fixture
-        .set_clock_unix_timestamp(loan_post_promote.matures_at_unix + 1)
-        .await;
-    fixture.refresh_blockhash().await;
-    let stranger = fixture.create_trader().await;
-    fixture.refresh_blockhash().await;
-    fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
-        .await
-        .unwrap();
-    fixture.refresh_blockhash().await;
-
-    // (3) RiskProfile picked up the curator fee from the loan sweep.
-    let profile_post_claim = fixture.read_risk_profile(PROFILE_ID).await;
-    assert!(
-        profile_post_claim.accumulated_curator_fee_atoms > 0,
-        "claim_repayment_for_risk_profile must sweep loan's curator fee onto profile"
-    );
-    let profile_curator_drift = (profile_post_claim.accumulated_curator_fee_atoms as i128
+    let profile_post_repay = fixture.read_risk_profile(PROFILE_ID).await;
+    let profile_curator_drift = (profile_post_repay.accumulated_curator_fee_atoms as i128
         - expected_curator_take as i128)
         .abs();
     assert!(
         profile_curator_drift <= 2,
-        "RiskProfile.accumulated_curator_fee_atoms drift > 2 atoms (got {}, expected {})",
-        profile_post_claim.accumulated_curator_fee_atoms,
+        "RiskProfile.accumulated_curator_fee_atoms drift > 2 atoms after \
+         repay-close (got {}, expected {})",
+        profile_post_repay.accumulated_curator_fee_atoms,
         expected_curator_take
+    );
+
+    // ── Claim sweeps the seat to vault. No time gate; no loan PDA. ──
+    let stranger = fixture.create_trader().await;
+    fixture.refresh_blockhash().await;
+    fixture
+        .claim_repayment_for_risk_profile(&stranger, PROFILE_ID)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // (3) Curator fee accumulator unchanged across the claim (already
+    // applied at repay) — claim is purely a token movement.
+    let profile_post_claim = fixture.read_risk_profile(PROFILE_ID).await;
+    assert_eq!(
+        profile_post_claim.accumulated_curator_fee_atoms,
+        profile_post_repay.accumulated_curator_fee_atoms,
+        "claim is a pure seat sweep; must NOT mutate accumulated_curator_fee_atoms",
     );
 
     // (4) Curator claims their fee. Their USDC balance must strictly
@@ -969,17 +929,12 @@ async fn risk_profile_earns_yield_from_two_markets() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, 0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile_in_market(
-            &stranger,
-            market2_pk,
-            0,
-            Some(fixture.payer.pubkey()),
-        )
+        .claim_repayment_for_risk_profile_in_market(&stranger, market2_pk, 0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;

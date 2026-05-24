@@ -78,8 +78,8 @@ async fn true_required_collateral(
     let sol_bank_data = fixture.account_data(mainnet::sol_bank()).await;
     let usdc_cfg = BankConfigView::try_from_account_data(&usdc_bank_data).unwrap();
     let sol_cfg = BankConfigView::try_from_account_data(&sol_bank_data).unwrap();
-    let debt_liability_weight_init = wrapped_i80f48_to_u128(usdc_cfg.liability_weight_init());
-    let collateral_asset_weight_init = wrapped_i80f48_to_u128(sol_cfg.asset_weight_init());
+    let debt_liability_weight_init = wrapped_i80f48_to_u128(usdc_cfg.liability_weight_init()).unwrap();
+    let collateral_asset_weight_init = wrapped_i80f48_to_u128(sol_cfg.asset_weight_init()).unwrap();
 
     get_required_quote_collateral_to_back_debt(
         debt_atoms,

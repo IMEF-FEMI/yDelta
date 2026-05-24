@@ -121,10 +121,10 @@ async fn init_weight_reads_through_adapter() {
     let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
     let cfg = BankConfigView::try_from_account_data(&bank_data).unwrap();
 
-    let asset_init = wrapped_i80f48_to_u128(cfg.asset_weight_init());
-    let liab_init = wrapped_i80f48_to_u128(cfg.liability_weight_init());
-    let asset_maint = wrapped_i80f48_to_u128(cfg.asset_weight_maint());
-    let liab_maint = wrapped_i80f48_to_u128(cfg.liability_weight_maint());
+    let asset_init = wrapped_i80f48_to_u128(cfg.asset_weight_init()).unwrap();
+    let liab_init = wrapped_i80f48_to_u128(cfg.liability_weight_init()).unwrap();
+    let asset_maint = wrapped_i80f48_to_u128(cfg.asset_weight_maint()).unwrap();
+    let liab_maint = wrapped_i80f48_to_u128(cfg.liability_weight_maint()).unwrap();
 
     // All weights should be > 0 on a live USDC bank.
     assert!(asset_init > 0, "asset_weight_init = 0?");

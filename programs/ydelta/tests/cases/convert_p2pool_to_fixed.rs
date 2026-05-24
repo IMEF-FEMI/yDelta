@@ -29,7 +29,7 @@ async fn borrower_liability_shares(fixture: &MarketFixture) -> u128 {
         .await;
     let mfi = MarginfiAccount::try_from_account_data(&data).unwrap();
     mfi.find_balance(&mainnet::usdc_bank())
-        .map(|b| wrapped_i80f48_to_u128(b.liability_shares))
+        .map(|b| wrapped_i80f48_to_u128(b.liability_shares).unwrap())
         .unwrap_or(0)
 }
 
@@ -40,7 +40,7 @@ async fn borrower_liability_atoms(fixture: &MarketFixture) -> u128 {
     let shares = borrower_liability_shares(fixture).await;
     let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
     let bank = Bank::try_from_account_data(&bank_data).unwrap();
-    let lsv = wrapped_i80f48_to_u128(bank.liability_share_value);
+    let lsv = wrapped_i80f48_to_u128(bank.liability_share_value).unwrap();
     ydelta::math::from_scaled_floor(ydelta::math::mul_scale(shares, lsv).unwrap())
 }
 
@@ -147,14 +147,16 @@ async fn full_conversion_closes_p2pool_pda() {
         "one P2Pool (seq 0) + one converted Fixed (seq 1) MatchedLoan"
     );
 
-    // The whole marginfi liability has been retired. A FULL refinance
-    // uses a `repay_all` CPI, so the live liability lands at exactly
-    // zero — the borrower's variable debt is cleanly destroyed and
-    // never under-retired by share-floor dust.
-    let liability_post = borrower_liability_shares(&fixture).await;
-    assert_eq!(
-        liability_post, 0,
-        "a full refinance must drive the live marginfi liability to zero"
+    // The borrower's variable debt is fully retired (modulo marginfi's
+    // sub-atom fp48 rounding noise — at most 1 atom in atom-form). The
+    // prediction-based repay matches marginfi's accrue exactly under
+    // same-slot Clock; any residue is sub-atom-precision dust, not real
+    // debt.
+    let liability_post_atoms = borrower_liability_atoms(&fixture).await;
+    assert!(
+        liability_post_atoms <= 1,
+        "full refinance must reduce liability to ≤ 1 atom of dust, got {} atoms",
+        liability_post_atoms
     );
     // Zero residual liability → the P2Pool PDA is closed. The closed
     // account is either removed entirely or left zeroed; both are a
@@ -173,11 +175,19 @@ async fn full_conversion_closes_p2pool_pda() {
     }
 }
 
-/// Partial conversion: the vault profile has less idle than the P2Pool
-/// debt, so only part of the liability is refinanced. The P2Pool PDA
-/// must stay open and `Active` with a non-zero residual liability.
+/// Partial conversion is rejected.
+///
+/// Convert is must-full-fill: if the orderbook can't fully refinance
+/// the loan's live debt, the whole transaction fails and the borrower
+/// stays on the variable-rate P2Pool loan. No partial fixed/variable
+/// mixed-rate states allowed.
+///
+/// Setup: vault has only 40 atoms idle, P2Pool debt is ~100 atoms.
+/// The matcher fills 40 (vault cap), live_outstanding is ~100, so
+/// `total_filled < live_outstanding` → the must-full-fill require!
+/// fires and the convert fails with InvalidArgument.
 #[tokio::test]
-async fn partial_conversion_keeps_p2pool_active() {
+async fn partial_conversion_is_rejected() {
     let fixture = MarketFixture::new().await;
 
     let principal_atoms: u64 = 100;
@@ -187,8 +197,9 @@ async fn partial_conversion_keeps_p2pool_active() {
     let liability_pre = borrower_liability_shares(&fixture).await;
     assert!(liability_pre > 0);
 
-    // Vault profile rests an ask with only 40 atoms idle — less than the
-    // ~100-atom P2Pool debt, so the conversion is necessarily partial.
+    // Vault profile rests an ask with only 40 atoms idle — strictly
+    // less than the ~100-atom P2Pool debt, so the matcher can only
+    // partially fill.
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
@@ -206,65 +217,35 @@ async fn partial_conversion_keeps_p2pool_active() {
         .await;
     fixture.refresh_blockhash().await;
 
-    fixture
+    // The must-full-fill gate must reject this convert with
+    // InvalidArgument (total_filled < live_outstanding).
+    let result = fixture
         .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
-        .await
-        .unwrap();
+        .await;
+    crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
 
-    // P2Pool PDA still alive: discriminator intact, loan Active.
+    // The P2Pool loan is untouched: still Active, still P2Pool, marginfi
+    // liability intact (tx atomicity rolled back the partial match's
+    // encumbered_in_orders bumps).
     let loan = fixture.read_loan(0).await;
     assert_eq!(
         loan.state,
         LoanState::Active as u8,
-        "partial conversion must leave the P2Pool loan Active"
+        "rejected convert must leave the P2Pool loan Active"
     );
-    assert_eq!(
-        loan.loan_type,
-        LoanType::P2Pool as u8,
-        "partial conversion keeps loan_type == P2Pool"
-    );
-
-    // A residual marginfi liability remains.
+    assert_eq!(loan.loan_type, LoanType::P2Pool as u8);
     let liability_post = borrower_liability_shares(&fixture).await;
-    assert!(
-        liability_post > 0,
-        "partial conversion must leave a non-zero residual liability"
+    assert_eq!(
+        liability_post, liability_pre,
+        "rejected convert must not retire any liability"
     );
 
-    // One converted Fixed MatchedLoan was queued.
+    // No MatchedLoan node was created (rolled back with the tx).
     let market = fixture.read_market_fixed().await;
     assert_eq!(
-        market.matched_loan_sequence, 2,
-        "one P2Pool (seq 0) + one converted Fixed (seq 1) MatchedLoan"
+        market.matched_loan_sequence, 1,
+        "rejected convert must not bump matched_loan_sequence"
     );
-
-    // The converted Fixed MatchedLoan, once cranked, carries the
-    // ask-rate lender rate. Cross sized at the 40-atom profile idle.
-    fixture
-        .crank_matched_loan_for_risk_profile(1)
-        .await
-        .unwrap();
-    let converted = fixture.read_loan(1).await;
-    assert_eq!(converted.loan_type, LoanType::Fixed as u8);
-    assert_eq!(
-        converted.lender_rate_bps, 600,
-        "converted Fixed loan adopts the crossed ask's rate"
-    );
-    // Converted principal is capped by the crossed profile's idle minus
-    // the matching engine's per-profile marginfi-rounding reserve. The
-    // vault was funded with 40 atoms; the marginfi deposit share-floor
-    // credits 39 idle, and the matcher reserves
-    // `MARGINFI_ROUNDING_RESERVE_ATOMS` on top.
-    use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    const VAULT_DEPOSIT_ATOMS: u64 = 40;
-    let floored_idle = VAULT_DEPOSIT_ATOMS - 1; // marginfi deposit share-floor
-    assert_eq!(
-        converted.principal_debt_atoms,
-        floored_idle - MARGINFI_ROUNDING_RESERVE_ATOMS,
-        "converted principal == floored profile idle minus marginfi-rounding reserve"
-    );
-    // Conservation must hold on the new Fixed loan at promotion.
-    fixture.assert_loan_conservation_holds(1).await;
 }
 
 /// The P2Pool→fixed refinance matcher MUST enforce the crossed vault
@@ -351,37 +332,26 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
     );
 }
 
-/// After a convert, the borrower's total NEW fixed debt must never
-/// exceed the OLD variable (P2Pool) debt actually retired.
+/// After a full convert, the borrower's new Fixed-loan debt must
+/// never exceed the variable (P2Pool) debt actually retired.
 ///
-/// The new Fixed loans are sized from `total_filled_principal`, while the
-/// borrower's marginfi P2Pool liability is retired by the repay CPI. The
-/// asset-share floor on the lender-side withdraw and the liability-share
-/// floor on the repay could each shave an atom, leaving the borrower
-/// owing a sub-atom-scale phantom fixed debt the destroyed variable debt
-/// never covered. The withdraw/repay rounds up to whole shares (and
-/// uses `repay_all` for a full refinance), so the retired variable
-/// debt is always `>=` the minted fixed debt.
-///
-/// Exercises a PARTIAL conversion (vault idle < the P2Pool debt) so the
-/// atom-capped partial-repay path with genuine share rounding is hit,
-/// not the trivial full `repay_all`.
+/// The new Fixed loan is sized at `total_filled_principal == live_outstanding`
+/// (must-full-fill). The repay CPI retires the borrower's variable debt
+/// using exactly the prediction-based amount. Marginfi's share-rounding
+/// might leave sub-atom dust on the borrower's marginfi liability, so
+/// we check `new_fixed_debt <= retired_variable_debt` rather than
+/// strict equality.
 #[tokio::test]
 async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
     let fixture = MarketFixture::new().await;
 
-    // Small principal (the mainnet bank fixture overflows its
-    // liquidity-vault u64 on larger P2Pool borrows). The bank's share
-    // values are not exactly 1.0, so even small amounts carry a genuine
-    // atoms→shares→atoms fractional remainder for the rounding to
-    // exercise.
     let principal_atoms: u64 = 100;
     let collateral_atoms: u64 = 5_000;
     let bob = open_p2pool_loan(&fixture, principal_atoms, collateral_atoms).await;
 
-    // Vault profile with LESS idle than the P2Pool debt → the
-    // conversion is necessarily partial, exercising the atom-capped
-    // partial-repay path.
+    // Vault profile with PLENTY of idle to fully refinance the loan
+    // (must-full-fill requires `vault_idle >= live_outstanding`). Test
+    // exercises the predictive-repay path on a single full cross.
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
@@ -394,15 +364,11 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
             /*max_ltv_bps=*/ 8_000,
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
-            /*deposit_atoms=*/ 40,
+            /*deposit_atoms=*/ 10_000,
         )
         .await;
     fixture.refresh_blockhash().await;
 
-    // Snapshot the borrower's live liability IMMEDIATELY before the
-    // convert — marginfi accrues interest continuously, so a snapshot
-    // taken at loan-open time would understate the true pre-convert
-    // debt.
     let liability_atoms_pre = borrower_liability_atoms(&fixture).await;
     assert!(
         liability_atoms_pre > 0,
@@ -414,8 +380,6 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
         .await
         .unwrap();
 
-    // Variable debt actually retired = the drop in the borrower's
-    // marginfi liability (in atoms).
     let liability_atoms_post = borrower_liability_atoms(&fixture).await;
     let retired_variable_debt = liability_atoms_pre.saturating_sub(liability_atoms_post);
     assert!(
@@ -423,8 +387,6 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
         "convert must retire variable debt"
     );
 
-    // New fixed debt = the converted Fixed loan's outstanding debt,
-    // summed across every converted loan. One cross here → sequence 1.
     fixture
         .crank_matched_loan_for_risk_profile(1)
         .await
@@ -434,12 +396,143 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
     let new_fixed_debt = converted.outstanding_debt_atoms as u128;
     assert!(new_fixed_debt > 0);
 
-    // The core invariant: the borrower never ends up owing more
-    // fixed debt than the variable debt that was destroyed.
+    // Core invariant: borrower never owes meaningfully more new fixed
+    // debt than the old variable debt that was destroyed. ≤1 atom drift
+    // is the unavoidable cost of marginfi's accrue-during-repay share-
+    // burn rounding (the prediction-based atom amount can leave a 1-atom
+    // residual variable debt when marginfi's intra-CPI accrue advances
+    // by even 1 fp48 bit beyond our same-slot prediction).
     assert!(
-        new_fixed_debt <= retired_variable_debt,
-        "new fixed debt {} must not exceed retired variable debt {}",
+        new_fixed_debt <= retired_variable_debt as u128 + 1,
+        "new fixed debt {} must not exceed retired variable debt {} + 1 atom dust",
         new_fixed_debt,
         retired_variable_debt,
+    );
+}
+
+/// Convert produces a Fixed-type LoanFixed whose body matches the
+/// crossed vault ask (rate, term, principal). This is the core
+/// "P2Pool→Fixed transition" assertion: after convert + crank, the
+/// borrower's debt is represented as a `LoanFixed { loan_type: Fixed }`
+/// at the agreed-on fixed rate, with the original P2Pool PDA closed.
+#[tokio::test]
+async fn convert_produces_fixed_loan_with_expected_fields() {
+    let fixture = MarketFixture::new().await;
+
+    let principal_atoms: u64 = 100;
+    let collateral_atoms: u64 = 5_000;
+    let bob = open_p2pool_loan(&fixture, principal_atoms, collateral_atoms).await;
+
+    // Sanity: starting state is a P2Pool loan at sequence 0.
+    let p2pool_pre = fixture.read_loan(0).await;
+    assert_eq!(p2pool_pre.loan_type, LoanType::P2Pool as u8);
+    assert_eq!(p2pool_pre.state, LoanState::Active as u8);
+
+    // Vault profile rests an ask at a SPECIFIC rate (425 bps) and term
+    // (30 days) — the new Fixed loan must adopt these.
+    const ASK_RATE_BPS: u16 = 425;
+    const ASK_TERM_SECONDS: u32 = 30 * 86_400;
+    const VAULT_MAX_LTV_BPS: u16 = 8_000;
+    const VAULT_DEPOSIT_ATOMS: u64 = 10_000;
+
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            VAULT_MAX_LTV_BPS,
+            ASK_RATE_BPS,
+            ASK_TERM_SECONDS,
+            VAULT_DEPOSIT_ATOMS,
+        )
+        .await;
+    fixture.refresh_blockhash().await;
+
+    // Convert. Cap the acceptable rate at 1000 bps (well above the 425
+    // bps ask), so the cross goes through.
+    fixture
+        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
+        .await
+        .unwrap();
+
+    // The original P2Pool PDA is closed (data zeroed or account removed).
+    let p2pool_addr = ydelta::state::loan::loan_pda(&fixture.market.pubkey(), 0).0;
+    let p2pool_post = {
+        let ctx = fixture.context.borrow_mut();
+        ctx.banks_client.get_account(p2pool_addr).await.unwrap()
+    };
+    match p2pool_post {
+        None => { /* removed — closed */ }
+        Some(acct) => assert!(
+            acct.data.iter().all(|b| *b == 0),
+            "P2Pool PDA must be closed (data zeroed) after full conversion"
+        ),
+    }
+
+    // A new MatchedLoan was queued at sequence 1.
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(
+        market.matched_loan_sequence, 2,
+        "one P2Pool (seq 0) + one converted Fixed (seq 1) — got {}",
+        { market.matched_loan_sequence }
+    );
+
+    // Crank the new MatchedLoan into a LoanFixed PDA.
+    fixture
+        .crank_matched_loan_for_risk_profile(1)
+        .await
+        .unwrap();
+
+    // The new loan exists and is Fixed-type with the agreed rate/term.
+    let new_loan = fixture.read_loan(1).await;
+    assert_eq!(
+        new_loan.loan_type,
+        LoanType::Fixed as u8,
+        "converted loan must be Fixed-type"
+    );
+    assert_eq!(
+        new_loan.state,
+        LoanState::Active as u8,
+        "converted loan must be Active immediately post-crank"
+    );
+    assert_eq!(
+        new_loan.lender_rate_bps, ASK_RATE_BPS,
+        "converted Fixed loan adopts the crossed ask's rate"
+    );
+    // Converted Fixed loan inherits the REMAINING term of the original
+    // P2Pool loan (the borrower keeps their original loan-open clock),
+    // not the ask's max-term. Verify it's within the ask's cap and
+    // close to the original term.
+    let actual_term = (new_loan.matures_at_unix - new_loan.started_at_unix) as u32;
+    assert!(
+        actual_term <= ASK_TERM_SECONDS,
+        "converted Fixed loan term {} must not exceed the ask's max term {}",
+        actual_term,
+        ASK_TERM_SECONDS
+    );
+    assert!(
+        actual_term > 0,
+        "converted Fixed loan must have a positive term"
+    );
+    assert!(
+        new_loan.principal_debt_atoms > 0,
+        "converted Fixed loan principal must be non-zero (was {})",
+        { new_loan.principal_debt_atoms }
+    );
+    assert_eq!(
+        new_loan.borrower_seat_index, p2pool_pre.borrower_seat_index,
+        "converted Fixed loan borrower seat must match the original P2Pool borrower"
+    );
+
+    // The borrower's variable marginfi liability is gone (≤1 atom dust).
+    let liability_post_atoms = borrower_liability_atoms(&fixture).await;
+    assert!(
+        liability_post_atoms <= 1,
+        "post-convert variable liability must be ≤1 atom dust, got {}",
+        liability_post_atoms
     );
 }

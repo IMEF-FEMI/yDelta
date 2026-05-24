@@ -15,7 +15,6 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
-/// Build a `Deposit` instruction.
 #[allow(clippy::too_many_arguments)]
 pub fn deposit_instruction(
     market: &Pubkey,
@@ -52,19 +51,15 @@ pub fn deposit_instruction(
             AccountMeta::new_readonly(global_config_pda().0, false),
             AccountMeta::new(*market, false),
             AccountMeta::new(*trader_token, false),
-            // The market's per-mint staging vault, owned by market_signer.
             AccountMeta::new(vault, false),
             AccountMeta::new_readonly(*token_program, false),
             AccountMeta::new_readonly(*mint, false),
-            // Integration accounts.
             AccountMeta::new_readonly(*marginfi_group, false),
             AccountMeta::new(marginfi_account, false),
             AccountMeta::new(*bank, false),
             AccountMeta::new(*liquidity_vault, false),
             AccountMeta::new_readonly(market_signer, false),
             AccountMeta::new_readonly(*marginfi_program, false),
-            // Signer's UserAccount + system_program (for auto-create
-            // on first interaction).
             AccountMeta::new(user_account_pda(payer).0, false),
             AccountMeta::new_readonly(system_program::id(), false),
         ],

@@ -16,33 +16,22 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
-/// Derive the per-market lender-side marginfi-account PDA.
 pub fn derive_lender_marginfi_account(market: &Pubkey) -> Pubkey {
     get_lender_integration_account_address(market).0
 }
 
-/// Derive the per-market borrower-side marginfi-account PDA.
 pub fn derive_borrower_marginfi_account(market: &Pubkey) -> Pubkey {
     get_borrower_integration_account_address(market).0
 }
 
-/// Alias for the lender-side marginfi-account PDA. New callers should
-/// use `derive_lender_marginfi_account` directly.
 pub fn derive_marginfi_account(market: &Pubkey) -> Pubkey {
     derive_lender_marginfi_account(market)
 }
 
-/// Derive the per-market signer PDA.
 pub fn derive_market_signer(market: &Pubkey) -> Pubkey {
     get_market_signer_address(market).0
 }
 
-/// Create the market account and its `CreateMarket` instruction.
-///
-/// `params` carries optional per-field fee_config overrides applied on
-/// top of `FeeConfig::default()`. Pass `CreateMarketParams::default()`
-/// to ship with the protocol defaults (safe `ltv_buffer_bps = 200`,
-/// 24h grace, zero protocol/curator/keeper fees).
 #[allow(clippy::too_many_arguments)]
 pub fn create_market_instructions(
     market: &Pubkey,
@@ -96,9 +85,7 @@ pub fn create_market_instruction(
     let borrower_marginfi_account = derive_borrower_marginfi_account(market);
     let market_signer = derive_market_signer(market);
     let mut data = YdeltaInstruction::CreateMarket.to_vec();
-    // Borsh-serialize `CreateMarketParams` after the 1-byte ix tag.
-    // The processor accepts an empty tail as "all defaults"; we always
-    // emit the full payload so the wire format is unambiguous.
+
     params
         .serialize(&mut data)
         .expect("CreateMarketParams serialization is infallible");
@@ -115,16 +102,11 @@ pub fn create_market_instruction(
             AccountMeta::new(collateral_vault, false),
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(spl_token_2022::id(), false),
-            // Integration accounts.
             AccountMeta::new_readonly(*marginfi_group, false),
             AccountMeta::new_readonly(*debt_bank, false),
             AccountMeta::new_readonly(*collateral_bank, false),
-            // Two marginfi-accounts — both writable because marginfi
-            // initialises them via inner CPI in `process_create_market`.
             AccountMeta::new(lender_marginfi_account, false),
             AccountMeta::new(borrower_marginfi_account, false),
-            // market_signer: PDA passed through so the CPI can resolve
-            // it by pubkey. Read-only; ydelta signs via invoke_signed.
             AccountMeta::new_readonly(market_signer, false),
             AccountMeta::new_readonly(*marginfi_program, false),
         ],

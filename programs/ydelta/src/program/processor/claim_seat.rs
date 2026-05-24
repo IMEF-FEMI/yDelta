@@ -32,15 +32,12 @@ pub fn process_claim_seat(
     let market_key = *market.info.key;
     let trader = *payer.info.key;
 
-    // Insert the canonical ClaimedSeat.
     {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let mut da = get_mut_dynamic_account::<MarketFixed>(market_data);
         da.claim_seat(&trader, OWNER_KIND_USER)?;
     }
 
-    // Look up the seat index in the market for the
-    // mirror's `seat_index_in_market` back-reference.
     let seat_index_in_market = {
         let market_data = market.info.try_borrow_data()?;
         let fixed_size = std::mem::size_of::<MarketFixed>();
@@ -50,9 +47,6 @@ pub fn process_claim_seat(
         tree.lookup_index(&ClaimedSeat::new_empty(trader, OWNER_KIND_USER, 0))
     };
 
-    // Upsert the MarketPosition mirror on the user's
-    // UserAccount. Fresh ClaimedSeat → balances all zero, just
-    // records `seat_index_in_market` for live-order enumeration.
     {
         let data: &mut RefMut<&mut [u8]> = &mut user_account_ai.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(USER_ACCOUNT_FIXED_SIZE);

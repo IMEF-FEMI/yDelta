@@ -11,12 +11,6 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
-/// Build a `LiquidateLoan` ix. Permissionless — `payer` (the
-/// liquidator) pays up to `repay_atoms_max` of `outstanding_debt_atoms`
-/// in debt-mint and seizes pro-rata collateral plus keeper bonus.
-/// `repay_atoms_max = 0` means "repay full outstanding". Reverts with
-/// `LoanStillSolvent` if the loan's current LTV is below the
-/// maintenance threshold.
 #[allow(clippy::too_many_arguments)]
 pub fn liquidate_loan_instruction(
     market: &Pubkey,
@@ -38,6 +32,11 @@ pub fn liquidate_loan_instruction(
     marginfi_program: &Pubkey,
     repay_atoms_max: u64,
     cranker_refund: &Pubkey,
+    // REQUIRED for Fixed loans (full-liquidate close-out updates the
+    // lender vault's risk profile + bumps pending_claim). MUST be `None`
+    // for P2Pool liquidations — the loader only consumes this slot when
+    // the loan PDA reads as LoanType::Fixed.
+    global_vault: Option<&Pubkey>,
 ) -> Instruction {
     let (loan, _) = loan_pda(market, sequence);
     let (market_debt_vault, _) = get_vault_address(market, debt_mint);
@@ -78,6 +77,9 @@ pub fn liquidate_loan_instruction(
         AccountMeta::new_readonly(*marginfi_program, false),
         AccountMeta::new(*cranker_refund, false),
     ]);
+    if let Some(gv) = global_vault {
+        accounts.push(AccountMeta::new(*gv, false));
+    }
     Instruction {
         program_id: crate::id(),
         accounts,

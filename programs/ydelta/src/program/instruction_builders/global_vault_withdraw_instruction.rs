@@ -14,7 +14,6 @@ use crate::state::vault::{
     global_vault_staging_pda,
 };
 
-/// Build a `GlobalVaultWithdraw` instruction.
 #[allow(clippy::too_many_arguments)]
 pub fn global_vault_withdraw_instruction(
     mint: &Pubkey,

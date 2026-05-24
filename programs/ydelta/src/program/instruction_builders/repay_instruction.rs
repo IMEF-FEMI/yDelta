@@ -16,7 +16,6 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
-/// Build a `Repay` instruction.
 #[allow(clippy::too_many_arguments)]
 pub fn repay_instruction(
     market: &Pubkey,
@@ -34,6 +33,11 @@ pub fn repay_instruction(
     full_repay: bool,
     borrower_seat_index_hint: Option<DataIndex>,
     cranker_refund: &Pubkey,
+    // REQUIRED for Fixed loans (the processor uses it on full repay to
+    // apply per-loan risk-profile decrements + bump pending_claim atoms).
+    // MUST be `None` for P2Pool repays — the loader only consumes this
+    // slot when the loan PDA reads as LoanType::Fixed.
+    global_vault: Option<&Pubkey>,
 ) -> Instruction {
     let marginfi_account = get_lender_integration_account_address(market).0;
     let borrower_marginfi_account = get_borrower_integration_account_address(market).0;
@@ -49,7 +53,7 @@ pub fn repay_instruction(
     }
     .serialize(&mut data)
     .unwrap();
-    let accounts = vec![
+    let mut accounts = vec![
         AccountMeta::new(*borrower, true),
         AccountMeta::new_readonly(global_config_pda().0, false),
         AccountMeta::new(*market, false),
@@ -63,8 +67,6 @@ pub fn repay_instruction(
         AccountMeta::new(*debt_bank, false),
         AccountMeta::new(*debt_liquidity_vault, false),
         AccountMeta::new_readonly(*collateral_bank, false),
-        // Borrower-side marginfi account — P2Pool voluntary repay
-        // retires its `liability_shares` via `marginfi.repay_atoms`.
         AccountMeta::new(borrower_marginfi_account, false),
         AccountMeta::new_readonly(market_signer, false),
         AccountMeta::new_readonly(*marginfi_program, false),
@@ -72,6 +74,9 @@ pub fn repay_instruction(
         AccountMeta::new_readonly(system_program::id(), false),
         AccountMeta::new(*cranker_refund, false),
     ];
+    if let Some(gv) = global_vault {
+        accounts.push(AccountMeta::new(*gv, false));
+    }
     Instruction {
         program_id: crate::id(),
         accounts,

@@ -27,7 +27,7 @@ use crate::test_utils::market_fixture::MarketFixture;
 #[allow(dead_code)]
 fn amount_to_shares_against(bank_data: &[u8], amount_atoms: u64) -> u128 {
     let bank = Bank::try_from_account_data(bank_data).unwrap();
-    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value);
+    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value).unwrap();
     let amount_fp48 = to_scaled(amount_atoms as u128).unwrap();
     div_scale(amount_fp48, asv_u128).unwrap()
 }
@@ -123,6 +123,11 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     let bob_seat_pre = fixture.read_seat(&bob.pubkey()).await;
     let bob_coll_pre = bob_seat_pre.collateral_withdrawable_shares;
 
+    // Snapshot the loan's collateral-snapshot fp48 BEFORE the repay —
+    // under the repay/claim split, full repay closes the PDA so we
+    // can't read it after.
+    let snapshot_fp48 = loan_pre.borrower_collateral_share_price_snapshot_fp48;
+
     // ─── Repay full.
     fixture
         .repay(
@@ -131,28 +136,21 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
         .await
         .unwrap();
 
-    // Loan transitioned to Repaid.
-    let loan_post = fixture.read_loan(0).await;
-    assert_eq!(loan_post.state, LoanState::Repaid as u8);
-    assert_eq!(loan_post.outstanding_debt_atoms, 0);
-    // Lender's claimable not zeroed yet — that's claim_repayment_for_risk_profile.
-    assert!(loan_post.lender_claimable_atoms > 0);
-    // Conservation identity must still hold after the full repay event.
-    fixture.assert_loan_conservation_holds(0).await;
-    // Full repay retires at least the gross principal — `principal_retired_atoms`
-    // tracks cumulative atoms repaid (principal + accrued interest).
+    // Per the repay/claim split, full repay closes the loan PDA — there's
+    // no body to read for state == Repaid. The close itself IS the signal.
     assert!(
-        loan_post.principal_retired_atoms >= loan_post.principal_debt_atoms,
-        "full repay must retire >= gross principal (got retired={}, principal={})",
-        loan_post.principal_retired_atoms,
-        loan_post.principal_debt_atoms,
+        fixture.loan_account_is_closed(0).await,
+        "full repay must close the loan PDA",
     );
-
-    // Bob's seat: collateral credited back at the loan's place-time
-    // snapshot, not the live bank value (byte-symmetric with the
-    // place_order encumber).
-    let snapshot_fp48 = loan_post.borrower_collateral_share_price_snapshot_fp48;
-    let expected_coll_shares: u128 = ((COLLATERAL_ATOMS as u128) << 48) / snapshot_fp48;
+    // Conservation collapses on close (atoms moved to seat); the helper
+    // is now a no-op on closed loans.
+    fixture.assert_loan_conservation_holds(0).await;
+    let expected_coll_shares: u128 =
+        ydelta::state::market_helpers::atoms_to_shares_at_snapshot(
+            COLLATERAL_ATOMS,
+            snapshot_fp48,
+        )
+        .unwrap();
     let bob_seat_post = fixture.read_seat(&bob.pubkey()).await;
     assert_eq!(
         bob_seat_post.collateral_withdrawable_shares - bob_coll_pre,
@@ -164,59 +162,53 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     assert_eq!(bob_seat_post.open_borrow_count, 0);
 }
 
-/// A Fixed loan whose collateral sits in the seat's `withdrawable` bucket
-/// with `encumbered == 0` must still repay cleanly. The close-time
-/// `release_loan_collateral` is min-capped, so when nothing is encumbered
-/// it is a no-op: the collateral is NEITHER double-credited NOR stranded,
-/// and the loan still closes.
+/// H-5 regression: the pre-fix `release_loan_collateral` clamped a
+/// loan's recorded collateral against the seat's encumbered bucket via
+/// `min(total, encumbered)`. That silently dropped state when the seat
+/// was under-encumbered (corruption from a prior bug, manual mutation,
+/// or a stale migration). Post-fix, the close-time helper hard-errors
+/// with `InsufficientEncumberedCollateral` (Custom 53) — surfacing the
+/// corruption rather than hiding it.
+///
+/// Test: forge the under-encumbered shape by yanking the loan's
+/// collateral from `encumbered` into `withdrawable`, then attempt a
+/// full repay. The repay tx must reject with `InsufficientEncumberedCollateral`.
 #[tokio::test]
-async fn legacy_collateral_in_withdrawable_repays_without_double_credit() {
+async fn under_encumbered_seat_blocks_full_repay_close() {
     let fixture = MarketFixture::new().await;
     let (bob, bob_usdc) = match_one_loan(&fixture).await;
 
-    // Forge the legacy shape: move the loan's encumbered collateral into
-    // withdrawable (encumbered → 0), as if it had never been encumbered.
+    // Forge corruption: move the loan's encumbered collateral into
+    // withdrawable (encumbered → 0). Production code never does this;
+    // the helper exists solely to construct the H-5 corruption shape.
     fixture
         .legacy_collateral_to_withdrawable(&bob.pubkey())
         .await;
     let seat_pre = fixture.read_seat(&bob.pubkey()).await;
     assert_eq!(
         seat_pre.collateral_encumbered_shares, 0,
-        "legacy shape: nothing encumbered"
-    );
-    let withdrawable_pre = seat_pre.collateral_withdrawable_shares;
-    assert!(
-        withdrawable_pre > 0,
-        "legacy collateral sits in withdrawable"
+        "corrupted seat: nothing encumbered yet a loan is open"
     );
     assert_eq!(seat_pre.open_borrow_count, 1, "loan still open pre-repay");
 
-    // Repay full.
-    fixture
+    // Full repay attempts to release the loan's recorded collateral
+    // back to withdrawable. With encumbered==0 and total>0, the new
+    // hard-error fires.
+    let result = fixture
         .repay(
             &bob, 0, bob_usdc, /*repay_atoms=*/ 0, /*full_repay=*/ true,
         )
-        .await
-        .unwrap();
-
-    let loan_post = fixture.read_loan(0).await;
-    assert_eq!(
-        loan_post.state,
-        LoanState::Repaid as u8,
-        "loan must close despite the legacy collateral shape"
+        .await;
+    crate::assert_custom_error!(
+        result,
+        ydelta::program::YdeltaError::InsufficientEncumberedCollateral
     );
-    assert_eq!(loan_post.outstanding_debt_atoms, 0);
 
-    let seat_post = fixture.read_seat(&bob.pubkey()).await;
-    // No double-credit: withdrawable is UNCHANGED — the min-capped release
-    // moved nothing because encumbered was 0 (collateral already there).
-    assert_eq!(
-        seat_post.collateral_withdrawable_shares, withdrawable_pre,
-        "legacy repay must NOT double-credit collateral (release no-ops when encumbered==0)"
+    // Loan PDA must still exist (the close was rejected mid-flight).
+    assert!(
+        !fixture.loan_account_is_closed(0).await,
+        "rejected repay must leave the loan PDA intact",
     );
-    // Not stranded, and the open-loan counter still winds down.
-    assert_eq!(seat_post.collateral_encumbered_shares, 0);
-    assert_eq!(seat_post.open_borrow_count, 0);
 }
 
 #[tokio::test]

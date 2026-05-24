@@ -22,16 +22,6 @@ use crate::validation::{
 use super::fee_config_helpers::{apply_fee_config_overrides, validate_fee_config_overrides};
 use super::shared::{expand_market, invoke};
 
-/// Per-field overrides applied on top of `FeeConfig::default()` when
-/// the market is created. Every field is optional — `None` keeps the
-/// default value. Shares its wire format (and validation rules) with
-/// `SetFeeConfigParams` so admins use the same shape whether they're
-/// configuring a market at creation or retuning it later.
-///
-/// `FeeConfig::default()` already seeds `ltv_buffer_bps = 200` and a
-/// 24-hour `grace_period_seconds`, so a `CreateMarketParams` with
-/// every field set to `None` produces a market that is safe to take
-/// traffic immediately (no zero-margin LTV checks).
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Default)]
 pub struct CreateMarketParams {
     pub protocol_fee_bps_floor: Option<u16>,
@@ -45,11 +35,6 @@ pub struct CreateMarketParams {
 }
 
 impl From<&CreateMarketParams> for crate::program::processor::set_fee_config::SetFeeConfigParams {
-    /// `CreateMarketParams` is wire-identical to `SetFeeConfigParams`,
-    /// but Rust treats them as distinct nominal types. This conversion
-    /// lets us route through the shared `validate_fee_config_overrides`
-    /// / `apply_fee_config_overrides` helpers without duplicating the
-    /// eight per-field branches in both processors.
     fn from(p: &CreateMarketParams) -> Self {
         Self {
             protocol_fee_bps_floor: p.protocol_fee_bps_floor,
@@ -69,10 +54,6 @@ pub fn process_create_market(
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
-    // Optional payload — accept a zero-length data buffer as "all
-    // defaults", so callers that don't care about overrides don't pay
-    // a borsh-serialization round-trip. Any non-empty payload MUST
-    // borsh-decode cleanly into `CreateMarketParams`.
     let params: CreateMarketParams = if data.is_empty() {
         CreateMarketParams::default()
     } else {
@@ -102,9 +83,6 @@ pub fn process_create_market(
         marginfi_program,
     } = CreateMarketContext::load(accounts)?;
 
-    // Business-rule check: the two mints must differ. Account/pubkey
-    // validations on the marginfi side were already enforced by the
-    // typed wrappers in `CreateMarketContext::load`.
     require!(
         debt_mint.info.key != collateral_mint.info.key,
         YdeltaError::InvalidMarketParameters,
@@ -137,19 +115,12 @@ pub fn process_create_market(
         market_signer.key,
     )?;
 
-    // TWO marginfi-accounts per market — lender-side and
-    // borrower-side. Each `marginfi_account_initialize` is signed by
-    // the new account's PDA seeds (so marginfi's inner
-    // `system::create_account` sees it as signed) plus the
-    // `market_signer` PDA seeds (so it signs as the authority on the
-    // new account). Payer is the user.
     let market_signer_seeds: &[&[u8]] = &[
         MARKET_SIGNER_SEED,
         market_key.as_ref(),
         &[market_signer_bump],
     ];
 
-    // (1) Lender-side init.
     let lender_seeds: &[&[u8]] = &[
         MARGINFI_LENDER_ACCOUNT_SEED,
         market_key.as_ref(),
@@ -177,7 +148,6 @@ pub fn process_create_market(
         &[lender_seeds, market_signer_seeds],
     )?;
 
-    // (2) Borrower-side init.
     let borrower_seeds: &[&[u8]] = &[
         MARGINFI_BORROWER_ACCOUNT_SEED,
         market_key.as_ref(),
@@ -209,7 +179,7 @@ pub fn process_create_market(
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let header: &mut MarketFixed = get_mut_helper::<MarketFixed>(market_data, 0_u32);
         *header = MarketFixed::new_empty(&debt_mint, &collateral_mint, &market_key);
-        // `payer` is the genesis admin, gates `set_fee_config`.
+
         header.admin = *payer.info.key;
         header.lender_integration_account = *lender_marginfi_account.key;
         header.lender_integration_account_bump = lender_marginfi_account_bump;
@@ -220,11 +190,7 @@ pub fn process_create_market(
         header.marginfi_group = *marginfi_group.info.key;
         header.market_signer = *market_signer.key;
         header.market_signer_bump = market_signer_bump;
-        // `new_empty` already seeded `header.fee_config` with safe
-        // defaults (`ltv_buffer_bps = 200`, 24h grace). Layer any
-        // admin-supplied overrides on top so the market ships
-        // fully-configured in a single ix — no follow-up
-        // `set_fee_config` round-trip required.
+
         apply_fee_config_overrides(&mut header.fee_config, &fee_overrides);
     }
 
@@ -258,12 +224,6 @@ pub(crate) fn assert_supported_mint_extensions(mint: &MintAccountInfo) -> Progra
             | ExtensionType::ConfidentialTransferMint
             | ExtensionType::ConfidentialTransferAccount
             | ExtensionType::PermanentDelegate => {
-                // MintCloseAuthority promoted from warn → reject:
-                // a T22 mint whose authority can close it mid-protocol
-                // would brick deposits/borrows for that mint while
-                // existing balances continue to accrue. Without a
-                // runtime closed-mint guard on every hot path, the
-                // safest move is to refuse such mints up-front.
                 msg!("rejecting T22 mint with extension {:?}", ext);
                 return Err(YdeltaError::Token2022UnsupportedExtension.into());
             }
@@ -321,10 +281,6 @@ fn create_vault_pda<'a, 'info>(
         seeds,
     )?;
 
-    // Vault is owned by `market_signer` (the per-market PDA) so
-    // ydelta can sign SPL transfers in/out of it via `invoke_signed`
-    // with the market-signer seeds. deposit/withdraw stage atoms here
-    // between the user's wallet ATA and the bank's liquidity vault.
     let init_ix = if mint_owner == &spl_token_2022::id() {
         spl_token_2022::instruction::initialize_account3(
             &spl_token_2022::id(),

@@ -1,5 +1,3 @@
-//! Set or clear the market pause flag.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -30,9 +28,7 @@ pub fn process_set_market_pause(
         YdeltaError::MarketAdminRequired,
         "set_market_pause: signer != MarketFixed.admin"
     )?;
-    // Markets ship unpaused with a safe `FeeConfig::default()` seeded
-    // by `process_create_market`, so there is no "first unpause" gate
-    // to enforce here — this ix is a pure admin-driven toggle.
+
     header.is_paused = if params.paused != 0 { 1 } else { 0 };
     Ok(())
 }

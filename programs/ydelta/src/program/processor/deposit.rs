@@ -53,12 +53,6 @@ pub fn process_deposit(
         user_account_ai,
     } = DepositContext::load(accounts)?;
 
-    // Only collateral may be deposited into a market seat. The debt side is
-    // an output (loan proceeds, credited internally by process_matched_loan
-    // and withdrawn by the borrower), never a user-supplied input: repay
-    // pulls atoms straight from the borrower's wallet, so a direct debt
-    // deposit serves no purpose and would only commingle with the lender
-    // integration account.
     require!(
         !is_debt,
         YdeltaError::InvalidDepositAccounts,
@@ -73,18 +67,7 @@ pub fn process_deposit(
         market.get_fixed()?.collateral_mint
     };
 
-    // Transfer atoms from the user's ATA to the market's
-    // staging vault. The user signs as `trader_token`'s owner. (Marginfi's
-    // deposit CPI requires `signer_token_account.owner == authority`,
-    // which is `market_signer` — so atoms must arrive in a market-signer-
-    // owned account first.)
-    // Snapshot the staging vault balance around the transfer so the
-    // amount fed into marginfi and into seat accounting is what
-    // PHYSICALLY arrived — not the nominal `params.amount_atoms`. A
-    // Token-2022 transfer-fee mint delivers less than the nominal
-    // amount; crediting the nominal amount would over-size the marginfi
-    // deposit CPI and dilute existing holders.
-    let vault_before_atoms = vault.get_balance_atoms();
+    let vault_before_atoms = vault.get_balance_atoms()?;
     transfer_user_to_vault(
         token_program.info,
         trader_token.info,
@@ -95,7 +78,7 @@ pub fn process_deposit(
         mint.mint.decimals,
     )?;
     let received_atoms = vault
-        .get_balance_atoms()
+        .get_balance_atoms()?
         .checked_sub(vault_before_atoms)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     require!(
@@ -104,8 +87,6 @@ pub fn process_deposit(
         "staging vault received 0 atoms"
     )?;
 
-    // Deposit from the staging vault into the
-    // bank's liquidity vault, signed by `market_signer`.
     let adapter_accounts = [
         marginfi_group.info.clone(),
         marginfi_account.info.clone(),
@@ -144,15 +125,10 @@ pub fn process_deposit(
         amount_atoms: received_atoms,
     })?;
 
-    // Sync the signer's MarketPosition mirror from the canonical
-    // ClaimedSeat we just wrote.
     super::shared::sync_signer_market_position(market.info, user_account_ai, payer.info.key)?;
     Ok(())
 }
 
-/// SPL-transfer `amount` atoms from the user's `trader_token` to the
-/// market's staging `vault`, signed by the user (the trader_token's
-/// owner). Pub(crate) so `global_vault_deposit` can reuse it.
 pub(crate) fn transfer_user_to_vault<'info>(
     token_program: &AccountInfo<'info>,
     trader_token: &AccountInfo<'info>,

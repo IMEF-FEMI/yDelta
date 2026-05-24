@@ -1,82 +1,82 @@
-//! Fixed-point helpers for yDelta's fp48 `u128` representation.
-//! 256-bit intermediates use `ruint::aliases::U256`.
-
 use ruint::aliases::U256;
 use solana_program::program_error::ProgramError;
 
-/// Number of fractional bits in yDelta's scaled u128 representation.
+use crate::program::YdeltaError;
+
 pub const SCALE_BITS: u32 = 48;
 
-/// Multiplier: `actual_value × SCALE = scaled_value`.
 pub const SCALE: u128 = 1u128 << SCALE_BITS;
 
-/// `(a * b) >> SCALE_BITS` with truncation toward zero. Returns
-/// `ArithmeticOverflow` if the result exceeds `u128::MAX`.
 pub fn mul_scale(a: u128, b: u128) -> Result<u128, ProgramError> {
     let prod: U256 = U256::from(a)
         .checked_mul(U256::from(b))
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+        .ok_or(YdeltaError::MathOverflow)?;
     let shifted: U256 = prod >> SCALE_BITS;
     u256_to_u128(shifted)
 }
 
-/// `(a << SCALE_BITS) / b` with truncation toward zero. Returns an error on
-/// `b == 0` or if the quotient overflows `u128`.
 pub fn div_scale(a: u128, b: u128) -> Result<u128, ProgramError> {
     if b == 0 {
-        return Err(ProgramError::ArithmeticOverflow);
+        return Err(YdeltaError::MathDivisionByZero.into());
     }
     let num: U256 = U256::from(a) << SCALE_BITS;
     let q: U256 = num
         .checked_div(U256::from(b))
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+        .ok_or(YdeltaError::MathOverflow)?;
     u256_to_u128(q)
 }
 
-/// `amount << SCALE_BITS`. Returns `ArithmeticOverflow` if any of the top
-/// `SCALE_BITS` of `amount` are non-zero.
 pub fn to_scaled(amount: u128) -> Result<u128, ProgramError> {
     if amount >> (128 - SCALE_BITS) != 0 {
-        return Err(ProgramError::ArithmeticOverflow);
+        return Err(YdeltaError::MathOverflow.into());
     }
     Ok(amount << SCALE_BITS)
 }
 
-/// `scaled >> SCALE_BITS`. Truncation toward zero (i.e. floor for positive
-/// values, which is the only domain `u128` represents).
 pub fn from_scaled_floor(scaled: u128) -> u128 {
     scaled >> SCALE_BITS
 }
 
-/// Ceiling variant of `from_scaled_floor`: rounds the truncated value
-/// up by one whenever any fractional bit is set. Used on liability
-/// conversions and required-collateral math where a 1-atom floor
-/// underpayment would let the caller settle a debt — or back a loan —
-/// for less than they truly owe.
-///
-/// The round-up uses `checked_add` defensively. Since `truncated =
-/// scaled >> SCALE_BITS` is at most `2^(128 − SCALE_BITS) − 1`, the `+1`
-/// can never actually overflow a u128 — even `scaled == u128::MAX`
-/// succeeds (it rounds up to `2^(128 − SCALE_BITS)`). The checked form is
-/// belt-and-suspenders, not a reachable fault path.
 pub fn from_scaled_ceil(scaled: u128) -> Result<u128, ProgramError> {
     let mask: u128 = (1u128 << SCALE_BITS) - 1;
     let truncated = scaled >> SCALE_BITS;
     if (scaled & mask) != 0 {
         truncated
             .checked_add(1)
-            .ok_or(ProgramError::ArithmeticOverflow)
+            .ok_or(YdeltaError::MathOverflow.into())
     } else {
         Ok(truncated)
     }
 }
 
-/// Narrow a `U256` to `u128`, returning `ArithmeticOverflow` if the high
-/// 128 bits are non-zero. ruint stores limbs as `[u64; 4]` little-endian.
+pub fn mul_div(a: u128, b: u128, c: u128, ceil: bool) -> Result<u128, ProgramError> {
+    if c == 0 {
+        return Err(YdeltaError::MathDivisionByZero.into());
+    }
+    let prod: U256 = U256::from(a)
+        .checked_mul(U256::from(b))
+        .ok_or(YdeltaError::MathOverflow)?;
+    let denom: U256 = U256::from(c);
+    let q: U256 = prod / denom;
+    let r: U256 = prod % denom;
+    let result: U256 = if ceil && !r.is_zero() {
+        q.checked_add(U256::from(1u8))
+            .ok_or(YdeltaError::MathOverflow)?
+    } else {
+        q
+    };
+    u256_to_u128(result)
+}
+
+pub fn mul_div_u64(a: u64, b: u64, c: u64, ceil: bool) -> Result<u64, ProgramError> {
+    let result = mul_div(a as u128, b as u128, c as u128, ceil)?;
+    u64::try_from(result).map_err(|_| YdeltaError::MathOverflow.into())
+}
+
 fn u256_to_u128(x: U256) -> Result<u128, ProgramError> {
     let limbs = x.as_limbs();
     if limbs[2] != 0 || limbs[3] != 0 {
-        return Err(ProgramError::ArithmeticOverflow);
+        return Err(YdeltaError::MathOverflow.into());
     }
     Ok((limbs[0] as u128) | ((limbs[1] as u128) << 64))
 }
@@ -84,6 +84,13 @@ fn u256_to_u128(x: U256) -> Result<u128, ProgramError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn err_code(e: ProgramError) -> u32 {
+        match e {
+            ProgramError::Custom(c) => c,
+            other => panic!("expected Custom error, got {:?}", other),
+        }
+    }
 
     #[test]
     fn scale_constants_are_consistent() {
@@ -102,28 +109,23 @@ mod tests {
 
     #[test]
     fn to_scaled_overflows_above_2_to_80() {
-        // 2^80 - 1 fits exactly in 128 bits after the << 48; 2^80 overflows.
         let max_safe = (1u128 << 80) - 1;
         assert!(to_scaled(max_safe).is_ok());
-        assert!(to_scaled(1u128 << 80).is_err());
+        let err = to_scaled(1u128 << 80).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathOverflow as u32);
     }
 
     #[test]
     fn mul_scale_truncates_toward_zero() {
-        // (1.5 * 2.5) at scale: 1.5 = 1.5 * 2^48, 2.5 = 2.5 * 2^48.
-        // Product after >> 48 = 3.75 * 2^48, which truncates cleanly because
-        // 3.75 has an exact 48-bit fractional representation.
-        let a = (3u128 << SCALE_BITS) / 2; // 1.5 scaled
-        let b = (5u128 << SCALE_BITS) / 2; // 2.5 scaled
+        let a = (3u128 << SCALE_BITS) / 2;
+        let b = (5u128 << SCALE_BITS) / 2;
         let r = mul_scale(a, b).unwrap();
-        let expected = (15u128 << SCALE_BITS) / 4; // 3.75 scaled
+        let expected = (15u128 << SCALE_BITS) / 4;
         assert_eq!(r, expected);
     }
 
     #[test]
     fn mul_scale_unit_is_identity() {
-        // mul_scale(x, SCALE) == x for any x that doesn't overflow the
-        // intermediate product. SCALE represents 1.0 in scaled space.
         for x in [0u128, 1, SCALE, SCALE * 7, (1u128 << 80) - 1] {
             assert_eq!(mul_scale(x, SCALE).unwrap(), x);
         }
@@ -131,50 +133,38 @@ mod tests {
 
     #[test]
     fn div_scale_inverts_mul_scale_within_truncation() {
-        let a = 7u128 << SCALE_BITS; // 7.0 scaled
-        let b = SCALE; // 1.0 scaled
+        let a = 7u128 << SCALE_BITS;
+        let b = SCALE;
         let prod = mul_scale(a, b).unwrap();
         assert_eq!(div_scale(prod, b).unwrap(), a);
     }
 
     #[test]
-    fn div_scale_by_zero_errors() {
-        assert!(div_scale(SCALE, 0).is_err());
+    fn div_scale_by_zero_returns_division_by_zero_variant() {
+        let err = div_scale(SCALE, 0).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathDivisionByZero as u32);
     }
 
     #[test]
     fn from_scaled_ceil_rounds_up_on_fractional_bits() {
-        // Exact integer (no fractional bits) — ceil == floor.
         assert_eq!(from_scaled_ceil(5u128 << SCALE_BITS).unwrap(), 5);
-        // Any fractional bit set rounds up.
         assert_eq!(from_scaled_ceil((5u128 << SCALE_BITS) + 1).unwrap(), 6);
         assert_eq!(
             from_scaled_ceil((5u128 << SCALE_BITS) + (SCALE / 2)).unwrap(),
             6
         );
-        // Zero stays zero.
         assert_eq!(from_scaled_ceil(0).unwrap(), 0);
     }
 
-    /// `from_scaled_ceil` must fault on the degenerate
-    /// `scaled == u128::MAX` input rather than wrap the `+ 1` to `0`.
     #[test]
     fn from_scaled_ceil_overflow_faults() {
-        // u128::MAX has every fractional bit set, and its truncated
-        // value is the all-ones u80 — `+ 1` overflows that u80 region
-        // but NOT u128, so this actually succeeds. The genuine overflow
-        // boundary: a value whose truncation is u128::MAX with a
-        // fractional bit — unreachable since `>> 48` caps truncation at
-        // a u80. So `from_scaled_ceil` cannot overflow for any real
-        // `u128` input; the checked_add is defence-in-depth. Confirm the
-        // max input still yields a sane (non-zero, non-wrapped) result.
         let r = from_scaled_ceil(u128::MAX).unwrap();
         assert_eq!(r, (u128::MAX >> SCALE_BITS) + 1);
     }
 
     #[test]
     fn mul_scale_is_monotonic() {
-        let k = (3u128 << SCALE_BITS) / 2; // 1.5 scaled
+        let k = (3u128 << SCALE_BITS) / 2;
         for (a, b) in [
             (0u128, 1u128),
             (SCALE, SCALE * 2),
@@ -186,11 +176,8 @@ mod tests {
 
     #[test]
     fn mul_scale_overflows_at_extreme_values() {
-        // u128::MAX × u128::MAX overflows even after >> 48. Confirm the
-        // ruint path correctly reports the overflow rather than silently
-        // truncating.
-        let result = mul_scale(u128::MAX, u128::MAX);
-        assert!(result.is_err());
+        let err = mul_scale(u128::MAX, u128::MAX).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathOverflow as u32);
     }
 
     #[test]
@@ -201,8 +188,100 @@ mod tests {
 
     #[test]
     fn u256_narrow_errors_on_high_bits_set() {
-        // 2^128 has the lowest bit of the second 128-bit half set.
         let x = U256::from(1u8) << 128;
-        assert!(u256_to_u128(x).is_err());
+        let err = u256_to_u128(x).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathOverflow as u32);
+    }
+
+    #[test]
+    fn mul_div_floor_unit_cases() {
+        assert_eq!(mul_div(0, 100, 7, false).unwrap(), 0);
+        assert_eq!(mul_div(100, 0, 7, false).unwrap(), 0);
+        assert_eq!(mul_div(10, 3, 4, false).unwrap(), 7);
+        assert_eq!(mul_div(u128::MAX, 1, 1, false).unwrap(), u128::MAX);
+    }
+
+    #[test]
+    fn mul_div_ceil_unit_cases() {
+        assert_eq!(mul_div(10, 3, 4, true).unwrap(), 8);
+        assert_eq!(mul_div(12, 3, 4, true).unwrap(), 9);
+        assert_eq!(mul_div(0, 100, 7, true).unwrap(), 0);
+        assert_eq!(mul_div(u128::MAX, 1, 1, true).unwrap(), u128::MAX);
+    }
+
+    #[test]
+    fn mul_div_division_by_zero_returns_distinct_variant() {
+        let err = mul_div(1, 1, 0, false).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathDivisionByZero as u32);
+        let err = mul_div(1, 1, 0, true).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathDivisionByZero as u32);
+    }
+
+    #[test]
+    fn mul_div_survives_u128_overflow_intermediate() {
+        let a = u128::MAX;
+        let b = u128::MAX;
+        let c = u128::MAX;
+        assert_eq!(mul_div(a, b, c, false).unwrap(), u128::MAX);
+        assert_eq!(mul_div(a, b, c, true).unwrap(), u128::MAX);
+    }
+
+    #[test]
+    fn mul_div_overflow_when_quotient_too_large() {
+        let a = u128::MAX;
+        let b = 2u128;
+        let c = 1u128;
+        let err = mul_div(a, b, c, false).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathOverflow as u32);
+    }
+
+    #[test]
+    fn mul_div_ceil_overflow_when_quotient_at_max_plus_remainder() {
+        let a = u128::MAX;
+        let b = 3u128;
+        let c = 2u128;
+        let err = mul_div(a, b, c, true).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathOverflow as u32);
+    }
+
+    #[test]
+    fn mul_div_u64_floor_and_ceil() {
+        assert_eq!(mul_div_u64(10, 3, 4, false).unwrap(), 7);
+        assert_eq!(mul_div_u64(10, 3, 4, true).unwrap(), 8);
+        assert_eq!(mul_div_u64(u64::MAX, 1, 1, false).unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn mul_div_u64_errors_when_result_exceeds_u64() {
+        let err = mul_div_u64(u64::MAX, 2, 1, false).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathOverflow as u32);
+    }
+
+    #[test]
+    fn mul_div_u64_division_by_zero_returns_distinct_variant() {
+        let err = mul_div_u64(1, 1, 0, false).unwrap_err();
+        assert_eq!(err_code(err), YdeltaError::MathDivisionByZero as u32);
+    }
+
+    #[test]
+    fn mul_div_matches_naive_when_no_overflow() {
+        for (a, b, c) in [
+            (12u128, 34, 5),
+            (1_000, 1_000, 7),
+            (u64::MAX as u128, u64::MAX as u128, u64::MAX as u128),
+            (SCALE, SCALE, SCALE),
+        ] {
+            let naive_floor = ((a as u128) * b) / c;
+            let r_floor = mul_div(a, b, c, false).unwrap();
+            assert_eq!(r_floor, naive_floor, "floor mismatch at ({a},{b},{c})");
+
+            let naive_ceil = if (a * b) % c == 0 {
+                naive_floor
+            } else {
+                naive_floor + 1
+            };
+            let r_ceil = mul_div(a, b, c, true).unwrap();
+            assert_eq!(r_ceil, naive_ceil, "ceil mismatch at ({a},{b},{c})");
+        }
     }
 }

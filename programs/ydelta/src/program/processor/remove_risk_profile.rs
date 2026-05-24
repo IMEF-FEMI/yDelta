@@ -1,11 +1,3 @@
-//! Remove an empty `RiskProfile` from a vault.
-//!
-//! Vault-admin-gated. The profile's `profile_id` is passed in
-//! instruction data. The ix rejects with `VaultProfileNotEmpty` unless
-//! every balance field on the profile is zero, so deployed loans,
-//! resting orders, idle principal, and unclaimed curator fees cannot
-//! be silently stranded by a teardown.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -37,10 +29,6 @@ pub fn process_remove_risk_profile(
 
     let vault_key = *vault.info.key;
 
-    // ─── Look up + emptiness gate ───
-    //
-    // Scoped read-only borrow so the mut borrow below for the actual
-    // removal can re-acquire.
     let curator: Pubkey = {
         let vault_data = vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
@@ -72,12 +60,11 @@ pub fn process_remove_risk_profile(
         profile.curator
     };
 
-    // ─── Remove ───
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let freed = remove_risk_profile(header, dynamic, params.profile_id);
+        let freed = remove_risk_profile(header, dynamic, params.profile_id)?;
         require!(
             freed != NIL,
             YdeltaError::VaultProfileNotFound,

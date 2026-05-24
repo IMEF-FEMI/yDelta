@@ -8,10 +8,6 @@ use crate::program::processor::set_vault_pause::SetVaultPauseParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 
-/// Build a vault-admin `SetVaultPause` instruction.
-///
-/// Account layout mirrors `SetVaultPauseContext::load`:
-/// `[vault_admin (signer), global_config, vault]`.
 pub fn set_vault_pause_instruction(vault: &Pubkey, admin: &Pubkey, paused: bool) -> Instruction {
     let mut data = YdeltaInstruction::SetVaultPause.to_vec();
     SetVaultPauseParams {

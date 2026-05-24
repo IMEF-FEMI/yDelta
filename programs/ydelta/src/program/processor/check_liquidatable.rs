@@ -1,32 +1,3 @@
-//! Read-only liquidatability gates designed for `simulateTransaction`.
-//!
-//! Two ixs:
-//!   - `CheckLtvLiquidatable` (tag 40): runs the same maintenance-tier
-//!     LTV gate `liquidate_loan` runs. Returns `Ok(())` iff the loan
-//!     would be eligible; errors `LoanStillSolvent` (or
-//!     `OracleStale` / `InvalidArgument`) otherwise.
-//!   - `CheckMaturityLiquidatable` (tag 41): runs the same time gate
-//!     `settle_matured_loan` runs. Returns `Ok(())` iff
-//!     `now > matures_at + grace` AND live outstanding > 0; errors
-//!     `LoanNotMatured` (or `InvalidArgument`) otherwise.
-//!
-//! Both share the helpers in `state/ltv.rs` (`assert_ltv_breach`,
-//! `assert_past_grace_period`, `loan_live_outstanding_atoms`) with the
-//! real ixs, so a successful simulation guarantees the real ix would
-//! also pass that gate (modulo CPI side-effects).
-//!
-//! Both ixs are genuinely READ-ONLY. They accrue interest into an
-//! owned stack copy of the loan header and never borrow the loan
-//! account data mutably — submitting either as a real (non-simulation)
-//! transaction commits no accrual state to the loan account.
-//!
-//! Caller usage:
-//!     let sim = rpc.simulate_transaction(&tx, ...).await?;
-//!     match sim.value.err {
-//!         None => /* loan is liquidatable; submit the real ix */,
-//!         Some(custom_err) => /* not liquidatable; surface to UI */,
-//!     }
-
 use solana_program::{
     account_info::AccountInfo, clock::Clock, entrypoint::ProgramResult, pubkey::Pubkey,
     sysvar::Sysvar,
@@ -65,14 +36,6 @@ pub fn process_check_ltv_liquidatable(
         )
     };
 
-    // Reject already-Repaid loans, accrue, then read live outstanding and
-    // the collateral cap.
-    //
-    // This is a read-only simulation ix. We accrue into an OWNED copy of
-    // the loan header (`LoanFixed` is `Pod`/`Copy`) and never borrow the
-    // account data mutably — so if this ix is ever submitted as a real
-    // (non-simulation) transaction it commits NO accrual state to the loan
-    // account.
     let (collateral_atoms, outstanding_live_atoms): (u64, u64) = {
         let loan_data = loan.info.try_borrow_data()?;
         let mut header: LoanFixed =
@@ -124,12 +87,6 @@ pub fn process_check_maturity_liquidatable(
     let now: i64 = Clock::get()?.unix_timestamp;
     let grace_period_seconds: u32 = market.get_fixed()?.fee_config.grace_period_seconds;
 
-    // Reject already-Repaid loans, accrue, run the time gate, then
-    // verify live outstanding > 0.
-    //
-    // Read-only simulation ix — accrue into an OWNED copy of the loan
-    // header and never borrow the account data mutably, so this ix
-    // commits no accrual state even if submitted as a real tx.
     let outstanding_live_atoms: u64 = {
         let loan_data = loan.info.try_borrow_data()?;
         let mut header: LoanFixed =

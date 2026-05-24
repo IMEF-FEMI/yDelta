@@ -1,5 +1,3 @@
-//! Update mutable policy fields on an existing `RiskProfile`.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -27,8 +25,7 @@ pub fn process_update_risk_profile(
     data: &[u8],
 ) -> ProgramResult {
     let params = UpdateRiskProfileParams::try_from_slice(data)?;
-    // Reuse CreateRiskProfileContext: same admin gate (global_vault_admin),
-    // same accounts (payer + global_config + vault + system_program).
+
     let CreateRiskProfileContext {
         payer: _,
         vault,

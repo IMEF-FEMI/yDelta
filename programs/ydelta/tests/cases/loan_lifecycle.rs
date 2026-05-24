@@ -79,19 +79,15 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
     // Vault-idle invariant must hold post-promote.
     fixture.assert_vault_idle_invariant(0).await;
 
-    // Borrower repays full.
+    // Borrower repays full. Per the repay/claim split this closes the
+    // loan PDA in-place and applies all per-loan risk-profile decrements;
+    // claim is now a pure seat→vault sweep with no time gate.
     fixture
         .repay(&bob, 0, bob_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
-    // Conservation must hold post-repay.
+    // Conservation is now a no-op on closed loans (atoms migrated to seat).
     fixture.assert_loan_conservation_holds(0).await;
-    fixture.refresh_blockhash().await;
-    // Advance to maturity for the fixed-term lock-up gate.
-    let loan_pre_claim = fixture.read_loan(0).await;
-    fixture
-        .set_clock_unix_timestamp(loan_pre_claim.matures_at_unix + 1)
-        .await;
     fixture.refresh_blockhash().await;
 
     // Profile principal pre-claim — holds the original deposit (within
@@ -110,7 +106,7 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, 0)
         .await
         .unwrap();
 
@@ -287,7 +283,7 @@ async fn two_independent_loans_remain_disjoint() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0, Some(fixture.payer.pubkey()))
+        .claim_repayment_for_risk_profile(&stranger, 0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -307,7 +303,12 @@ async fn two_independent_loans_remain_disjoint() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 1, Some(fixture.payer.pubkey()))
+        // Under the repay/claim split, both loans share the vault's
+        // single risk-profile seat (profile_id=0). The new claim is a
+        // seat sweep, not per-loan; the previous-call form
+        // .claim_repayment_for_risk_profile(&stranger, 1, …) is now
+        // expressed as a second sweep on the same profile.
+        .claim_repayment_for_risk_profile(&stranger, 0)
         .await
         .unwrap();
 

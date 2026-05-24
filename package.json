@@ -39,6 +39,7 @@
     "seat:withdraw": "tsx ts/scripts/seat-withdraw.ts",
     "borrower:place-bid": "tsx ts/scripts/borrower-place-bid.ts",
     "borrower:repay": "tsx ts/scripts/borrower-repay.ts",
+    "borrower:convert-p2pool": "tsx ts/scripts/borrower-convert-p2pool.ts",
     "settle": "tsx ts/scripts/settle.ts",
     "liquidate": "tsx ts/scripts/liquidate.ts",
     "claim-repayment": "tsx ts/scripts/claim-repayment.ts",

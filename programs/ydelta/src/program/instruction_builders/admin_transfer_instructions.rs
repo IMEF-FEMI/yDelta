@@ -1,5 +1,3 @@
-//! Instruction builders for the six admin-transfer instructions.
-
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},

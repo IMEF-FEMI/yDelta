@@ -1,5 +1,3 @@
-//! Set or clear the per-vault pause flag.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -13,14 +11,9 @@ use crate::validation::loaders::SetVaultPauseContext;
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct SetVaultPauseParams {
-    /// Non-zero → pause the vault; zero → unpause.
     pub paused: u8,
 }
 
-/// Toggle `GlobalVaultFixed.is_paused`. Vault-admin gated. While paused,
-/// every vault-scoped state-mutating ix rejects at the loader with
-/// `VaultPaused`; the two-step vault-admin transfer ixs stay live so a
-/// stuck vault can still be recovered. Mirrors `set_market_pause`.
 pub fn process_set_vault_pause(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

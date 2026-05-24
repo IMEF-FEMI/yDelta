@@ -265,3 +265,12 @@ export function bankAtomsToShares(atoms: bigint, shareValueFp48: bigint): bigint
   }
   return (atoms << FP48_SHIFT) / shareValueFp48;
 }
+
+// Accrue-prediction lives ON-CHAIN (`protocol::marginfi_rate_calc` runs
+// the full marginfi `calc_interest_rate` replication at `Clock::now()`
+// to derive the exact post-accrue liability). No client-side hint is
+// needed — the program has every input deterministically, so any TS
+// prediction would just be a stale duplicate. Earlier iterations passed
+// `expected_liability_atoms` from the client; that ix-param + the TS
+// `predictBorrowerLiabilityAtomsCeil` helper were removed once the
+// processor's own calc proved authoritative.

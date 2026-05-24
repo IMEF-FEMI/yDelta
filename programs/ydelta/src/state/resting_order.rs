@@ -11,9 +11,6 @@ use static_assertions::const_assert_eq;
 
 use super::constants::{NO_EXPIRATION_LAST_VALID_UNIX_TS, RESTING_ORDER_SIZE};
 
-/// Trade side. `Bid` = borrower demand (the IOC taker side; a borrower
-/// bid never rests). `Ask` = lender supply (vault risk-profile quotes;
-/// the only side that rests on the book).
 #[derive(
     Debug,
     BorshDeserialize,
@@ -32,19 +29,12 @@ pub enum Side {
     Ask = 1,
 }
 
-// No `unsafe impl Pod for Side`. A `#[repr(u8)]` enum has invalid
-// bit patterns (2..=255), so `Pod` would be unsound. `RestingOrder`
-// stores the discriminant as a raw `u8`; use `Side::try_from` to get a
-// typed value, which rejects an out-of-range byte instead of UB.
-
 impl Default for Side {
     fn default() -> Self {
         Side::Bid
     }
 }
 
-/// Order type. yDelta supports `Limit | ImmediateOrCancel |
-/// PostOnly`.
 #[derive(
     Debug,
     BorshDeserialize,
@@ -59,17 +49,10 @@ impl Default for Side {
 )]
 #[repr(u8)]
 pub enum OrderType {
-    /// Retained only as the zero discriminant so a zeroed `OrderType`
-    /// byte (required by the `Pod`/`Zeroable` impls and `Default`)
-    /// deserialises to a valid variant. The live order types are
-    /// `ImmediateOrCancel` (borrower bids) and `PostOnly` (vault
-    /// risk-profile asks).
     Limit = 0,
     ImmediateOrCancel = 1,
     PostOnly = 2,
 }
-
-// No `unsafe impl Pod for OrderType` — see the note on `Side`.
 
 impl Default for OrderType {
     fn default() -> Self {
@@ -85,62 +68,33 @@ pub fn order_type_can_take(order_type: OrderType) -> bool {
     order_type != OrderType::PostOnly
 }
 
-/// `RestingOrder` payload. Lives in the asks tree of a `Market`.
-///
-/// The only resting orders are vault risk-profile asks — a borrower bid
-/// never rests. Sort key on the ask tree: `rate_bps` ascending then
-/// `sequence_number` ascending (FIFO). The `Ord` impl encodes that
-/// single comparator.
-///
-/// `share_price_snapshot_bytes` records the bank's share-price at
-/// place-order time so cancel/match can decrement the seat's
-/// `*_encumbered_shares` by exactly the same fp48-share quantity that
-/// `place_order` added. Stored as `[u8; 16]` (not `u128`) so the
-/// struct's 8-byte alignment and the shared 112-byte free-list block
-/// stay byte-identical; access via `share_price_snapshot()` /
-/// `set_share_price_snapshot()` helpers (bytemuck cast).
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct RestingOrder {
-    pub trader_seat_index: DataIndex, // @0  4
-    _pad0: [u8; 4],                   // @4  4
+    pub trader_seat_index: DataIndex,
+    _pad0: [u8; 4],
 
-    pub sequence_number: u64,    // @8  8
-    pub principal_atoms: u64,    // @16 8
-    pub collateral_atoms: u64,   // @24 8
-    pub last_valid_unix_ts: i64, // @32 8
+    pub sequence_number: u64,
+    pub principal_atoms: u64,
+    pub collateral_atoms: u64,
+    pub last_valid_unix_ts: i64,
 
-    pub term_seconds: u32, // @40 4
-    pub rate_bps: u16,     // @44 2
-    /// `Side` discriminant, stored raw. A `#[repr(u8)]` enum has
-    /// invalid bit patterns, so `unsafe impl Pod` on the enum is
-    /// unsound — a corrupt account byte would be a UB-on-`match` enum.
-    /// Stored as `u8`; convert with `Side::try_from` at typed use sites.
-    pub side: u8, // @46 1
-    /// `OrderType` discriminant, stored raw — see `side`.
-    pub order_type: u8, // @47 1
-    pub flags: u8,         // @48 1
-    _pad1: [u8; 1],        // @49 1
+    pub term_seconds: u32,
+    pub rate_bps: u16,
 
-    /// fp48 (`bits / 2^48`) snapshot of the side-relevant bank's
-    /// `asset_share_value` at the time of `place_order`. Bid orders
-    /// snapshot the collateral bank; ask orders snapshot the debt
-    /// bank.
-    share_price_snapshot_bytes: [u8; 16], // @50 16
-    /// Padding to keep `_reserved` 8-aligned at offset 72.
-    _pad2: [u8; 6], // @66 6
+    pub side: u8,
 
-    /// Reserved budget. 72 bytes of headroom from the 144-byte payload
-    /// (matching engine's snapshot fields land on `MatchedLoan`, not
-    /// here — this slot is forward-compat).
-    _reserved: [u64; 9], // @72 72
+    pub order_type: u8,
+    pub flags: u8,
+    _pad1: [u8; 1],
+
+    share_price_snapshot_bytes: [u8; 16],
+
+    _pad2: [u8; 6],
+
+    _reserved: [u64; 9],
 }
-// trader_seat_index 4 + _pad0 4 +
-// sequence/principal/collateral/last_valid 4 × 8 = 32 +
-// term_seconds 4 + rate_bps 2 + side+order_type+flags 3 + _pad1 1 +
-// share_price_snapshot_bytes 16 + _pad2 6 +
-// _reserved 72
-// = 8 + 32 + 4 + 2 + 4 + 16 + 6 + 72 = 144
+
 const_assert_eq!(size_of::<RestingOrder>(), RESTING_ORDER_SIZE);
 const_assert_eq!(size_of::<RestingOrder>() % 8, 0);
 
@@ -178,9 +132,6 @@ impl RestingOrder {
         }
     }
 
-    /// fp48 share-price recorded at `place_order` time. Used by
-    /// match/cancel to decrement seat encumbered shares by exactly the
-    /// quantity that was added at place time.
     pub fn share_price_snapshot(&self) -> u128 {
         u128::from_le_bytes(self.share_price_snapshot_bytes)
     }
@@ -213,20 +164,7 @@ impl RestingOrder {
 
 impl Ord for RestingOrder {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Every resting order is a vault risk-profile Ask — a borrower
-        // bid never rests, so there is only one tree (the asks tree)
-        // and one comparator.
-        //
-        // Direction is chosen so that the tree's `max_index` (rightmost
-        // node, where hypertree puts the largest-by-Ord) points at the
-        // BEST ask — the one the matching engine should hit first.
-        //
-        // Best ask = lowest rate (a lender accepting less interest).
-        // Lower rate → larger Ord-key → rightmost.
-        //
-        // Within equal rates: FIFO. Earlier sequence number = better
-        // priority = larger Ord-key (so earlier orders sit at the right).
-        let rate_cmp = other.rate_bps.cmp(&self.rate_bps); // descending
+        let rate_cmp = other.rate_bps.cmp(&self.rate_bps);
         match rate_cmp {
             Ordering::Equal => other.sequence_number.cmp(&self.sequence_number),
             ord => ord,
@@ -241,8 +179,13 @@ impl PartialOrd for RestingOrder {
 }
 
 impl PartialEq for RestingOrder {
+    // H-2: must mirror `Ord::cmp`'s field set or the `a == b ⇔ cmp == Equal`
+    // contract is violated (UB for any std container that assumes it). The
+    // ordering key is (rate_bps, sequence_number); `trader_seat_index` is
+    // irrelevant because `sequence_number` is already a per-market monotonic
+    // counter and uniquely identifies the order in valid state.
     fn eq(&self, other: &Self) -> bool {
-        self.trader_seat_index == other.trader_seat_index
+        self.rate_bps == other.rate_bps
             && self.sequence_number == other.sequence_number
     }
 }
@@ -264,8 +207,6 @@ mod tests {
     use super::*;
 
     fn order(side: Side, rate: u16, seq: u64) -> RestingOrder {
-        // Snapshot share-price = 1.0 fp48 (`1 << 48`) for unit-test
-        // ordering invariants — value is irrelevant to the comparator.
         RestingOrder::new_primary(
             0,
             seq,
@@ -289,14 +230,10 @@ mod tests {
 
     #[test]
     fn ask_tree_puts_best_at_max_index() {
-        // Best ask = lowest rate. Tree's `max_index` must be the
-        // lowest-rate ask: cheap > pricey by Ord.
         let cheap = order(Side::Ask, 600, 0);
         let pricey = order(Side::Ask, 800, 1);
         assert!(cheap > pricey, "lowest-rate ask is the best");
 
-        // FIFO at equal rate: earlier sequence wins. Earlier = better =
-        // larger by Ord = ends up at max_index.
         let same_rate_first = order(Side::Ask, 700, 0);
         let same_rate_later = order(Side::Ask, 700, 1);
         assert!(same_rate_first > same_rate_later, "FIFO breaks ties");
@@ -327,5 +264,61 @@ mod tests {
         assert!(!order_type_can_rest(OrderType::ImmediateOrCancel));
         assert!(order_type_can_take(OrderType::Limit));
         assert!(!order_type_can_take(OrderType::PostOnly));
+    }
+
+    /// H-2 regression: `Eq` and `Ord` must agree — `a == b ⇔ a.cmp(b) == Equal`.
+    /// Pre-fix, `eq` keyed on `(trader_seat_index, sequence_number)` while
+    /// `cmp` keyed on `(rate_bps, sequence_number)`, so the contract was
+    /// violable: e.g. two orders with same `(seat, seq)` but different rates
+    /// would compare equal yet not cmp-equal — undefined behavior for any
+    /// `BTreeSet`/`HashSet`/`std`-algorithm consumer.
+    ///
+    /// Cross-product the four observable-by-cmp/eq fields over a small set
+    /// of values and assert the contract for every ordered pair.
+    #[test]
+    fn eq_and_cmp_agree_for_all_field_permutations() {
+        let trader_seats: &[u32] = &[0, 1];
+        let seqs: &[u64] = &[10, 20];
+        let rates: &[u16] = &[600, 800];
+        let sides = [Side::Ask, Side::Bid];
+
+        let mut orders = Vec::new();
+        for &seat in trader_seats {
+            for &seq in seqs {
+                for &rate in rates {
+                    for side in sides {
+                        orders.push(RestingOrder::new_primary(
+                            seat,
+                            seq,
+                            side,
+                            OrderType::Limit,
+                            rate,
+                            30,
+                            100,
+                            0,
+                            0,
+                            0,
+                            1u128 << 48,
+                        ));
+                    }
+                }
+            }
+        }
+
+        for (i, a) in orders.iter().enumerate() {
+            for (j, b) in orders.iter().enumerate() {
+                let eq = a == b;
+                let cmp_eq = a.cmp(b) == Ordering::Equal;
+                assert_eq!(
+                    eq, cmp_eq,
+                    "Eq/Ord contract violated: orders[{i}]={a} vs orders[{j}]={b} \
+                     — a == b is {eq} but cmp == Equal is {cmp_eq}",
+                );
+                // Also pin reflexivity: every order compares equal to itself.
+                if i == j {
+                    assert!(eq && cmp_eq, "reflexivity broken for orders[{i}]={a}");
+                }
+            }
+        }
     }
 }

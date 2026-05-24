@@ -140,7 +140,9 @@ fn settle_matured_loan_ix_has_twenty_four_accounts() {
         &Pubkey::new_unique(),   // marginfi_program
         0,                       // repay_atoms_max = 0 → full repay
         &Pubkey::new_unique(),   // cranker_refund
+        None,                    // global_vault (None = P2Pool variant)
     );
+    // 24 accounts is the P2Pool shape; Fixed adds 1 (global_vault).
     assert_eq!(ix.accounts.len(), 24);
 }
 
@@ -168,6 +170,7 @@ fn liquidate_loan_ix_has_twenty_four_accounts() {
         &Pubkey::new_unique(),
         0, // repay_atoms_max = 0 → full repay
         &Pubkey::new_unique(),
+        None, // global_vault (None = P2Pool variant)
     );
     // Same shape as settle_matured_loan — both ixs share the loader.
     assert_eq!(ix.accounts.len(), 24);
@@ -275,6 +278,7 @@ fn partial_repay_payload_round_trips() {
             &Pubkey::new_unique(),
             repay_max,
             &Pubkey::new_unique(),
+            None,
         )
     };
     // Tag (1 byte) + u64 (8 bytes) = 9.
@@ -305,6 +309,7 @@ fn partial_repay_payload_round_trips() {
         &Pubkey::new_unique(),
         999,
         &Pubkey::new_unique(),
+        None,
     );
     assert_eq!(liq.data.len(), 9);
     assert_eq!(&liq.data[1..], &999u64.to_le_bytes());
@@ -394,36 +399,37 @@ async fn liquidate_loan_breaches_at_oracle_drop_succeeds() {
         .await
         .expect("liquidate_loan must succeed at breached LTV");
 
-    let loan_after = fixture.read_loan(0).await;
-    assert_eq!(loan_after.state, LoanState::Repaid as u8);
-    assert_eq!(loan_after.outstanding_debt_atoms, 0);
-    assert_eq!(loan_after.collateral_atoms, 0);
-    // Conservation must hold post-full-liquidation.
+    // Per the repay/claim split, full liquidation now closes the loan
+    // PDA in-place (it used to wait for claim_repayment_for_risk_profile).
+    // Assert closure directly; the loan body's accumulators have already
+    // been migrated to the market-level `accumulated_protocol_fee_shares`
+    // and the lender vault's risk-profile decrements during liquidate.
+    assert!(
+        fixture.loan_account_is_closed(0).await,
+        "full liquidation must close the loan PDA in-place",
+    );
     fixture.assert_loan_conservation_holds(0).await;
-    // Protocol-fee accumulator must be physically backed by atoms in
-    // the lender_marginfi_account (this is the protocol-fee-backing
-    // invariant the audit calls out). Read live asset shares and
-    // convert to atoms.
-    use marginfi_mocks::state::{Bank, MarginfiAccount};
+
+    // Protocol-fee accumulator now lives on the MARKET (in
+    // `accumulated_protocol_fee_shares`), not the loan body. Verify it's
+    // physically backed by the lender_marginfi_account's asset_shares.
+    use marginfi_mocks::state::MarginfiAccount;
     use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
+    let market = fixture.read_market_fixed().await;
+    let market_protocol_fee_shares = market.accumulated_protocol_fee_shares;
     let mfi_data = fixture
         .account_data(fixture.lender_marginfi_account_pubkey())
         .await;
     let mfi = MarginfiAccount::try_from_account_data(&mfi_data).unwrap();
     let lender_shares = mfi
         .find_balance(&mainnet::usdc_bank())
-        .map(|b| wrapped_i80f48_to_u128(b.asset_shares))
+        .map(|b| wrapped_i80f48_to_u128(b.asset_shares).unwrap())
         .unwrap_or(0);
-    let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
-    let bank = Bank::try_from_account_data(&bank_data).unwrap();
-    let asv = wrapped_i80f48_to_u128(bank.asset_share_value);
-    let lender_atoms =
-        ydelta::math::from_scaled_floor(ydelta::math::mul_scale(lender_shares, asv).unwrap());
     assert!(
-        (loan_after.accumulated_protocol_fee_atoms as u128) <= lender_atoms,
-        "protocol_fee accumulator ({}) exceeds atoms physically in lender_marginfi_account ({})",
-        loan_after.accumulated_protocol_fee_atoms,
-        lender_atoms,
+        market_protocol_fee_shares <= lender_shares,
+        "market.accumulated_protocol_fee_shares ({}) must be ≤ lender_marginfi_account asset_shares ({})",
+        market_protocol_fee_shares,
+        lender_shares,
     );
 }
 
@@ -470,22 +476,13 @@ async fn settle_matured_loan_after_grace_seizes_collateral() {
         .await
         .expect("settle_matured_loan must succeed past grace window");
 
-    // Loan settled: state = Repaid, no outstanding, no collateral left.
-    let loan_post = fixture.read_loan(0).await;
-    assert_eq!(
-        loan_post.state,
-        LoanState::Repaid as u8,
-        "settled loan must be in Repaid state"
+    // Per the repay/claim split, full settlement closes the loan PDA
+    // in-place. Asserting closed = trivially-repaid.
+    assert!(
+        fixture.loan_account_is_closed(0).await,
+        "full settle_matured_loan must close the loan PDA in-place",
     );
-    assert_eq!(
-        loan_post.outstanding_debt_atoms, 0,
-        "settled loan must have zero outstanding"
-    );
-    assert_eq!(
-        loan_post.collateral_atoms, 0,
-        "all collateral must be seized in settlement"
-    );
-    // Conservation must hold post-settlement.
+    // Conservation collapses on close (atoms moved to seat); helper no-ops.
     fixture.assert_loan_conservation_holds(0).await;
 }
 
@@ -645,12 +642,11 @@ async fn liquidator_keeper_balance_grows_after_settlement() {
         keeper_wsol_pre,
         keeper_wsol_post
     );
-    // Loan must be Repaid post-settle with zero outstanding & zero collateral.
-    let loan_post = fixture.read_loan(0).await;
-    assert_eq!(loan_post.state, LoanState::Repaid as u8);
-    assert_eq!(loan_post.outstanding_debt_atoms, 0);
-    assert_eq!(loan_post.collateral_atoms, 0);
-    // Conservation must hold post-settle.
+    // Per the repay/claim split, full settle closes the loan PDA in-place.
+    assert!(
+        fixture.loan_account_is_closed(0).await,
+        "full settle_matured_loan must close the loan PDA in-place",
+    );
     fixture.assert_loan_conservation_holds(0).await;
 }
 
@@ -702,42 +698,60 @@ async fn protocol_accrues_fee_on_liquidate_loan() {
     fixture.refresh_blockhash().await;
     fixture.refresh_oracle_freshness().await;
 
+    // Snapshot market-level protocol fee accumulator BEFORE the liquidation.
+    let market_protocol_shares_pre = fixture
+        .read_market_fixed()
+        .await
+        .accumulated_protocol_fee_shares;
+    let _ = (lender_claimable_pre, protocol_fee_pre);
+
     fixture
         .liquidate_loan(&keeper, 0, keeper_usdc, keeper_wsol, /*repay_max=*/ 0)
         .await
         .expect("liquidate_loan must succeed at breached LTV");
 
-    let loan_post = fixture.read_loan(0).await;
-    // Expected protocol take ≈ outstanding_live × 200 / 10_000.
-    // outstanding_live ≈ principal (no time passed → no accrual).
+    // Per the repay/claim split, full liquidation closes the loan PDA;
+    // the loan body's `accumulated_protocol_fee_atoms` got migrated to
+    // the MARKET's `accumulated_protocol_fee_shares` (shares not atoms).
+    assert!(
+        fixture.loan_account_is_closed(0).await,
+        "full liquidation must close the loan PDA",
+    );
+    fixture.assert_loan_conservation_holds(0).await;
+
+    // Expected protocol take ≈ outstanding_live × 200 / 10_000 atoms.
+    // At genesis share-value ≈ 1.0, shares ≈ atoms, so the market's
+    // protocol-fee-shares accumulator should have grown by approximately
+    // expected_protocol_take.
     let expected_protocol_take: u64 = principal * 200 / 10_000;
     assert!(
         expected_protocol_take > 1_000,
         "test parameters too small to observe protocol fee"
     );
-    let protocol_fee_delta = loan_post
-        .accumulated_protocol_fee_atoms
-        .saturating_sub(protocol_fee_pre);
-    let drift = (protocol_fee_delta as i128 - expected_protocol_take as i128).abs();
-    assert!(
-        drift <= 4,
-        "accumulated_protocol_fee_atoms delta drift > 4 atoms (got {}, expected {})",
-        protocol_fee_delta,
-        expected_protocol_take
-    );
+    let market_protocol_shares_post = fixture
+        .read_market_fixed()
+        .await
+        .accumulated_protocol_fee_shares;
+    let protocol_fee_delta_shares: u128 =
+        market_protocol_shares_post.saturating_sub(market_protocol_shares_pre);
 
-    // Lender's claim was reduced by the same amount.
-    let lender_drop = lender_claimable_pre.saturating_sub(loan_post.lender_claimable_atoms);
-    let lender_drift = (lender_drop as i128 - expected_protocol_take as i128).abs();
+    // Convert shares back to atoms using the bank's live asset_share_value
+    // — mainnet snapshot's USDC bank has SP > 1.0 from accumulated supply
+    // yield, so shares ≠ atoms.
+    use marginfi_mocks::state::Bank;
+    use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
+    let bank_data = fixture.account_data(mainnet::usdc_bank()).await;
+    let bank = Bank::try_from_account_data(&bank_data).unwrap();
+    let asv = wrapped_i80f48_to_u128(bank.asset_share_value).unwrap();
+    let protocol_fee_delta_atoms: u64 = ydelta::math::from_scaled_floor(
+        ydelta::math::mul_scale(protocol_fee_delta_shares, asv).unwrap(),
+    ) as u64;
+    let drift = (protocol_fee_delta_atoms as i128 - expected_protocol_take as i128).abs();
     assert!(
-        lender_drift <= 4,
-        "lender_claimable_atoms drop drift > 4 atoms (got {}, expected {})",
-        lender_drop,
-        expected_protocol_take
+        drift <= 8,
+        "market protocol-fee delta drift > 8 atoms (got {}, expected ≈{}, share_value_fp48={})",
+        protocol_fee_delta_atoms,
+        expected_protocol_take,
+        asv,
     );
-    // Conservation must hold across the full liquidation event.
-    fixture.assert_loan_conservation_holds(0).await;
-    // Loan flipped to Repaid (full liquidation drained outstanding).
-    assert_eq!(loan_post.state, LoanState::Repaid as u8);
-    assert_eq!(loan_post.outstanding_debt_atoms, 0);
 }

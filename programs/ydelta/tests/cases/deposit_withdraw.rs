@@ -42,7 +42,7 @@ use crate::test_utils::market_fixture::MarketFixture;
 /// from the bank's raw account data the same way the adapter does.
 fn amount_to_shares_against(bank_data: &[u8], amount_atoms: u64) -> u128 {
     let bank = Bank::try_from_account_data(bank_data).unwrap();
-    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value);
+    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value).unwrap();
     let amount_fp48 = to_scaled(amount_atoms as u128).unwrap();
     div_scale(amount_fp48, asv_u128).unwrap()
 }
@@ -52,7 +52,7 @@ fn amount_to_shares_against(bank_data: &[u8], amount_atoms: u64) -> u128 {
 fn marginfi_asset_shares(mfi_data: &[u8], bank_pk: &Pubkey) -> u128 {
     let mfi = MarginfiAccount::try_from_account_data(mfi_data).unwrap();
     mfi.find_balance(bank_pk)
-        .map(|b| wrapped_i80f48_to_u128(b.asset_shares))
+        .map(|b| wrapped_i80f48_to_u128(b.asset_shares).unwrap())
         .unwrap_or(0)
 }
 
@@ -339,7 +339,7 @@ async fn withdraw_never_overpays_debited_shares() {
     // `expected_atoms` = what the floored shares are worth: shares * ASV,
     // floored. The payout must never exceed this.
     let bank = Bank::try_from_account_data(&bank_data).unwrap();
-    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value);
+    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value).unwrap();
     let expected_atoms_fp = ydelta::math::mul_scale(shares_burned, asv_u128).unwrap();
     let expected_atoms = ydelta::math::from_scaled_floor(expected_atoms_fp) as u64;
 

@@ -1,7 +1,3 @@
-//! Instruction builders for `CheckLtvLiquidatable` and
-//! `CheckMaturityLiquidatable` — read-only liquidatability gates
-//! designed for `simulateTransaction` callers.
-
 use solana_program::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -12,14 +8,6 @@ use crate::state::global_config::global_config_pda;
 use crate::state::loan::loan_pda;
 use crate::validation::get_borrower_integration_account_address;
 
-/// Build a `CheckLtvLiquidatable` ix. Caller submits via
-/// `simulateTransaction`; the loan is liquidatable iff the simulated tx
-/// returns `Ok`. On failure the program error encodes which gate
-/// rejected (`LoanStillSolvent`, `OracleStale`, `InvalidArgument` for
-/// settled loans, etc.).
-///
-/// `debt_oracles` and `collateral_oracles` are variadic per the bank's
-/// `OracleSetup` (see `MarginfiOracleAis`).
 #[allow(clippy::too_many_arguments)]
 pub fn check_ltv_liquidatable_instruction(
     market: &Pubkey,
@@ -58,9 +46,6 @@ pub fn check_ltv_liquidatable_instruction(
     }
 }
 
-/// Build a `CheckMaturityLiquidatable` ix. The loan is past-grace-and-
-/// settleable iff the simulated tx returns `Ok`. No collateral side
-/// needed — the maturity gate is time-only.
 pub fn check_maturity_liquidatable_instruction(
     market: &Pubkey,
     payer: &Pubkey,

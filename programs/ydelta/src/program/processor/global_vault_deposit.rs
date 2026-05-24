@@ -1,5 +1,3 @@
-//! Deposit atoms into a vault profile and mint shares.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -62,12 +60,7 @@ pub fn process_global_vault_deposit(
     let vault_key = *vault.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    // Transfer depositor_token to global_vault_staging. Snapshot the
-    // staging balance around the transfer: a Token-2022 transfer-fee
-    // mint delivers less than the nominal `params.amount_atoms`, and all
-    // downstream accounting (marginfi deposit, share mint, principal /
-    // assets totals) must use what PHYSICALLY arrived.
-    let staging_before_atoms = global_vault_staging.get_balance_atoms();
+    let staging_before_atoms = global_vault_staging.get_balance_atoms()?;
     super::deposit::transfer_user_to_vault(
         token_program.info,
         depositor_token.info,
@@ -78,7 +71,7 @@ pub fn process_global_vault_deposit(
         mint.mint.decimals,
     )?;
     let received_atoms = global_vault_staging
-        .get_balance_atoms()
+        .get_balance_atoms()?
         .checked_sub(staging_before_atoms)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     require!(
@@ -87,8 +80,6 @@ pub fn process_global_vault_deposit(
         "global_vault_deposit: staging vault received 0 atoms"
     )?;
 
-    // Deposit from global_vault_staging into the liquidity vault,
-    // signed by global_vault_signer.
     let vault_bytes = vault_key.to_bytes();
     let signer_bump_arr = [global_vault_signer_bump];
     let global_vault_signer_seeds: &[&[u8]] =
@@ -108,11 +99,7 @@ pub fn process_global_vault_deposit(
         received_atoms,
         &[global_vault_signer_seeds],
     )?;
-    // Marginfi floors shares on deposit, so the integration account is worth
-    // slightly less than `received_atoms`. Account the marginfi-acknowledged
-    // value (not the gross transfer) so `total_assets`/`total_principal` never
-    // exceed the redeemable balance — otherwise the final withdrawer trips the
-    // physical-sufficiency gate on the rounding dust and can't fully exit.
+
     let credited_atoms: u64 =
         MarginfiV18Adapter.shares_to_amount(&[lending_pool.info.clone()], credited_shares)?;
     require!(
@@ -122,10 +109,6 @@ pub fn process_global_vault_deposit(
         received_atoms
     )?;
 
-    // Expand the vault by one node block if needed.
-    // The depositor seat upsert below needs a free 128-byte vault
-    // node block. Realloc + extend free list before the mutating
-    // borrow.
     let need_expand: bool = {
         let vault_data = vault.info.try_borrow_data()?;
         let header: &GlobalVaultFixed =
@@ -152,15 +135,11 @@ pub fn process_global_vault_deposit(
         vault_expand_node_block(header, dynamic)?;
     }
 
-    // Accrue the profile, mint shares, and write the depositor seat.
-    // Vault state is the authoritative store of the user's stake; the
-    // UserAccountFixed mirror update below is bookkeeping only.
     let (shares_minted, total_shares_after, total_assets_after) = {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
-        // Locate profile node.
         let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
         let profile_idx = {
             let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
@@ -173,26 +152,17 @@ pub fn process_global_vault_deposit(
             params.profile_id
         )?;
 
-        // Accrue + share-mint math under a profile-only borrow.
         let (shares, total_shares_after, total_assets_after, snapshot_supply, snapshot_delta) = {
             let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
             let share_value_fp48 =
-                crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info);
+                crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info)?;
             accrue_risk_profile(profile, now, share_value_fp48)?;
 
             let atoms_u128 = credited_atoms as u128;
             let shares: u128 = if profile.total_shares == 0 {
-                // Genesis (or post-drain) state. Reset accumulated assets
-                // to neutralize any donations / phantom yield credited
-                // while no shares existed — otherwise the first depositor
-                // would mint 1:1 against an inflated asset base and
-                // capture the donation.
                 profile.total_assets_atoms = 0;
                 atoms_u128
             } else {
-                // Fully impaired (assets wiped by bad debt, shares outstanding):
-                // share price is undefined. Block new deposits until shareholders
-                // burn their dead shares (genesis re-mints cleanly afterwards).
                 require!(
                     profile.total_assets_atoms != 0,
                     YdeltaError::InvalidArgument,
@@ -200,14 +170,14 @@ pub fn process_global_vault_deposit(
                      until existing shares are burned",
                     { profile.total_shares }
                 )?;
-                atoms_u128
-                    .checked_mul(profile.total_shares)
-                    .and_then(|x| x.checked_div(profile.total_assets_atoms as u128))
-                    .ok_or(ProgramError::ArithmeticOverflow)?
+                crate::math::mul_div(
+                    atoms_u128,
+                    profile.total_shares,
+                    profile.total_assets_atoms as u128,
+                    false,
+                )?
             };
-            // Reject zero-share mints: dust deposits at high share-prices
-            // would credit total_principal/total_assets while issuing 0
-            // shares to the depositor — pure grief vector.
+
             require!(
                 shares > 0,
                 YdeltaError::InvalidArgument,
@@ -236,7 +206,6 @@ pub fn process_global_vault_deposit(
             )
         };
 
-        // Authoritative depositor-seat write. Upsert under owner key.
         let seat_idx = upsert_risk_profile_depositor_seat(
             header,
             dynamic,
@@ -257,10 +226,6 @@ pub fn process_global_vault_deposit(
         (shares, total_shares_after, total_assets_after)
     };
 
-    // Mirror onto UserAccountFixed.VaultPosition.
-    // Secondary projection of the vault-side seat for cheap
-    // user-account-side reads. Diverges from the vault-side seat only
-    // transiently across atomic ix boundaries.
     {
         let data: &mut RefMut<&mut [u8]> = &mut user_account_ai.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(USER_ACCOUNT_FIXED_SIZE);

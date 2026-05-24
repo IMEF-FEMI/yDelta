@@ -16,11 +16,6 @@ use crate::validation::{
     get_market_signer_address,
 };
 
-/// Build a `PlaceOrder` instruction — a borrower IOC bid.
-///
-/// `place_order` is borrower-IOC-only: the bid crosses resting vault
-/// risk-profile asks and any residual either fires the P2Pool fallback
-/// or drops. It never rests.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_instruction(
     market: &Pubkey,
@@ -83,27 +78,12 @@ pub fn place_order_instruction(
         AccountMeta::new_readonly(*debt_bank_liquidity_vault_authority, false),
         AccountMeta::new(*borrower_debt_token, false),
         AccountMeta::new_readonly(*token_program, false),
-        // Signer's UserAccount + system_program (auto-create on first
-        // signer-side ix).
         AccountMeta::new(user_account_pda(payer).0, false),
         AccountMeta::new_readonly(system_program::id(), false),
-        // lender_marginfi_account + market_debt_vault for the P2Pool
-        // deposit-back path. `marginfi.borrow` lands residual atoms
-        // in `market_debt_vault`, then a follow-up `marginfi.deposit`
-        // (signed by `market_signer`) routes them into
-        // `lender_marginfi_account` so the borrower's principal
-        // earns lender-side yield. The borrower's `ClaimedSeat` gets
-        // credited with the asset-share delta and withdraws via
-        // `process_withdraw`.
         AccountMeta::new(lender_marginfi_account, false),
         AccountMeta::new(market_debt_vault, false),
     ]);
-    // Vault PDA (writable). Always derivable from `debt_mint`. The
-    // processor reads/mutates GlobalVault state to apply match-time
-    // encumbrance for any vault-owned makers crossed in this match.
-    // If the vault doesn't exist on-chain (no `create_vault` ran for
-    // this mint), the loader's data_len check downgrades to `None`
-    // and vault crosses are skipped.
+
     let (vault_pk, _) = crate::state::vault::global_vault_pda(debt_mint);
     accounts.push(AccountMeta::new(vault_pk, false));
     Instruction {

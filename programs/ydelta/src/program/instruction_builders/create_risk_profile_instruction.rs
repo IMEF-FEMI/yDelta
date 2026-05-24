@@ -10,12 +10,6 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Build a vault-admin `CreateRiskProfile` instruction.
-///
-/// The new profile's `profile_id` is **assigned by the program** from
-/// `GlobalVaultFixed.next_profile_id` — callers cannot request a
-/// specific id. The id is reported back through
-/// `RiskProfileCreatedLog.profile_id` after the tx confirms.
 pub fn create_risk_profile_instruction(
     mint: &Pubkey,
     payer: &Pubkey,

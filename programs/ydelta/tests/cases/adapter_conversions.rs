@@ -171,3 +171,68 @@ async fn amount_to_shares_at_higher_share_price_returns_fewer_shares() {
     // 500 shares in fp48 = 500 << 48.
     assert_eq!(result.atoms_or_shares, 500u128 << 48);
 }
+
+/// H-10 regression: the adapter's read helpers used to trust any account
+/// whose bytes happened to deserialize as a Bank — relying on the
+/// discriminator check alone. Per H-10 they now require the bank account
+/// to be OWNED by the marginfi program. A forged bank with the correct
+/// disc + payload but the WRONG owner must be rejected.
+///
+/// Forge a bank with the right bytes but `owner = System Program` (not
+/// marginfi). The adapter ix must fail with `InvalidIntegrationAccount`.
+#[tokio::test]
+async fn forged_bank_with_wrong_owner_is_rejected() {
+    use marginfi_mocks::discriminator::BANK_DISCRIMINATOR;
+    use marginfi_mocks::state::{Bank, BANK_ACCOUNT_SIZE};
+    use marginfi_mocks::wire::WrappedI80F48;
+    use solana_sdk::account::Account;
+
+    let fixture = AdapterFixture::new().await;
+    let bank_pk = Pubkey::new_unique();
+
+    // Construct bank bytes identical to a legitimate marginfi bank...
+    let mut bank: Bank = Default::default();
+    bank.mint = Pubkey::new_unique();
+    bank.mint_decimals = 6;
+    bank.group = Pubkey::new_unique();
+    bank.asset_share_value = WrappedI80F48::from_i128_bits(1i128 << 48);
+    bank.liability_share_value = WrappedI80F48::from_i128_bits(1i128 << 48);
+    bank.liquidity_vault = Pubkey::new_unique();
+    bank.liquidity_vault_bump = 254;
+    bank.liquidity_vault_authority_bump = 253;
+    let mut data = Vec::with_capacity(BANK_ACCOUNT_SIZE);
+    data.extend_from_slice(&BANK_DISCRIMINATOR);
+    data.extend_from_slice(bytemuck::bytes_of(&bank));
+
+    let lamports = solana_sdk::rent::Rent::default().minimum_balance(BANK_ACCOUNT_SIZE);
+    // ...but owned by the System Program instead of the marginfi program.
+    let acct = Account {
+        lamports,
+        data,
+        owner: solana_program::system_program::ID,
+        executable: false,
+        rent_epoch: 0,
+    };
+    fixture
+        .context
+        .borrow_mut()
+        .set_account(&bank_pk, &acct.into());
+
+    // Process (not simulate) so we get a hard transaction error.
+    let payer = fixture.payer.insecure_clone();
+    let blockhash = fixture.context.borrow().last_blockhash;
+    let tx = Transaction::new_signed_with_payer(
+        &[amount_to_shares_ix(bank_pk, 1_000)],
+        Some(&payer.pubkey()),
+        &[&payer],
+        blockhash,
+    );
+    let result = {
+        let client: RefMut<ProgramTestContext> = fixture.context.borrow_mut();
+        client.banks_client.process_transaction(tx).await
+    };
+    assert!(
+        result.is_err(),
+        "adapter ix must reject a forged bank with the wrong owner; got Ok",
+    );
+}

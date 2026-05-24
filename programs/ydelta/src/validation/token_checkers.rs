@@ -17,7 +17,10 @@ impl<'a, 'info> MintAccountInfo<'a, 'info> {
     pub fn new(info: &'a AccountInfo<'info>) -> Result<MintAccountInfo<'a, 'info>, ProgramError> {
         check_spl_token_program_account(info.owner)?;
 
-        let mint: Mint = StateWithExtensions::<Mint>::unpack(&info.data.borrow())?.base;
+        // M-32: try_borrow_data — `info.data.borrow()` panics on a
+        // concurrent borrow. The panic path would abort the tx with
+        // BorrowFailed instead of a clean Result.
+        let mint: Mint = StateWithExtensions::<Mint>::unpack(&info.try_borrow_data()?)?.base;
         require!(
             mint.is_initialized,
             ProgramError::InvalidAccountData,
@@ -49,19 +52,10 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
             ProgramError::IllegalOwner,
             "Token account must be owned by the Token Program",
         )?;
-        // Decode via `StateWithExtensions` rather than slicing raw bytes:
-        // this validates the SPL / Token-2022 account layout, so a
-        // too-short or non-token account is rejected cleanly instead of
-        // panicking on an out-of-bounds `[0..32]` slice.
+
         let data = info.try_borrow_data()?;
         let token_account = StateWithExtensions::<TokenAccount>::unpack(&data)?.base;
-        // Reject uninitialized AND frozen accounts — the program never
-        // wants to transfer into or out of either. `delegate` /
-        // `close_authority` are intentionally NOT rejected here: a
-        // user-supplied source account may legitimately carry a delegate,
-        // and the program's own vault accounts are PDA-owned and created
-        // fresh, so they cannot carry a delegate or a non-program close
-        // authority unless the owning PDA itself signed for it.
+
         require!(
             token_account.state == AccountState::Initialized,
             ProgramError::InvalidAccountData,
@@ -75,20 +69,31 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
         Ok(Self { info })
     }
 
-    pub fn get_owner(&self) -> Pubkey {
-        Pubkey::new_from_array(
-            self.info.try_borrow_data().unwrap()[32..64]
-                .try_into()
-                .unwrap(),
-        )
+    /// M-33: propagate as Result. Pre-fix used `.unwrap()` on borrow +
+    /// try_into; a concurrent borrow or short data would panic the
+    /// program (BorrowFailed / panic-induced abort) instead of returning
+    /// a clean error.
+    pub fn get_owner(&self) -> Result<Pubkey, ProgramError> {
+        let data = self.info.try_borrow_data()?;
+        if data.len() < 64 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        let arr: [u8; 32] = data[32..64]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        Ok(Pubkey::new_from_array(arr))
     }
 
-    pub fn get_balance_atoms(&self) -> u64 {
-        u64::from_le_bytes(
-            self.info.try_borrow_data().unwrap()[64..72]
-                .try_into()
-                .unwrap(),
-        )
+    /// M-33: propagate as Result — see `get_owner` above.
+    pub fn get_balance_atoms(&self) -> Result<u64, ProgramError> {
+        let data = self.info.try_borrow_data()?;
+        if data.len() < 72 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        let bytes: [u8; 8] = data[64..72]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        Ok(u64::from_le_bytes(bytes))
     }
 
     pub fn new_with_owner(

@@ -9,8 +9,6 @@ use crate::program::processor::set_fee_config::SetFeeConfigParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 
-/// Build an admin-gated `SetFeeConfig` ix. Pass each field as
-/// `Some(_)` to update or `None` to leave unchanged.
 #[allow(clippy::too_many_arguments)]
 pub fn set_fee_config_instruction(
     market: &Pubkey,

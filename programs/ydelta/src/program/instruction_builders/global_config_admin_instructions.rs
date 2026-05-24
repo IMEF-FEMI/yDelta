@@ -1,5 +1,3 @@
-//! Instruction builders for `GlobalConfig` lifecycle instructions.
-
 use borsh::BorshSerialize;
 use solana_program::{
     bpf_loader_upgradeable,
@@ -24,8 +22,6 @@ pub fn create_global_config_instruction(payer: &Pubkey) -> Instruction {
             AccountMeta::new(*payer, true),
             AccountMeta::new(global_config, false),
             AccountMeta::new_readonly(system_program::id(), false),
-            // BpfLoaderUpgradeable ProgramData account; the loader
-            // binds payer == upgrade_authority on this account.
             AccountMeta::new_readonly(program_data, false),
         ],
         data: YdeltaInstruction::CreateGlobalConfig.to_vec(),

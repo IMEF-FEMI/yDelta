@@ -10,13 +10,6 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Build a `CancelOrderForRiskProfile` ix. Curator-gated. Removes both the
-/// market-side `RestingOrder` and the vault-side `RiskProfileOrderRef`.
-///
-/// Split-payer layout matches the other risk-profile ixs even though
-/// cancel never expands a dynamic region — kept for symmetry so all
-/// four (claim/place/update/cancel) share the same account shape.
-/// `fee_payer` covers the tx fee; `curator` only signs.
 pub fn cancel_order_for_risk_profile_instruction(
     mint: &Pubkey,
     market: &Pubkey,

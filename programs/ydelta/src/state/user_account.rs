@@ -1,5 +1,3 @@
-//! `UserAccount` state used for wallet-level mirrors and dashboard reads.
-
 use std::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
@@ -22,39 +20,33 @@ use super::constants::{
 };
 use super::dynamic_account::DynamicAccount;
 
-/// PDA seed prefix for `UserAccount` PDAs. Final seeds:
-/// `[USER_ACCOUNT_SEED, owner.as_ref()]`.
 pub const USER_ACCOUNT_SEED: &[u8] = b"user";
 
 pub fn user_account_pda(owner: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[USER_ACCOUNT_SEED, owner.as_ref()], &crate::id())
 }
 
-// ─────────────────── UserAccountFixed ───────────────────
-
-/// `UserAccountFixed` — 128-byte header. PDA seeds: `[b"user", owner]`.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankAccount)]
 pub struct UserAccountFixed {
-    pub discriminator: u64, // 0..8
-    pub owner: Pubkey,      // 8..40
+    pub discriminator: u64,
+    pub owner: Pubkey,
 
-    pub vault_positions_root_index: DataIndex,  // 40..44
-    pub market_positions_root_index: DataIndex, // 44..48
-    pub open_loans_root_index: DataIndex,       // 48..52
-    pub free_list_head_index: DataIndex,        // 52..56
-    pub num_bytes_allocated: u32,               // 56..60
+    pub vault_positions_root_index: DataIndex,
+    pub market_positions_root_index: DataIndex,
+    pub open_loans_root_index: DataIndex,
+    pub free_list_head_index: DataIndex,
+    pub num_bytes_allocated: u32,
 
-    pub vault_position_count: u16,  // 60..62
-    pub market_position_count: u16, // 62..64
-    pub open_loan_count: u32,       // 64..68
+    pub vault_position_count: u16,
+    pub market_position_count: u16,
+    pub open_loan_count: u32,
 
-    pub bump: u8,      // 68..69
-    pub version: u8,   // 69..70
-    _padding: [u8; 2], // 70..72 — align u64 below
+    pub bump: u8,
+    pub version: u8,
+    _padding: [u8; 2],
 
-    /// Reserved budget. 7 × u64 = 56 bytes; total header = 128.
-    _reserved: [u64; 7], // 72..128
+    _reserved: [u64; 7],
 }
 const_assert_eq!(size_of::<UserAccountFixed>(), USER_ACCOUNT_FIXED_SIZE);
 const_assert_eq!(size_of::<UserAccountFixed>() % 8, 0);
@@ -110,8 +102,6 @@ impl YdeltaAccount for UserAccountFixed {
     }
 }
 
-// ─────────────────── Free-list padding ───────────────────
-
 #[repr(C, packed)]
 #[derive(Default, Copy, Clone, Pod, Zeroable)]
 pub struct UserAccountUnusedFreeListPadding {
@@ -123,24 +113,19 @@ const_assert_eq!(
     USER_ACCOUNT_FREE_LIST_BLOCK_SIZE
 );
 
-// ─────────────────── VaultPosition ───────────────────
-
-/// User's stake in a vault profile. Keyed by `(vault, profile_id)`.
-/// u128 fields require 16-byte alignment so the explicit padding
-/// lands `shares` at offset 48 (not 40).
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct VaultPosition {
-    pub vault: Pubkey,                            // 0..32
-    pub profile_id: u8,                           // 32
-    _pad0: [u8; 15],                              // 33..48 — align u128 to 16
-    pub shares: u128,                             // 48..64
-    pub snapshot_supply_yield_index_scaled: u128, // 64..80
-    pub snapshot_delta_yield_index_scaled: u128,  // 80..96
-    pub last_updated_unix: i64,                   // 96..104
-    _padding: [u8; 8],                            // 104..112
-    /// Reserved budget. 32 bytes of headroom from the 144-byte payload.
-    _reserved: [u64; 4], // 112..144
+    pub vault: Pubkey,
+    pub profile_id: u8,
+    _pad0: [u8; 15],
+    pub shares: u128,
+    pub snapshot_supply_yield_index_scaled: u128,
+    pub snapshot_delta_yield_index_scaled: u128,
+    pub last_updated_unix: i64,
+    _padding: [u8; 8],
+
+    _reserved: [u64; 4],
 }
 const_assert_eq!(size_of::<VaultPosition>(), VAULT_POSITION_SIZE);
 const_assert_eq!(size_of::<VaultPosition>() % 8, 0);
@@ -168,8 +153,6 @@ impl Get for VaultPosition {}
 
 impl std::fmt::Display for VaultPosition {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Pod alignment: read u128 via copy to avoid potential
-        // unaligned-ref clippy gripe.
         let shares: u128 = self.shares;
         write!(
             f,
@@ -189,22 +172,18 @@ impl VaultPosition {
     }
 }
 
-// ─────────────────── MarketPosition ───────────────────
-
-/// Mirror of the user's `ClaimedSeat` in a market. Write-through on
-/// every signer-side ix that touches the seat. Keyed by `market`.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct MarketPosition {
-    pub market: Pubkey,                       // 0..32
-    pub seat_index_in_market: DataIndex,      // 32..36
-    _pad0: [u8; 12],                          // 36..48 — align u128
-    pub debt_withdrawable_shares: u128,       // 48..64
-    pub debt_encumbered_shares: u128,         // 64..80
-    pub collateral_withdrawable_shares: u128, // 80..96
-    pub collateral_encumbered_shares: u128,   // 96..112
-    /// Reserved budget. 32 bytes of headroom from the 144-byte payload.
-    _reserved_padding: [u64; 4], // 112..144
+    pub market: Pubkey,
+    pub seat_index_in_market: DataIndex,
+    _pad0: [u8; 12],
+    pub debt_withdrawable_shares: u128,
+    pub debt_encumbered_shares: u128,
+    pub collateral_withdrawable_shares: u128,
+    pub collateral_encumbered_shares: u128,
+
+    _reserved_padding: [u64; 4],
 }
 const_assert_eq!(size_of::<MarketPosition>(), MARKET_POSITION_SIZE);
 const_assert_eq!(size_of::<MarketPosition>() % 8, 0);
@@ -251,8 +230,6 @@ impl MarketPosition {
         }
     }
 
-    /// Copy the four balance fields off a `ClaimedSeat`. Used both
-    /// on signer-side write-through and by `sync_market_position`.
     pub fn sync_from_seat(&mut self, seat: &super::claimed_seat::ClaimedSeat) {
         self.debt_withdrawable_shares = seat.debt_withdrawable_shares;
         self.debt_encumbered_shares = seat.debt_encumbered_shares;
@@ -261,27 +238,21 @@ impl MarketPosition {
     }
 }
 
-// ─────────────────── UserLoanRef ───────────────────
-
-/// Active loan reference for borrower or lender. Keyed by `loan_pda`.
-/// `counterparty: Pubkey` is omitted (UI re-derives via the Loan PDA
-/// → seat lookup); the saved 32 bytes leave room for forward-compat
-/// fields without growing the block.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct UserLoanRef {
-    pub loan: Pubkey,                // 0..32 — primary key
-    pub market: Pubkey,              // 32..64 — for fast UI grouping
-    pub principal_atoms: u64,        // 64..72
-    pub started_at_unix: i64,        // 72..80
-    pub matures_at_unix: i64,        // 80..88
-    pub rate_bps: u16,               // 88..90
-    pub role: u8,                    // 90 — 0 = Borrower, 1 = Lender
-    pub counterparty_kind: u8,       // 91 — 0 = User wallet, 1 = GlobalVault
-    pub counterparty_profile_id: u8, // 92 — only meaningful for vault counterparties
-    _padding: [u8; 19],              // 93..112
-    /// Reserved budget. 32 bytes of headroom from the 144-byte payload.
-    _reserved: [u64; 4], // 112..144
+    pub loan: Pubkey,
+    pub market: Pubkey,
+    pub principal_atoms: u64,
+    pub started_at_unix: i64,
+    pub matures_at_unix: i64,
+    pub rate_bps: u16,
+    pub role: u8,
+    pub counterparty_kind: u8,
+    pub counterparty_profile_id: u8,
+    _padding: [u8; 19],
+
+    _reserved: [u64; 4],
 }
 const_assert_eq!(size_of::<UserLoanRef>(), USER_LOAN_REF_SIZE);
 const_assert_eq!(size_of::<UserLoanRef>() % 8, 0);
@@ -324,8 +295,6 @@ pub enum CounterpartyKind {
     GlobalVault = 1,
 }
 
-// ─────────────────── Tree typedefs + helpers ───────────────────
-
 pub type VaultPositionTree<'a> = RedBlackTree<'a, VaultPosition>;
 pub type VaultPositionTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, VaultPosition>;
 pub type MarketPositionTree<'a> = RedBlackTree<'a, MarketPosition>;
@@ -362,24 +331,16 @@ pub fn get_mut_helper_vault_position(
     get_mut_helper::<RBNode<VaultPosition>>(data, index)
 }
 
-// ─────────────────── Free-list helpers ───────────────────
-//
-// Mirrors the market's `get_free_address_on_market_fixed` and
-// `release_address_on_market_fixed`. The three trees share this one
-// free list — see UserAccountFixed.free_list_head_index.
-
 use hypertree::{FreeList, HyperTreeWriteOperations};
 
 use super::constants::USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
 
 const _CHECK_USER_ACCOUNT_BLOCK_PAYLOAD: () = {
-    // Compile-time sanity: tree-node payloads all share the same size.
     assert!(VAULT_POSITION_SIZE == USER_ACCOUNT_BLOCK_PAYLOAD_SIZE);
     assert!(MARKET_POSITION_SIZE == USER_ACCOUNT_BLOCK_PAYLOAD_SIZE);
     assert!(USER_LOAN_REF_SIZE == USER_ACCOUNT_BLOCK_PAYLOAD_SIZE);
 };
 
-/// Pop a free block off the user-account's shared free list.
 pub fn get_free_address_on_user_account_fixed(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -391,7 +352,6 @@ pub fn get_free_address_on_user_account_fixed(
     free_address
 }
 
-/// Return a freed block to the shared free list.
 pub fn release_address_on_user_account_fixed(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -403,8 +363,6 @@ pub fn release_address_on_user_account_fixed(
     fixed.free_list_head_index = free_list.get_head();
 }
 
-/// Grow the dynamic region by one block + link a fresh payload-sized
-/// chunk onto the free list. Mirrors `market_expand`.
 pub fn user_account_expand(fixed: &mut UserAccountFixed, dynamic: &mut [u8]) -> ProgramResult {
     let mut free_list: FreeList<UserAccountUnusedFreeListPadding> =
         FreeList::new(dynamic, fixed.free_list_head_index);
@@ -417,13 +375,6 @@ pub fn user_account_expand(fixed: &mut UserAccountFixed, dynamic: &mut [u8]) -> 
     Ok(())
 }
 
-/// Upsert a `MarketPosition` for `(market, seat_index)`.
-/// If a node already exists for `market`, it's a no-op (the caller
-/// can mutate the returned mut-ref for balance updates). If missing,
-/// allocates a free block, inserts a fresh entry, and bumps
-/// `market_position_count`.
-///
-/// Returns the tree-node index of the upserted entry.
 pub fn upsert_market_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -449,9 +400,7 @@ pub fn upsert_market_position(
     tree.insert(order_index, probe);
     fixed.market_positions_root_index = tree.get_root_index();
     drop(tree);
-    // `checked_add` (not `saturating_add`): a saturated count silently
-    // desyncs from the tree and the desync assertion is debug-only /
-    // stripped from the SBF release build. Hard-fail instead.
+
     fixed.market_position_count = fixed
         .market_position_count
         .checked_add(1)
@@ -460,10 +409,6 @@ pub fn upsert_market_position(
     Ok(order_index)
 }
 
-/// Upsert a `VaultPosition` for `(vault, profile_id)`. If a node
-/// already exists, returns its index (caller mutates `shares` /
-/// `snapshot_*` fields directly). If missing, allocates a free block
-/// and inserts a fresh zero-share entry.
 pub fn upsert_vault_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -489,7 +434,7 @@ pub fn upsert_vault_position(
     tree.insert(order_index, probe);
     fixed.vault_positions_root_index = tree.get_root_index();
     drop(tree);
-    // `checked_add` — see `upsert_market_position`.
+
     fixed.vault_position_count = fixed
         .vault_position_count
         .checked_add(1)
@@ -498,10 +443,6 @@ pub fn upsert_vault_position(
     Ok(order_index)
 }
 
-/// Remove a `VaultPosition` for `(vault, profile_id)`. Used by
-/// `global_vault_withdraw` when the depositor's shares hit zero.
-/// Returns the data-index that was freed, or `NIL` if no entry
-/// existed.
 pub fn remove_vault_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -520,9 +461,7 @@ pub fn remove_vault_position(
     tree.remove_by_index(idx);
     fixed.vault_positions_root_index = tree.get_root_index();
     drop(tree);
-    // `checked_sub` (not `saturating_sub`): an underflow here means the
-    // count already desynced from the tree (a double-remove or a
-    // remove-without-insert) — a real accounting bug. Hard-fail.
+
     fixed.vault_position_count = fixed
         .vault_position_count
         .checked_sub(1)
@@ -532,13 +471,6 @@ pub fn remove_vault_position(
     Ok(idx)
 }
 
-/// Walk a read-only tree and count its live nodes. Used by the
-/// debug-only count-vs-tree-size assertions below — the position/loan
-/// `*_count` fields use saturating arithmetic, which would silently
-/// absorb a desync from the real tree size. This makes any desync
-/// detectable in debug/test builds (the SBF release build strips
-/// `debug_assert!`, so this is a development invariant check, not an
-/// on-chain gate).
 #[cfg(debug_assertions)]
 fn count_tree_nodes<V>(dynamic: &[u8], root_index: DataIndex) -> usize
 where
@@ -548,8 +480,6 @@ where
     tree.iter::<V>().count()
 }
 
-/// Debug-assert the stored `market_position_count` matches the
-/// actual `MarketPosition` tree size.
 #[cfg(debug_assertions)]
 fn assert_market_position_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
     let actual = count_tree_nodes::<MarketPosition>(dynamic, fixed.market_positions_root_index);
@@ -561,8 +491,6 @@ fn assert_market_position_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
 #[cfg(not(debug_assertions))]
 fn assert_market_position_count(_fixed: &UserAccountFixed, _dynamic: &[u8]) {}
 
-/// Debug-assert the stored `vault_position_count` matches the
-/// actual `VaultPosition` tree size.
 #[cfg(debug_assertions)]
 fn assert_vault_position_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
     let actual = count_tree_nodes::<VaultPosition>(dynamic, fixed.vault_positions_root_index);
@@ -574,8 +502,6 @@ fn assert_vault_position_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
 #[cfg(not(debug_assertions))]
 fn assert_vault_position_count(_fixed: &UserAccountFixed, _dynamic: &[u8]) {}
 
-/// Debug-assert the stored `open_loan_count` matches the actual
-/// `UserLoanRef` tree size.
 #[cfg(debug_assertions)]
 fn assert_open_loan_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
     let actual = count_tree_nodes::<UserLoanRef>(dynamic, fixed.open_loans_root_index);
@@ -587,9 +513,6 @@ fn assert_open_loan_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
 #[cfg(not(debug_assertions))]
 fn assert_open_loan_count(_fixed: &UserAccountFixed, _dynamic: &[u8]) {}
 
-/// Apply the four balance fields from a `ClaimedSeat` onto the
-/// user's `MarketPosition` mirror. Caller has already located /
-/// upserted the node.
 pub fn write_market_position_from_seat(
     dynamic: &mut [u8],
     market_position_index: DataIndex,
@@ -600,8 +523,6 @@ pub fn write_market_position_from_seat(
     mp.sync_from_seat(seat);
 }
 
-/// Insert a `UserLoanRef` keyed by `loan_pda`. Idempotent on
-/// duplicate insert (returns the existing index).
 #[allow(clippy::too_many_arguments)]
 pub fn insert_open_loan(
     fixed: &mut UserAccountFixed,
@@ -651,7 +572,7 @@ pub fn insert_open_loan(
     tree.insert(order_index, new_ref);
     fixed.open_loans_root_index = tree.get_root_index();
     drop(tree);
-    // `checked_add` — see `upsert_market_position`.
+
     fixed.open_loan_count = fixed
         .open_loan_count
         .checked_add(1)
@@ -660,9 +581,6 @@ pub fn insert_open_loan(
     Ok(order_index)
 }
 
-/// Remove a `UserLoanRef` for `loan_pda`. Used on full repay
-/// (borrower side) or full claim (lender side). Returns the
-/// data-index that was freed, or `NIL` if no entry existed.
 pub fn remove_open_loan(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -683,7 +601,7 @@ pub fn remove_open_loan(
     tree.remove_by_index(idx);
     fixed.open_loans_root_index = tree.get_root_index();
     drop(tree);
-    // `checked_sub` — see `remove_vault_position`.
+
     fixed.open_loan_count = fixed
         .open_loan_count
         .checked_sub(1)

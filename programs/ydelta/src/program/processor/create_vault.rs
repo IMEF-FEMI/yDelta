@@ -1,5 +1,3 @@
-//! Initialize a `GlobalVault` for a mint.
-
 use std::cell::RefMut;
 
 use solana_program::{
@@ -48,16 +46,12 @@ pub fn process_create_vault(
         system_program,
     } = CreateVaultContext::load(accounts)?;
 
-    // Reject T22 mints with non-trivial extensions (mirror create_market).
     assert_supported_mint_extensions(&mint)?;
 
     let mint_key = *mint.info.key;
     let vault_key = *vault.key;
     let vault_bytes = vault_key.to_bytes();
 
-    // Allocate the vault PDA. `create_pda_resilient` (not
-    // `create_account`) so that pre-funding the deterministic PDA with a
-    // stray lamport cannot permanently brick vault creation for a mint.
     let rent: Rent = Rent::get()?;
     let mint_bytes = mint_key.to_bytes();
     let vault_bump_arr = [vault_bump];
@@ -72,9 +66,6 @@ pub fn process_create_vault(
         &rent,
     )?;
 
-    // Allocate the per-vault SPL staging token account.
-    // Owned by `global_vault_signer` so marginfi.deposit / .withdraw CPIs (which
-    // require source/destination to be authority-owned) can use it.
     let mint_owner = mint.info.owner;
     let token_prog_for_mint = if mint_owner == &spl_token_2022::id() {
         token_program_22.info.clone()
@@ -97,7 +88,7 @@ pub fn process_create_vault(
         staging_seeds,
         &rent,
     )?;
-    // Initialize the SPL token account with global_vault_signer as authority.
+
     let init_staging_ix = if mint_owner == &spl_token_2022::id() {
         spl_token_2022::instruction::initialize_account3(
             &spl_token_2022::id(),
@@ -122,11 +113,6 @@ pub fn process_create_vault(
         ],
     )?;
 
-    // Initialize the integration_account in marginfi.
-    // The integration_account is a PDA of the vault; the new account
-    // signs via its own seeds, and the authority (global_vault_signer) signs
-    // via its seeds. Marginfi's inner system::create_account sees both
-    // signed.
     let integration_bump_arr = [integration_account_bump];
     let integration_seeds: &[&[u8]] =
         &[VAULT_INTEGRATION_SEED, &vault_bytes, &integration_bump_arr];
@@ -156,14 +142,13 @@ pub fn process_create_vault(
         &[integration_seeds, global_vault_signer_seeds],
     )?;
 
-    // Stamp the GlobalVaultFixed header.
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.try_borrow_mut_data()?;
         let header: &mut GlobalVaultFixed =
             bytemuck::from_bytes_mut(&mut data[..GLOBAL_VAULT_FIXED_SIZE]);
         *header = GlobalVaultFixed::new_empty(
             mint_key,
-            *payer.info.key, // global_vault_admin = signer (first caller)
+            *payer.info.key,
             *marginfi_group.info.key,
             *integration_account.key,
             *global_vault_signer.key,
@@ -184,12 +169,6 @@ pub fn process_create_vault(
     Ok(())
 }
 
-/// Create a PDA-owned account in a way that tolerates a pre-funded
-/// target. Plain `system_instruction::create_account` aborts if the
-/// account already holds lamports, which lets anyone permanently brick
-/// creation of a deterministic PDA by pre-funding it with a single
-/// lamport. `transfer` (rent shortfall only) + `allocate` + `assign` is
-/// immune to that grief vector and produces an equivalent account.
 fn create_pda_resilient<'info>(
     payer: &AccountInfo<'info>,
     target: &AccountInfo<'info>,

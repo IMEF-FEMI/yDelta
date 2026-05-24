@@ -1,14 +1,3 @@
-//! yDelta — fixed-rate / fixed-term lending protocol on a Solana
-//! CLOB. The book holds only vault risk-profile asks `(rate, term)`;
-//! a borrower bid `(rate, term, principal, collateral)` is an
-//! immediate-or-cancel taker that crosses them into discrete loans.
-//! Idle capital on either side earns marginfi supply yield via the
-//! seat-share invariant.
-//!
-//! Lender quotes come only from risk profiles inside a `GlobalVault`
-//! (curator-managed, depositor-funded). The vault profile's curator-set
-//! `max_ltv_bps` cap is enforced at match time.
-
 pub mod logs;
 pub mod math;
 pub mod program;

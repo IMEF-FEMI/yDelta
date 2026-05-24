@@ -1,5 +1,3 @@
-//! Claim accumulated curator fees from a risk profile.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -49,7 +47,6 @@ pub fn process_claim_curator_fee(
 
     let vault_key = *vault.info.key;
 
-    // Curator gate + read accumulated fee.
     let fee_atoms: u64 = {
         let vault_data = vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
@@ -75,12 +72,9 @@ pub fn process_claim_curator_fee(
     };
 
     if fee_atoms == 0 {
-        // Nothing to claim — succeed as a no-op so curators can poll
-        // safely.
         return Ok(());
     }
 
-    // Withdraw from vault.integration into global_vault_staging.
     let vault_bytes = vault_key.to_bytes();
     let signer_bump_arr = [global_vault_signer_bump];
     let global_vault_signer_seeds: &[&[u8]] =
@@ -98,30 +92,18 @@ pub fn process_claim_curator_fee(
         liquidity_vault.info.clone(),
         token_program.info.clone(),
         marginfi_program.info.clone(),
-        // Active-balance health check
         debt_bank.info.clone(),
         bank_oracle.clone(),
     ];
-    let actual_atoms = MarginfiV18Adapter.withdraw(
+    let (actual_atoms, _actual_shares_burned) = MarginfiV18Adapter.withdraw(
         &withdraw_accounts,
         withdraw_shares,
         &[global_vault_signer_seeds],
     )?;
-    // Never pay the curator more than the accumulator owed. The
-    // ±1-atom marginfi drift gate can return `actual_atoms` slightly
-    // above `fee_atoms`; transferring that surplus would draw
-    // depositor-backed atoms to the curator. Cap the payout at
-    // `fee_atoms`. The accumulator decrement below uses
-    // `fee_atoms.saturating_sub(actual_atoms)` so a marginfi *under*-pay
-    // (`actual_atoms < fee_atoms`) leaves the un-realised remainder on
-    // the accumulator for a later claim rather than silently zeroing it.
+
     let payout_atoms: u64 = actual_atoms.min(fee_atoms);
     let surplus_atoms: u64 = actual_atoms.saturating_sub(payout_atoms);
 
-    // Transfer from global_vault_staging to curator_token.
-    // Token-2022 mints require `transfer_checked`; the legacy SPL
-    // token program rejects T22 accounts. Branch on token program ID
-    // so curator-fee withdrawal works for both mint kinds.
     if token_program.info.key == &spl_token_2022::id() {
         let ix = spl_token_2022::instruction::transfer_checked(
             token_program.info.key,
@@ -182,12 +164,6 @@ pub fn process_claim_curator_fee(
         )?;
     }
 
-    // Decrement `accumulated_curator_fee_atoms` by the atoms actually
-    // paid to the curator. If marginfi under-pays (`actual_atoms <
-    // fee_atoms`), the remainder stays claimable on the accumulator.
-    // If marginfi over-pays by 1 atom inside the drift gate, that dust
-    // was just redeposited back into `vault.integration`, so the
-    // accumulator should still only move by the curator's real payout.
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
@@ -200,10 +176,7 @@ pub fn process_claim_curator_fee(
         if profile_idx != NIL {
             let profile_node = get_mut_helper_risk_profile(dynamic, profile_idx);
             let acc = &mut profile_node.get_mut_value().accumulated_curator_fee_atoms;
-            // Subtract from the CURRENT accumulator value rather than
-            // overwriting with `fee_atoms - actual_atoms`. Equivalent
-            // today (nothing mutates the accumulator between the read and
-            // here), but robust if a future edit touches it in between.
+
             *acc = acc.saturating_sub(payout_atoms);
         }
     }

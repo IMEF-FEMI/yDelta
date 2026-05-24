@@ -2,8 +2,6 @@ use num_enum::TryFromPrimitive;
 use solana_program::program_error::ProgramError;
 use thiserror::Error;
 
-/// Error taxonomy for yDelta. Discriminants are contiguous; new
-/// variants append at the next number.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u32)]
 pub enum YdeltaError {
@@ -57,33 +55,33 @@ pub enum YdeltaError {
     SelfMatchForbidden = 23,
     #[error("Matched collateral below required LTV at current oracle prices")]
     CollateralBelowMatchLTV = 24,
-    // ─── GlobalVault ───
+
     #[error("vault: passed mint does not match GlobalVaultFixed.mint")]
     VaultWrongMint = 25,
     #[error("vault: profile_id not found in vault.risk_profiles tree")]
     VaultProfileNotFound = 26,
-    // Discriminant 27 is intentionally unused.
+
     #[error("vault order: term_seconds exceeds RiskProfile.max_term_seconds")]
     VaultOrderTermExceedsProfileMax = 28,
     #[error("vault: signer is not RiskProfile.curator")]
     VaultCuratorRequired = 29,
     #[error("vault: signer is not GlobalVaultFixed.global_vault_admin")]
     VaultAdminRequired = 30,
-    // Discriminant 31 is intentionally unused.
+
     #[error("place_order_for_risk_profile: a RiskProfileOrderRef already exists for (market, profile_id)")]
     VaultProfileOrderExists = 32,
     #[error("global_vault_withdraw: idle_principal_atoms < requested atoms (deployed liquidity cannot be withdrawn until repaid)")]
     VaultInsufficientIdleAtoms = 33,
     #[error("vault: profile has nonzero seats / orders / loans / shares; cannot remove")]
     VaultProfileNotEmpty = 34,
-    // Discriminant 35 is intentionally unused.
+
     #[error("create_risk_profile: profile_id already exists in vault")]
     VaultProfileIdExists = 36,
     #[error("create_risk_profile: max_ltv_bps must be between 1 and 9_999")]
     VaultProfileLtvOutOfRange = 37,
     #[error("create_risk_profile: max_term_seconds must be > 0")]
     VaultProfileTermInvalid = 38,
-    // ─── Liquidation ───
+
     #[error(
         "settle_matured_loan: now <= matures_at_unix + grace_period_seconds (loan not yet matured)"
     )]
@@ -110,6 +108,15 @@ pub enum YdeltaError {
     OracleDegenerate = 49,
     #[error("vault is paused — state-mutating ix rejected")]
     VaultPaused = 50,
+
+    #[error("math: division by zero")]
+    MathDivisionByZero = 51,
+    #[error("math: arithmetic overflow in fixed-point or wide-multiply helper")]
+    MathOverflow = 52,
+
+    #[error("loan close: seat's encumbered collateral is less than the loan's recorded \
+             collateral — state corruption, refusing silent collateral drop")]
+    InsufficientEncumberedCollateral = 53,
 }
 
 impl From<YdeltaError> for ProgramError {

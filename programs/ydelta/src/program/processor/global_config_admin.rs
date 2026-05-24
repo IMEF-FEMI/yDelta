@@ -1,5 +1,3 @@
-//! `GlobalConfig` lifecycle instructions.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -48,11 +46,6 @@ pub fn process_create_global_config(
         "global_config already initialized"
     )?;
 
-    // `allocate` + `assign` (rent shortfall topped up) rather than
-    // `create_account`: `global_config` is the protocol singleton at a
-    // fixed PDA. `create_account` aborts if the account already holds
-    // lamports, so anyone could front-run deployment with a 1-lamport
-    // transfer and permanently brick the entire protocol bootstrap.
     let required = Rent::get()?.minimum_balance(GLOBAL_CONFIG_SIZE);
     let bump_arr = [bump];
     let signer_seeds: &[&[u8]] = &[GLOBAL_CONFIG_SEED, &bump_arr];

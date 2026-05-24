@@ -7,7 +7,6 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::user_account::user_account_pda;
 
-/// Build a permissionless `SyncMarketPosition` instruction for an existing user.
 pub fn sync_market_position_instruction(
     market: &Pubkey,
     payer: &Pubkey,

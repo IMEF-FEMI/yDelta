@@ -1,5 +1,3 @@
-//! Update a vault profile's resting market order.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -52,7 +50,6 @@ pub fn process_update_order_for_risk_profile(
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    // Validate curator, profile, and the existing vault order.
     let old_order_sequence: u64 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
@@ -84,7 +81,6 @@ pub fn process_update_order_for_risk_profile(
             { profile.max_term_seconds }
         )?;
 
-        // Order ref (must exist).
         let order_probe = RiskProfileOrderRef::probe(market_key, params.profile_id);
         let order_idx = {
             let tree =
@@ -102,8 +98,6 @@ pub fn process_update_order_for_risk_profile(
             .order_sequence_in_market
     };
 
-    // Resolve the market-side vault ClaimedSeat. The vault ask is
-    // unbounded ("quote all idle") — there is no per-market cap to read.
     let taker_seat_index: hypertree::DataIndex = {
         let market_data: &std::cell::Ref<&mut [u8]> = &market.info.try_borrow_data()?;
         let market_dyn_offset = std::mem::size_of::<MarketFixed>();
@@ -122,7 +116,6 @@ pub fn process_update_order_for_risk_profile(
         seat_idx
     };
 
-    // Cancel and replace on the market side.
     expand_market_if_needed(fee_payer.info, &market)?;
     let new_order_sequence: u64 = {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
@@ -142,8 +135,6 @@ pub fn process_update_order_for_risk_profile(
             order_index_in_market,
         )?;
 
-        // Re-rest the vault ask. `rest_vault_ask` is a pure insert —
-        // vault asks are PostOnly makers and never take.
         rest_vault_ask(
             da.fixed,
             da.dynamic,
@@ -158,14 +149,15 @@ pub fn process_update_order_for_risk_profile(
         )?
     };
 
-    // Rebuild the RiskProfileOrderRef.
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let _ = remove_risk_profile_order_ref(header, dynamic, market_key, params.profile_id);
+        // H-9: propagate ArithmeticOverflow if counter desyncs. NIL return
+        // (already absent) is fine to ignore — this path is idempotent.
+        remove_risk_profile_order_ref(header, dynamic, market_key, params.profile_id)?;
     }
-    // Re-expand if the cancel emptied the free list — defensive.
+
     let need_expand: bool = {
         let vault_data = vault.info.try_borrow_data()?;
         let header: &GlobalVaultFixed =
@@ -208,7 +200,6 @@ pub fn process_update_order_for_risk_profile(
         )?;
     }
 
-    // Two log events: cancel-leg (is_replace=1) + place-leg.
     emit_stack(CancelOrderForRiskProfileLog {
         global_vault: vault_key,
         market: market_key,

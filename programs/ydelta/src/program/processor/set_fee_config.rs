@@ -1,5 +1,3 @@
-//! Update a market's `FeeConfig`.
-
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -42,9 +40,7 @@ pub fn process_set_fee_config(
     let payer = Signer::new_payer(next_account_info(account_iter)?)?;
     let _ = crate::validation::loaders::load_global_config(account_iter)?;
     let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
-    // No pause gate. This ix is admin-only header mutation with no
-    // atom flow, so it remains callable when the market is paused
-    // (lets the admin retune fees on a halted market before resuming).
+
     let _system_program = Program::new(next_account_info(account_iter)?, &system_program::id())?;
 
     {

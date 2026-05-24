@@ -715,7 +715,17 @@ impl MarketFixture {
         repay_atoms: u64,
         full_repay: bool,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let cranker_refund = self.read_loan_in(market_pk, sequence).await.created_by;
+        let loan = self.read_loan_in(market_pk, sequence).await;
+        let cranker_refund = loan.created_by;
+        // Per the repay/claim split: Fixed loans need the lender's global
+        // vault for the full-repay close-out path; P2Pool repays omit the
+        // slot. The loader keys on the loan's stored loan_type.
+        let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
+        let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
+            Some(&gv_pk)
+        } else {
+            None
+        };
         let ix = repay_instruction(
             &market_pk,
             &borrower.pubkey(),
@@ -732,6 +742,7 @@ impl MarketFixture {
             full_repay,
             None,
             &cranker_refund,
+            global_vault,
         );
         let kp = borrower.insecure_clone();
         self.process(ix, &[&kp]).await
@@ -841,12 +852,19 @@ impl MarketFixture {
     /// from `market.lender_integration_account` back into the
     /// GlobalVault's marginfi account, decrements per-market exposure
     /// usage, sweeps protocol-fee shares onto the market accumulator,
-    /// closes the loan PDA. Caller is the signer; pass any keypair.
+    /// Stateless seat sweeper — pulls all pending claim shares from the
+    /// vault's risk-profile market seat into the vault's integration
+    /// account. Per the repay/claim split, this NEVER touches the loan
+    /// PDA. Caller is the signer; pass any keypair.
+    ///
+    /// Note: signature changed from `sequence: u64, cranker_refund` to
+    /// `risk_profile_id: u8`. The loan PDA is closed by repay/liquidate/
+    /// settle now, so the per-loan address is irrelevant — claim keys
+    /// on the seat lookup by `(market, vault, risk_profile_id)`.
     pub async fn claim_repayment_for_risk_profile(
         &self,
         cranker: &Keypair,
-        sequence: u64,
-        cranker_refund: Option<Pubkey>,
+        risk_profile_id: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
         let market_pk = self.market.pubkey();
@@ -859,22 +877,20 @@ impl MarketFixture {
         let ix = claim_repayment_for_risk_profile_instruction(
             &cranker.pubkey(),
             &market_pk,
-            sequence,
+            risk_profile_id,
             &gv,
             &mainnet::usdc_mint(),
             &mainnet::usdc_bank(),
             &mainnet::usdc_liquidity_vault(),
             &debt_bank_lva,
-            &mainnet::usdc_oracle(),
+            &[mainnet::usdc_oracle()],
             &lender_mfi,
             &spl_token::id(),
             &mainnet::marginfi_group(),
             &marginfi_mocks::ID,
-            cranker_refund.as_ref(),
         );
-        // Three marginfi CPIs (withdraw, deposit) + SPL transfer, plus
-        // the group-binding decodes in the loader, push the ix above
-        // the 200k default; bump to 600k for headroom.
+        // Two marginfi CPIs (withdraw, deposit) + SPL transfer push the
+        // ix above the 200k default; bump to 600k for headroom.
         let cu = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
         let kp = cranker.insecure_clone();
         self.process_ixs(&[cu, ix], &[&kp]).await
@@ -932,8 +948,7 @@ impl MarketFixture {
         &self,
         cranker: &Keypair,
         market_pk: Pubkey,
-        sequence: u64,
-        cranker_refund: Option<Pubkey>,
+        risk_profile_id: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
         let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
@@ -945,20 +960,19 @@ impl MarketFixture {
         let ix = claim_repayment_for_risk_profile_instruction(
             &cranker.pubkey(),
             &market_pk,
-            sequence,
+            risk_profile_id,
             &gv,
             &mainnet::usdc_mint(),
             &mainnet::usdc_bank(),
             &mainnet::usdc_liquidity_vault(),
             &debt_bank_lva,
-            &mainnet::usdc_oracle(),
+            &[mainnet::usdc_oracle()],
             &lender_mfi,
             &spl_token::id(),
             &mainnet::marginfi_group(),
             &marginfi_mocks::ID,
-            cranker_refund.as_ref(),
         );
-        // 600k for headroom (group-binding adds loader compute).
+        // 600k for headroom.
         let cu = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
         let kp = cranker.insecure_clone();
         self.process_ixs(&[cu, ix], &[&kp]).await
@@ -970,6 +984,18 @@ impl MarketFixture {
     pub async fn set_clock_unix_timestamp(&self, new_unix_ts: i64) {
         let ctx: RefMut<ProgramTestContext> = self.context.borrow_mut();
         let mut clock: solana_sdk::clock::Clock = ctx.banks_client.get_sysvar().await.unwrap();
+        // T-12: assert forward-only time travel. Production accrual paths
+        // (accrue_loan, accrue_risk_profile) treat time-rewind as
+        // corruption (M-19); the fixture must match that invariant so
+        // tests can't construct states production can't reach. If a test
+        // legitimately needs to test a pre-maturity scenario, it should
+        // CAPTURE the target timestamp BEFORE advancing past it.
+        assert!(
+            new_unix_ts >= clock.unix_timestamp,
+            "set_clock_unix_timestamp: rewind from {} to {} forbidden (T-12)",
+            clock.unix_timestamp,
+            new_unix_ts,
+        );
         clock.unix_timestamp = new_unix_ts;
         ctx.set_sysvar(&clock);
     }
@@ -985,7 +1011,14 @@ impl MarketFixture {
         repay_atoms: u64,
         full_repay: bool,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let cranker_refund = self.read_loan(sequence).await.created_by;
+        let loan = self.read_loan(sequence).await;
+        let cranker_refund = loan.created_by;
+        let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
+        let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
+            Some(&gv_pk)
+        } else {
+            None
+        };
         let ix = repay_instruction(
             &self.market.pubkey(),
             &borrower.pubkey(),
@@ -1002,6 +1035,7 @@ impl MarketFixture {
             full_repay,
             None,
             &cranker_refund,
+            global_vault,
         );
         let kp = borrower.insecure_clone();
         self.process(ix, &[&kp]).await
@@ -1018,7 +1052,8 @@ impl MarketFixture {
         liquidator_collateral_token: Pubkey,
         repay_atoms_max: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let cranker_refund = self.read_loan(sequence).await.created_by;
+        let loan = self.read_loan(sequence).await;
+        let cranker_refund = loan.created_by;
         let (debt_bank_lva, _) = solana_program::pubkey::Pubkey::find_program_address(
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
             &marginfi_mocks::ID,
@@ -1028,6 +1063,12 @@ impl MarketFixture {
             &marginfi_mocks::ID,
         );
         let _ = debt_bank_lva;
+        let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
+        let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
+            Some(&gv_pk)
+        } else {
+            None
+        };
         let ix = liquidate_loan_instruction(
             &self.market.pubkey(),
             &liquidator.pubkey(),
@@ -1048,6 +1089,7 @@ impl MarketFixture {
             &marginfi_mocks::ID,
             repay_atoms_max,
             &cranker_refund,
+            global_vault,
         );
         let kp = liquidator.insecure_clone();
         self.process(ix, &[&kp]).await
@@ -1067,7 +1109,8 @@ impl MarketFixture {
         liquidator_collateral_token: Pubkey,
         repay_atoms_max: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let cranker_refund = self.read_loan(sequence).await.created_by;
+        let loan = self.read_loan(sequence).await;
+        let cranker_refund = loan.created_by;
         let (_debt_bank_lva, _) = solana_program::pubkey::Pubkey::find_program_address(
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
             &marginfi_mocks::ID,
@@ -1076,6 +1119,12 @@ impl MarketFixture {
             &[b"liquidity_vault_auth", mainnet::sol_bank().as_ref()],
             &marginfi_mocks::ID,
         );
+        let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
+        let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
+            Some(&gv_pk)
+        } else {
+            None
+        };
         let ix = settle_matured_loan_instruction(
             &self.market.pubkey(),
             &liquidator.pubkey(),
@@ -1096,6 +1145,7 @@ impl MarketFixture {
             &marginfi_mocks::ID,
             repay_atoms_max,
             &cranker_refund,
+            global_vault,
         );
         // Settle does marginfi.withdraw (collateral) + deposit (debt
         // for repay) + repay + transfers + seat updates, plus the
@@ -1203,6 +1253,21 @@ impl MarketFixture {
         *bytemuck::from_bytes::<ydelta::state::loan::LoanFixed>(
             &data[..std::mem::size_of::<ydelta::state::loan::LoanFixed>()],
         )
+    }
+
+    /// True iff the loan PDA at sequence has been closed (account no longer
+    /// exists). Use after `repay(full_repay=true)`, `liquidate_loan`, or
+    /// `settle_matured_loan` to assert close-on-completion semantics
+    /// instead of reading the body (which would panic on a closed PDA).
+    pub async fn loan_account_is_closed(&self, sequence: u64) -> bool {
+        let (loan_addr, _) =
+            ydelta::state::loan::loan_pda(&self.market.pubkey(), sequence);
+        let ctx = self.context.borrow_mut();
+        ctx.banks_client
+            .get_account(loan_addr)
+            .await
+            .unwrap()
+            .is_none()
     }
 
     /// Test backdoor: bump a seat's `*_withdrawable_shares` directly,
@@ -1693,6 +1758,14 @@ impl MarketFixture {
     /// P2Pool — callers asserting the identity on P2Pool loans is a
     /// misuse, not a production bug.
     pub async fn assert_loan_conservation_holds(&self, sequence: u64) {
+        // Under the repay/claim split, full repay closes the loan PDA;
+        // conservation is meaningful only on live (partial-repaid or
+        // Active) loans. Treat closed = trivially-conserved no-op so
+        // callers can chain "assert conservation" after both partial and
+        // full repay without branching.
+        if self.loan_account_is_closed(sequence).await {
+            return;
+        }
         let loan = self.read_loan(sequence).await;
         if loan.loan_type == ydelta::state::loan::LoanType::P2Pool as u8 {
             // P2Pool: outstanding_debt_atoms is decorative; canonical

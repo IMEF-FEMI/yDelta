@@ -11,13 +11,6 @@ use crate::state::vault::{
     global_vault_staging_pda,
 };
 
-/// Build a `CreateVault` ix. Allocates the per-mint `GlobalVault`
-/// PDA, the per-vault staging SPL token account, and initializes the
-/// marginfi `integration_account`. The signer becomes
-/// `global_vault_admin`.
-///
-/// One-shot — only succeeds the first time per `mint`. Subsequent
-/// calls hit the "vault already exists" check in the loader.
 #[allow(clippy::too_many_arguments)]
 pub fn create_vault_instruction(
     mint: &Pubkey,

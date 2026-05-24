@@ -32,7 +32,7 @@ use crate::test_utils::market_fixture::MarketFixture;
 
 fn amount_to_shares_against(bank_data: &[u8], amount_atoms: u64) -> u128 {
     let bank = Bank::try_from_account_data(bank_data).unwrap();
-    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value);
+    let asv_u128 = wrapped_i80f48_to_u128(bank.asset_share_value).unwrap();
     let amount_fp48 = to_scaled(amount_atoms as u128).unwrap();
     div_scale(amount_fp48, asv_u128).unwrap()
 }
@@ -43,7 +43,7 @@ async fn lender_asset_shares(fixture: &MarketFixture) -> u128 {
         .await;
     let mfi = MarginfiAccount::try_from_account_data(&data).unwrap();
     mfi.find_balance(&mainnet::usdc_bank())
-        .map(|b| wrapped_i80f48_to_u128(b.asset_shares))
+        .map(|b| wrapped_i80f48_to_u128(b.asset_shares).unwrap())
         .unwrap_or(0)
 }
 
@@ -276,5 +276,131 @@ async fn promote_matched_loan_keeps_borrower_and_fee_claims_backed() {
         "borrower + protocol share claims ({}) must stay backed by market integration shares ({})",
         claimed_shares,
         market_shares
+    );
+}
+
+/// H-1 regression: `curator_fee_bps` must be snapshotted at MATCH time
+/// (when lender capital is already encumbered), not at PROMOTION time.
+///
+/// Pre-fix, `process_matched_loan` read `market.fee_config.curator_fee_bps`
+/// live — so a compromised admin who flipped the bps between match and
+/// crank locked the already-committed lender capital into the new (e.g.
+/// 100%) fee, retroactively zeroing depositor yield.
+///
+/// Post-fix, the bps is captured into `MatchedLoan.curator_fee_bps_snapshot`
+/// inside the matching engine and read off the node by the cranker.
+/// The admin's mid-flight `SetFeeConfig` must have NO effect on already-
+/// matched loans.
+///
+/// Setup:
+///   1. Set `curator_fee_bps = 1_000` (10%).
+///   2. `provide_vault_liquidity` — rests the vault ask, does NOT crank.
+///   3. Borrower bid crosses the ask → MatchedLoan inserted into queue.
+///   4. Admin flips `curator_fee_bps` to 9_000 (90%) — the front-run.
+///   5. `crank_matched_loan_for_risk_profile` promotes the queued match.
+///   6. Assert `loan.curator_fee_bps_snapshot == 1_000` — the value
+///      that was live at MATCH time, NOT the post-front-run 9_000.
+#[tokio::test]
+async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
+    let fixture = MarketFixture::new().await;
+
+    // (1) Initial fee config: 10% curator fee — this is the value that
+    // the lender capital is "committed under" when the bid matches.
+    let mut fee_params = SetFeeConfigParams::default();
+    fee_params.curator_fee_bps = Some(1_000);
+    let cfg_ix = set_fee_config_instruction(
+        &fixture.market.pubkey(),
+        &fixture.payer.pubkey(),
+        fee_params,
+    );
+    let payer_kp = fixture.payer.insecure_clone();
+    fixture.process(cfg_ix, &[&payer_kp]).await.unwrap();
+    fixture.refresh_blockhash().await;
+
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let bob = fixture.create_trader().await;
+
+    // (2) Stand up the vault profile + rest the unbounded ask. Does NOT
+    // crank — the matched node will sit in the queue until step (5).
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*rate_bps=*/ 600,
+            /*term_seconds=*/ 30 * 86_400,
+            /*deposit_atoms=*/ 10_000_000,
+        )
+        .await;
+
+    fixture.claim_seat(&bob).await;
+    fixture
+        .seed_seat_shares(&bob.pubkey(), 1_000_000_000, /*is_debt=*/ false)
+        .await;
+    fixture.refresh_blockhash().await;
+
+    // (3) Borrower bid crosses the ask. MatchedLoan node inserted; the
+    // vault's capital is now encumbered under the 10% fee regime.
+    let principal_atoms: u64 = 1_000_000;
+    fixture
+        .place_order_with_flags(
+            &bob,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            30 * 86_400,
+            principal_atoms,
+            100_000_000,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Sanity check before the front-run: market still reads 1_000 bps.
+    let market_pre_attack = fixture.read_market_fixed().await;
+    assert_eq!(
+        market_pre_attack.fee_config.curator_fee_bps, 1_000,
+        "pre-attack: market fee config holds the match-time value"
+    );
+
+    // (4) THE FRONT-RUN: admin flips curator_fee_bps to 90% AFTER the
+    // lender capital was committed but BEFORE the cranker promotes.
+    // This is the exact window the bug opened.
+    let mut attack_params = SetFeeConfigParams::default();
+    attack_params.curator_fee_bps = Some(9_000);
+    let attack_ix = set_fee_config_instruction(
+        &fixture.market.pubkey(),
+        &fixture.payer.pubkey(),
+        attack_params,
+    );
+    fixture.process(attack_ix, &[&payer_kp]).await.unwrap();
+    fixture.refresh_blockhash().await;
+    let market_post_attack = fixture.read_market_fixed().await;
+    assert_eq!(
+        market_post_attack.fee_config.curator_fee_bps, 9_000,
+        "post-attack: market fee config now reads the attacker's value"
+    );
+
+    // (5) Cranker promotes the queued match.
+    fixture
+        .crank_matched_loan_for_risk_profile(0)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // (6) THE INVARIANT: loan must reflect the match-time bps, not the
+    // post-front-run bps. Pre-fix this would read 9_000; post-fix 1_000.
+    let loan = fixture.read_loan(0).await;
+    assert_eq!(
+        loan.curator_fee_bps_snapshot, 1_000,
+        "loan must lock in the MATCH-time curator_fee_bps (1_000), \
+         NOT the admin-changed value at PROMOTION time (9_000). \
+         Got {} — admin front-run succeeded.",
+        loan.curator_fee_bps_snapshot,
     );
 }

@@ -12,9 +12,6 @@ use crate::state::vault::{
     global_vault_staging_pda,
 };
 
-/// Build a `ClaimCuratorFee` ix. Curator-gated — `payer` must equal
-/// `profile.curator`. Withdraws `accumulated_curator_fee_atoms` from
-/// the vault's marginfi account out to the curator's wallet ATA.
 #[allow(clippy::too_many_arguments)]
 pub fn claim_curator_fee_instruction(
     mint: &Pubkey,

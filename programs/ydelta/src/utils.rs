@@ -3,13 +3,6 @@ use solana_program::{
     pubkey::Pubkey, rent::Rent, system_instruction,
 };
 
-/// Canonical discriminant for a named type. Hashes the program ID with
-/// an explicit, caller-supplied `type_id` string.
-///
-/// The `type_id` MUST be a stable source-level string (callers
-/// pass `stringify!(TypeName)`), never `std::any::type_name`: the latter
-/// has no stable-ABI guarantee, so a rustc upgrade would silently change
-/// every discriminant and break off-chain indexers / account decoding.
 pub fn get_discriminant(type_id: &str) -> u64 {
     let bytes: [u8; 8] = keccak::hashv(&[crate::ID.as_ref(), type_id.as_bytes()]).as_ref()[..8]
         .try_into()
@@ -17,8 +10,6 @@ pub fn get_discriminant(type_id: &str) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-/// Wraps the system-program `create_account` CPI with a single PDA-seed
-/// signer.
 pub fn create_account<'a, 'info>(
     payer: &'a AccountInfo<'info>,
     new_account: &'a AccountInfo<'info>,

@@ -1,49 +1,29 @@
-//! Borrower repayment for an active loan.
-//!
-//! Branches on `loan.loan_type`:
-//!
-//! - **Fixed** (`loan_type == 0`): the loan body's `outstanding_debt_atoms`
-//!   is the authoritative debt. Repay atoms transfer into the market's
-//!   staging vault and top up `market.lender_integration_account` via
-//!   `marginfi.deposit` — the risk-profile lender later drains them via
-//!   `claim_repayment_for_risk_profile`. On full repay the borrower's
-//!   collateral seat shares are credited back at the loan's place-time
-//!   snapshot and the loan is marked `Repaid`.
-//!
-//! - **P2Pool** (`loan_type == 1`): the body's `outstanding_debt_atoms`
-//!   is decorative. The real debt is the borrower marginfi account's
-//!   live variable-rate `liability_shares`. Repay atoms transfer into the
-//!   staging vault and retire that liability directly via
-//!   `marginfi.repay_atoms` (the same CPI `liquidate_loan` /
-//!   `settle_matured_loan` use on their P2Pool arm). The loan is marked
-//!   `Repaid` and its PDA closed ONLY when the POST-CPI live liability is
-//!   exactly zero — never on a pre-CPI comparison, because marginfi
-//!   accrues between the read and the CPI.
-//!   A P2Pool loan's seat collateral encumbrance (set when the bid was
-//!   placed) is released back to `collateral_withdrawable_shares` on full
-//!   repay via `release_loan_collateral` — see the P2Pool close block
-//!   below. The borrower's marginfi-side collateral is additionally freed
-//!   by marginfi's own solvency check once the liability hits zero.
-
 use std::cell::{Ref, RefMut};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use hypertree::DataIndex;
 use solana_program::{
-    account_info::AccountInfo, clock::Clock, entrypoint::ProgramResult, pubkey::Pubkey,
-    sysvar::Sysvar,
+    account_info::AccountInfo, clock::Clock, entrypoint::ProgramResult,
+    program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
 };
+
+use hypertree::{HyperTreeReadOperations, NIL};
 
 use crate::logs::{emit_stack, LoanRepaidLog};
 use crate::program::YdeltaError;
 use crate::protocol::{marginfi::MarginfiV18Adapter, LendingProtocol};
 use crate::require;
 use crate::state::loan::{
-    accrue_loan, apply_partial_resolution, LoanFixed, LoanState, LoanType, LOAN_FIXED_SIZE,
+    accrue_loan, apply_partial_resolution, LoanFixed, LoanState, LoanType, BPS_PER_UNIT,
+    LOAN_FIXED_SIZE, SECONDS_PER_YEAR,
 };
 use crate::state::market::{get_helper_seat, get_mut_helper_seat, MarketFixed};
 use crate::state::user_account::{remove_open_loan, UserAccountFixed};
-use crate::state::USER_ACCOUNT_FIXED_SIZE;
+use crate::state::vault::{
+    accrue_risk_profile, get_mut_helper_risk_profile, read_bank_asset_share_value_fp48,
+    GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
+};
+use crate::state::{GLOBAL_VAULT_FIXED_SIZE, USER_ACCOUNT_FIXED_SIZE};
 use crate::validation::loaders::RepayContext;
 use crate::validation::MARKET_SIGNER_SEED;
 
@@ -52,6 +32,7 @@ use super::shared::{get_mut_dynamic_account, invoke};
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct RepayParams {
     pub repay_atoms: u64,
+
     pub full_repay: bool,
     pub borrower_seat_index_hint: Option<DataIndex>,
 }
@@ -71,9 +52,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         marginfi_account,
         debt_bank,
         liquidity_vault,
-        // `collateral_bank` is loaded by the context but unused here —
-        // repay's full-repay credit-back uses the loan's place-time
-        // snapshot, not a live bank read.
+
         collateral_bank: _,
         borrower_marginfi_account,
         market_signer,
@@ -81,21 +60,35 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         marginfi_program,
         user_account_ai,
         cranker_refund,
+        global_vault,
     } = ctx;
 
     let market_key = *market.info.key;
     let now_unix_ts: i64 = Clock::get()?.unix_timestamp;
 
-    // Assert the loan is Active and accrue interest to now.
-    // Read grace_period_seconds off the market for accrual.
     let grace_period_seconds: u32 = market.get_fixed()?.fee_config.grace_period_seconds;
 
+    // Snapshot every loan-body value we'll need post-CPI. accrue_loan runs
+    // ONCE here — per the repay/claim split, this is the LAST place loan
+    // interest is accrued (claim never re-accrues). For Fixed loans we
+    // also capture the lender-side facts needed for the full-repay close-out
+    // (lender_seat_index, lender_profile_id, principal, lender_rate,
+    // curator_fee_bps_snapshot, started_at, accumulated fee buckets).
     let (
         borrower_seat_index,
         loan_type,
         body_outstanding,
         collateral_atoms,
         collateral_snapshot_fp48,
+        lender_seat_index,
+        lender_profile_id,
+        loan_principal,
+        loan_lender_rate,
+        loan_curator_fee_bps,
+        loan_started_at,
+        loan_lender_claimable,
+        loan_accumulated_curator_fee_atoms,
+        loan_accumulated_protocol_fee_atoms,
     ) = {
         let loan_data: &mut RefMut<&mut [u8]> = &mut loan.info.try_borrow_mut_data()?;
         let header: &mut LoanFixed = bytemuck::from_bytes_mut(&mut loan_data[..LOAN_FIXED_SIZE]);
@@ -105,9 +98,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             "Loan is already Repaid (state={})",
             header.state
         )?;
-        // `accrue_loan` is a no-op for P2Pool loans (marginfi compounds
-        // the variable-rate debt); for Fixed loans it grows the body's
-        // `outstanding_debt_atoms` / `lender_claimable_atoms`.
+
         accrue_loan(header, now_unix_ts, grace_period_seconds)?;
         (
             header.borrower_seat_index,
@@ -115,10 +106,18 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             header.outstanding_debt_atoms,
             header.collateral_atoms,
             header.borrower_collateral_share_price_snapshot_fp48,
+            header.lender_seat_index,
+            header.lender_profile_id,
+            header.principal_debt_atoms,
+            header.lender_rate_bps,
+            header.curator_fee_bps_snapshot,
+            header.started_at_unix,
+            header.lender_claimable_atoms,
+            header.accumulated_curator_fee_atoms,
+            header.accumulated_protocol_fee_atoms,
         )
     };
 
-    // Validate signer is the borrower seat's owner.
     {
         let market_data: Ref<&mut [u8]> = market.info.try_borrow_data()?;
         let dynamic = &market_data[std::mem::size_of::<MarketFixed>()..];
@@ -136,21 +135,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         &[market_signer_bump],
     ];
 
-    // ───────────────────────── P2Pool branch ─────────────────────────
     if loan_type == LoanType::P2Pool {
-        // Multiple P2Pool loans on a market share ONE per-market borrower
-        // marginfi account (`[b"borrower_marginfi_account", market]`), so
-        // the bank liability is COMMINGLED across siblings. Each loan owns
-        // a SLICE of it, recorded in `borrower_marginfi_borrow_shares` when
-        // the residual borrowed (patched post-CPI by `process_matched_loan`).
-        // Repay retires THIS loan's slice and closes THIS loan, independent
-        // of the siblings.
-        //
-        // Keying the close on the per-loan slice (not the account total) is
-        // essential with ≥2 siblings: gating it on the account-total
-        // liability hitting zero would let only the loan repaid with
-        // `repay_all` close and strand the rest `Active` — a follow-up
-        // repay would trip the "liability is 0" guard below.
         let loan_shares: u128 = {
             let l: Ref<LoanFixed> = loan.get_fixed()?;
             l.borrower_marginfi_borrow_shares
@@ -161,7 +146,6 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             "P2Pool repay: loan has no recorded marginfi shares (already settled?)"
         )?;
 
-        // Total liability shares across ALL sibling loans on the account.
         let account_shares_pre: u128 = crate::state::ltv::read_borrower_liability_shares(
             borrower_marginfi_account.info,
             debt_bank.info.key,
@@ -172,31 +156,36 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             "P2Pool repay: live marginfi liability is 0 (already settled?)"
         )?;
 
-        // If this loan owns the whole remaining liability it is the LAST
-        // open P2Pool loan on the account — retire it with `repay_all`
-        // (marginfi `repay_all = true`) so any sub-share dust goes to
-        // EXACTLY zero and nothing is orphaned. Otherwise repay only this
-        // loan's slice (atom-capped), leaving the siblings intact.
-        let is_last_loan: bool = loan_shares >= account_shares_pre;
+        // Per-loan attribution (C-2): clamp loan_shares to account total
+        // defensively so accounting drift in either direction can't
+        // misattribute.
+        let this_loan_shares: u128 = loan_shares.min(account_shares_pre);
+        let this_loan_is_account: bool = this_loan_shares == account_shares_pre;
 
-        // This loan's live debt in atoms (ceil) at the bank's current
-        // `liability_share_value`. Capped at the account total so a
-        // recorded-share over-count (sub-atom dust a sibling pushed onto
-        // this account via an earlier ceil repay) can't ask for more than
-        // actually exists.
-        let loan_live_atoms: u64 = crate::state::ltv::liability_shares_to_atoms_ceil(
+        // Predict marginfi's post-accrue LSV (same-slot Clock + same
+        // bank.last_update → exact match with what marginfi will compute
+        // inside the repay CPI).
+        let predicted_lsv_fp48 = MarginfiV18Adapter.calc_projected_liability_share_value_fp48(
             debt_bank.info,
-            loan_shares.min(account_shares_pre),
+            marginfi_group.info,
+            now_unix_ts,
         )?;
+
+        let loan_live_atoms: u64 = MarginfiV18Adapter
+            .liability_shares_to_atoms_ceil_at_lsv(this_loan_shares, predicted_lsv_fp48)?;
         require!(
             loan_live_atoms > 0,
             YdeltaError::InvalidArgument,
             "P2Pool repay: this loan's live debt rounds to 0"
         )?;
 
-        // `full_repay` retires this loan's entire slice. A partial repay
-        // repays the caller's `repay_atoms`, clamped to this loan's slice
-        // so a caller can't pay down a sibling's debt through this loan.
+        // Atoms the borrower will pay to marginfi:
+        //   - full_repay: pay live debt; on single-loan path add +1 atom
+        //     so marginfi's repay_all clears the account cleanly (marginfi
+        //     pulls only what's needed, the extra atom — if any — stays in
+        //     market_debt_vault as dust for the next op to consume).
+        //   - partial: pay user-specified amount (validated ≤ loan_live).
+        const ACCRUE_SAFETY_ATOMS: u64 = 1;
         let repay_atoms: u64 = if params.full_repay {
             loan_live_atoms
         } else {
@@ -214,21 +203,25 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             )?;
             params.repay_atoms
         };
+        let use_repay_all = params.full_repay && this_loan_is_account;
+        let funded_atoms: u64 = if use_repay_all {
+            repay_atoms
+                .checked_add(ACCRUE_SAFETY_ATOMS)
+                .ok_or(ProgramError::ArithmeticOverflow)?
+        } else {
+            repay_atoms
+        };
 
-        // Transfer borrower atoms into the staging vault.
         transfer_user_to_vault(
             token_program.info,
             borrower_token.info,
             vault.info,
             debt_mint.info,
             payer.info,
-            repay_atoms,
+            funded_atoms,
             debt_mint.mint.decimals,
         )?;
 
-        // Retire the borrower's marginfi liability. The repay CPI runs no
-        // health check (repaying only improves account health), so no
-        // oracle tail is needed in the account list.
         let repay_accounts: Vec<AccountInfo> = vec![
             marginfi_group.info.clone(),
             borrower_marginfi_account.info.clone(),
@@ -239,44 +232,37 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             token_program.info.clone(),
             marginfi_program.info.clone(),
         ];
-        // `repay_all` ONLY when fully retiring the LAST loan — it zeroes
-        // the whole account (incl. sub-share dust) so nothing is orphaned.
-        // Every other case is an atom-capped `repay_atoms` that reduces the
-        // shared liability by this loan's slice and leaves the siblings.
-        // `loan_live_atoms` is the ceil of this loan's slice, so the SPL
-        // transfer always covers it.
-        let use_repay_all = params.full_repay && is_last_loan;
+
         let _shares_burned: u128 = if use_repay_all {
+            // Single-loan account: marginfi.repay_all computes exact
+            // post-accrue liability and pulls only that much from the
+            // borrower's token account (amount param is ignored). Burns
+            // all account shares (= this loan, no siblings).
             MarginfiV18Adapter.repay_atoms_full(
                 &repay_accounts,
-                repay_atoms,
+                funded_atoms,
                 &[market_signer_seeds],
             )?
         } else {
-            MarginfiV18Adapter.repay_atoms(&repay_accounts, repay_atoms, &[market_signer_seeds])?
+            // Multi-loan account OR partial repay: marginfi.repay_atoms
+            // pays exact amount. Sibling shares are never touched.
+            MarginfiV18Adapter.repay_atoms(&repay_accounts, funded_atoms, &[market_signer_seeds])?
         };
 
-        // ─── Attribute the burn to THIS loan ───
-        //
-        // Shares burned by this repay = account pre − post. This loan's
-        // remaining slice = its recorded shares − burned (saturating). A
-        // `full_repay` retired the whole slice (ceil atoms guarantee
-        // `burned >= loan_shares`), so the loan closes; a partial closes
-        // only if it happened to retire the entire slice.
+        // Per-loan attribution post-CPI: compute burned via account delta,
+        // subtract from this loan's pre-CPI shares. ≤1 atom of residual
+        // on this loan is marginfi's accrue-during-repay rounding cost —
+        // treat as logically fully repaid.
         let account_shares_post: u128 = crate::state::ltv::read_borrower_liability_shares(
             borrower_marginfi_account.info,
             debt_bank.info.key,
         )?;
         let burned: u128 = account_shares_pre.saturating_sub(account_shares_post);
-        let loan_shares_post: u128 = loan_shares.saturating_sub(burned);
-        let did_full_repay: bool = if params.full_repay {
-            true
-        } else {
-            loan_shares_post == 0
-        };
+        let loan_shares_post: u128 = this_loan_shares.saturating_sub(burned);
+        let loan_shares_post_atoms_floor: u64 = MarginfiV18Adapter
+            .liability_shares_to_atoms_floor(&[debt_bank.info.clone()], loan_shares_post)?;
+        let did_full_repay: bool = loan_shares_post_atoms_floor <= 1;
 
-        // Keep the loan's recorded share / decorative atoms in sync with
-        // its remaining slice so off-chain readers see the true residual.
         let loan_remaining_shares: u128 = if did_full_repay { 0 } else { loan_shares_post };
         let post_repay_outstanding_atoms: u64 = if did_full_repay {
             0
@@ -310,31 +296,25 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
 
         super::shared::sync_signer_market_position(market.info, user_account_ai, payer.info.key)?;
 
-        // Close THIS P2Pool PDA when its own slice is retired.
         if did_full_repay {
             {
                 let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
                 let da = get_mut_dynamic_account::<MarketFixed>(market_data);
-                // Release the seat collateral that backed this loan
-                // (encumbered → withdrawable). min-capped inside the helper,
-                // so a loan whose collateral is not in the encumbered bucket
-                // is a safe no-op.
+
                 if collateral_atoms > 0 {
                     let collateral_shares =
                         crate::state::market_helpers::atoms_to_shares_at_snapshot(
                             collateral_atoms,
                             collateral_snapshot_fp48,
-                        );
+                        )?;
                     crate::state::market_helpers::release_loan_collateral(
                         da.dynamic,
                         borrower_seat_index,
                         collateral_shares,
-                        /*returned_shares=*/ collateral_shares,
+                        collateral_shares,
                     )?;
                 }
-                // One open loan closed → decrement the borrow counter
-                // (paired with the per-loan bump in `match_borrower_bid`'s
-                // P2Pool arm).
+
                 let seat = get_mut_helper_seat(da.dynamic, borrower_seat_index).get_mut_value();
                 seat.open_borrow_count = seat.open_borrow_count.saturating_sub(1);
             }
@@ -345,9 +325,11 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         return Ok(());
     }
 
-    // ───────────────────────── Fixed branch ──────────────────────────
-    // The body's `outstanding_debt_atoms` is the authoritative debt;
-    // repay atoms top up the lender side via `marginfi.deposit`.
+    // ===== Fixed-loan repay path =====
+    // Sizing: `full_repay` ignores `repay_atoms` and pays the entire
+    // accrued outstanding; `partial` requires `repay_atoms > 0` and caps
+    // it at `outstanding_pre`. For Fixed loans `outstanding_debt_atoms`
+    // is the canonical ledger (accrue_loan maintains it — see H-4 doc).
     let outstanding_pre: u64 = body_outstanding;
     let repay_atoms: u64 = if params.full_repay {
         outstanding_pre
@@ -367,7 +349,6 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         params.repay_atoms
     };
 
-    // Transfer borrower atoms into the staging vault.
     transfer_user_to_vault(
         token_program.info,
         borrower_token.info,
@@ -378,9 +359,6 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         debt_mint.mint.decimals,
     )?;
 
-    // Fixed loans top up the market's USDC asset via `marginfi.deposit`
-    // onto `market.lender_integration_account`. The risk-profile lender
-    // drains it via `claim_repayment_for_risk_profile`.
     let adapter_accounts = [
         marginfi_group.info.clone(),
         marginfi_account.info.clone(),
@@ -391,19 +369,12 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         token_program.info.clone(),
         marginfi_program.info.clone(),
     ];
-    let _shares_credited: u128 =
+    // marginfi.deposit returns asset shares credited to the lender's
+    // per-market integration account. These shares represent the lender's
+    // (vault depositors + curator + protocol) claim on the repaid atoms.
+    let credited_shares: u128 =
         MarginfiV18Adapter.deposit(&adapter_accounts, repay_atoms, &[market_signer_seeds])?;
 
-    // Update the loan; on full repay, credit collateral back.
-    //
-    // `apply_partial_resolution` retires the `repay_atoms` slice of
-    // `outstanding_debt_atoms` AND records the slice's lender / protocol
-    // / curator portions on the cumulative `*_retired_atoms` trackers,
-    // preserving the conservation identity (`outstanding +
-    // Σretired == lender_claimable + protocol_fee + curator_fee`,
-    // asserted inside the helper). Every `repay_atoms` atom was just
-    // deposited into `lender_marginfi_account` by the `marginfi.deposit`
-    // CPI above; the claim ix drains the cumulative claimable totals.
     let did_full_repay: bool = {
         let loan_data: &mut RefMut<&mut [u8]> = &mut loan.info.try_borrow_mut_data()?;
         let header: &mut LoanFixed = bytemuck::from_bytes_mut(&mut loan_data[..LOAN_FIXED_SIZE]);
@@ -415,39 +386,211 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         full
     };
 
-    if did_full_repay && collateral_atoms > 0 {
-        // Release the loan's collateral from the borrower seat's
-        // `encumbered` bucket back to `withdrawable`, at the loan's
-        // place-time snapshot so the share count is byte-symmetric with
-        // the place_order encumber (the live bank value would drift the
-        // payout by the share-value growth over the loan's life).
-        //
-        // Fixed-cross collateral stays seat-encumbered for the loan's
-        // life, so this is a MOVE (encumbered → withdrawable) via
-        // `release_loan_collateral`, not a net add — a net add would
-        // double-credit a properly-encumbered loan (counted in both
-        // buckets). The helper is min-capped, so a loan whose collateral
-        // is not in the encumbered bucket is a safe no-op (it stays
-        // withdrawable).
-        let collateral_snapshot_fp48: u128 = {
-            let loan_data = loan.info.try_borrow_data()?;
-            let header: &LoanFixed = bytemuck::from_bytes(&loan_data[..LOAN_FIXED_SIZE]);
-            header.borrower_collateral_share_price_snapshot_fp48
-        };
-        let collateral_shares: u128 = crate::state::market_helpers::atoms_to_shares_at_snapshot(
-            collateral_atoms,
-            collateral_snapshot_fp48,
-        );
+    // Per the repay/claim split (see [[repay-claim-split]] memory):
+    //   - On every Fixed repay (partial or full), credit the lender's
+    //     market seat with the post-deposit shares. The curator's
+    //     `claim_repayment_for_risk_profile` later sweeps the seat to
+    //     the global vault; it never reads the loan PDA.
+    //   - On full repay only, split protocol-fee shares out so they
+    //     stay claimable as `market.accumulated_protocol_fee_shares`
+    //     (those atoms do NOT flow to vault depositors). The remainder
+    //     credits the lender seat for the vault claim sweep.
+    //   - Partial repays credit ALL credited_shares to the seat. The
+    //     protocol/curator fee attribution is finalized at full-repay
+    //     close-out — this is acceptable because (a) origination_bps
+    //     defaults to 0 and (b) the discrepancy if a curator sweeps
+    //     before close is small relative to the principal flow.
+    let protocol_fee_shares: u128 = if did_full_repay && loan_accumulated_protocol_fee_atoms > 0 {
+        MarginfiV18Adapter
+            .amount_to_asset_shares(&[debt_bank.info.clone()], loan_accumulated_protocol_fee_atoms)?
+    } else {
+        0
+    };
+    let lender_claim_shares: u128 = credited_shares.saturating_sub(protocol_fee_shares);
+
+    {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let da = get_mut_dynamic_account::<MarketFixed>(market_data);
-        crate::state::market_helpers::release_loan_collateral(
-            da.dynamic,
-            borrower_seat_index,
-            collateral_shares,
-            /*returned_shares=*/ collateral_shares,
+
+        // Bump the market's protocol-fee accumulator (full-repay only).
+        if protocol_fee_shares > 0 {
+            da.fixed.accumulated_protocol_fee_shares = da
+                .fixed
+                .accumulated_protocol_fee_shares
+                .checked_add(protocol_fee_shares)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
+
+        // Credit the lender seat with the claim shares. This is the data
+        // the curator's stateless sweep reads.
+        require!(
+            lender_seat_index != NIL,
+            YdeltaError::InvalidArgument,
+            "Fixed loan has no lender_seat_index — should be set at promotion"
         )?;
-        let seat = get_mut_helper_seat(da.dynamic, borrower_seat_index).get_mut_value();
-        seat.open_borrow_count = seat.open_borrow_count.saturating_sub(1);
+        let lender_seat =
+            get_mut_helper_seat(da.dynamic, lender_seat_index).get_mut_value();
+        if lender_claim_shares > 0 {
+            lender_seat.debt_withdrawable_shares = lender_seat
+                .debt_withdrawable_shares
+                .checked_add(lender_claim_shares)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
+
+        // Full-repay close-out: decrement lender seat encumbrance + lend
+        // count, release borrower collateral, decrement borrower's
+        // open_borrow_count.
+        if did_full_repay {
+            // Lender seat: undo the encumbrance that was created at
+            // promotion (process_matched_loan stamped debt_encumbered_shares
+            // and open_lend_count). The original encumbrance was sized at
+            // promotion-time `amount_to_asset_shares(principal)`.
+            let principal_shares: u128 = MarginfiV18Adapter
+                .amount_to_asset_shares(&[debt_bank.info.clone()], loan_principal)?;
+            lender_seat.debt_encumbered_shares = lender_seat
+                .debt_encumbered_shares
+                .saturating_sub(principal_shares);
+            lender_seat.open_lend_count =
+                lender_seat.open_lend_count.saturating_sub(1);
+
+            // Borrower seat: release collateral encumbrance + decrement
+            // open_borrow_count.
+            if collateral_atoms > 0 {
+                let collateral_shares = crate::state::market_helpers::atoms_to_shares_at_snapshot(
+                    collateral_atoms,
+                    collateral_snapshot_fp48,
+                )?;
+                crate::state::market_helpers::release_loan_collateral(
+                    da.dynamic,
+                    borrower_seat_index,
+                    collateral_shares,
+                    collateral_shares,
+                )?;
+            }
+            let borrower_seat =
+                get_mut_helper_seat(da.dynamic, borrower_seat_index).get_mut_value();
+            borrower_seat.open_borrow_count =
+                borrower_seat.open_borrow_count.saturating_sub(1);
+        }
+    }
+
+    // Full-repay close-out: apply per-loan-derived decrements to the lender
+    // vault's risk profile, then close the loan PDA. The loan's per-loan
+    // facts (principal, lender_rate, curator_fee_bps_snapshot, started_at)
+    // are needed here BEFORE the PDA is zeroed; we snapshotted them above.
+    // claim_repayment_for_risk_profile never reads the loan PDA after this.
+    if did_full_repay {
+        let global_vault = global_vault.as_ref().ok_or_else(|| {
+            solana_program::msg!(
+                "repay: Fixed full-repay requires global_vault account (omitted by SDK)"
+            );
+            YdeltaError::IncorrectAccount
+        })?;
+
+        // Apply per-loan-derived risk profile updates.
+        {
+            let vault_data: &mut RefMut<&mut [u8]> =
+                &mut global_vault.info.try_borrow_mut_data()?;
+            let (fixed_bytes, dynamic) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
+            let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
+            let probe = RiskProfile::new_empty(lender_profile_id, Pubkey::default(), 1, 1);
+            let profile_idx = {
+                let tree =
+                    RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+                tree.lookup_index(&probe)
+            };
+            require!(
+                profile_idx != NIL,
+                YdeltaError::VaultProfileNotFound,
+                "repay: profile_id {} not found on global_vault",
+                lender_profile_id
+            )?;
+            let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+            let share_value_fp48 = read_bank_asset_share_value_fp48(debt_bank.info)?;
+            accrue_risk_profile(profile, now_unix_ts, share_value_fp48)?;
+
+            // Per-loan weighted-rate accumulator decrements. These can ONLY
+            // be applied at close (the per-loan rate + principal facts go
+            // away with the PDA).
+            let weighted_delta: u128 = (loan_principal as u128)
+                .checked_mul(loan_lender_rate as u128)
+                .ok_or(YdeltaError::MathOverflow)?;
+            profile.total_weighted_rate_bps = profile
+                .total_weighted_rate_bps
+                .checked_sub(weighted_delta)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            let net_weighted_delta: u128 = crate::math::mul_div(
+                weighted_delta,
+                (BPS_PER_UNIT as u128) - loan_curator_fee_bps as u128,
+                BPS_PER_UNIT as u128,
+                false,
+            )?;
+            profile.total_weighted_net_rate_bps = profile
+                .total_weighted_net_rate_bps
+                .checked_sub(net_weighted_delta)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            profile.deployed_principal_atoms = profile
+                .deployed_principal_atoms
+                .saturating_sub(loan_principal);
+
+            // Reconcile realized vs estimated for NAV (total_assets_atoms)
+            // and cost basis (total_principal_atoms). lender_claimable_atoms
+            // is what the LENDER (vault) actually gets — principal + their
+            // net interest slice (curator fees already excluded).
+            let loan_lifetime: u128 =
+                (now_unix_ts.saturating_sub(loan_started_at)).max(0) as u128;
+            let yield_denom: u128 = (BPS_PER_UNIT as u128)
+                .checked_mul(SECONDS_PER_YEAR as u128)
+                .ok_or(YdeltaError::MathOverflow)?;
+            let estimated_accrued_atoms: u128 =
+                crate::math::mul_div(net_weighted_delta, loan_lifetime, yield_denom, false)?;
+
+            let realized_net: i128 =
+                (loan_lender_claimable as i128) - (loan_principal as i128);
+            if realized_net >= 0 {
+                let interest = realized_net as u64;
+                profile.total_principal_atoms = profile
+                    .total_principal_atoms
+                    .checked_add(interest)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            } else {
+                let shortfall = (-realized_net) as u64;
+                profile.total_principal_atoms =
+                    profile.total_principal_atoms.saturating_sub(shortfall);
+            }
+            let assets_delta: i128 = realized_net - (estimated_accrued_atoms as i128);
+            if assets_delta >= 0 {
+                profile.total_assets_atoms = profile
+                    .total_assets_atoms
+                    .checked_add(assets_delta as u64)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            } else {
+                profile.total_assets_atoms = profile
+                    .total_assets_atoms
+                    .saturating_sub((-assets_delta) as u64);
+            }
+
+            // Pending-claim bucket — atoms now physically in
+            // lender_marginfi_account but not yet swept to this vault's
+            // integration_account. Excluded from idle-MTM in
+            // accrue_risk_profile. claim_repayment_for_risk_profile
+            // decrements this as it sweeps.
+            profile.pending_claim_atoms = profile
+                .pending_claim_atoms
+                .checked_add(loan_lender_claimable)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+
+            // Curator fee accumulator — earmarks how many of the eventual
+            // swept atoms belong to the curator. Curator's separate
+            // `claim_curator_fee` ix pulls from the vault integration
+            // account using this counter.
+            if loan_accumulated_curator_fee_atoms > 0 {
+                profile.accumulated_curator_fee_atoms = profile
+                    .accumulated_curator_fee_atoms
+                    .checked_add(loan_accumulated_curator_fee_atoms)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            }
+        }
     }
 
     let outstanding_after = outstanding_pre.saturating_sub(repay_atoms);
@@ -461,18 +604,17 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         _padding: [0; 7],
     })?;
 
-    // Sync the borrower's MarketPosition mirror (collateral was
-    // credited back to seat on full repay) and drop the open-loan
-    // ref on full repay.
     super::shared::sync_signer_market_position(market.info, user_account_ai, payer.info.key)?;
     if did_full_repay {
         drop_open_loan_ref(user_account_ai, loan.info.key)?;
+        // Close the loan PDA + refund rent to the original cranker
+        // (loan.created_by, validated by RepayContext::load).
+        super::shared::close_account_and_refund(loan.info, cranker_refund)?;
     }
 
     Ok(())
 }
 
-/// Drop the loan PDA from the borrower's `UserAccount` open-loan list.
 fn drop_open_loan_ref(user_account_ai: &AccountInfo, loan_pda_key: &Pubkey) -> ProgramResult {
     let loan_pda_key = *loan_pda_key;
     let Ok(mut data) = user_account_ai.try_borrow_mut_data() else {
@@ -480,14 +622,11 @@ fn drop_open_loan_ref(user_account_ai: &AccountInfo, loan_pda_key: &Pubkey) -> P
     };
     let (fixed_bytes, dynamic) = data.split_at_mut(USER_ACCOUNT_FIXED_SIZE);
     let fixed: &mut UserAccountFixed = bytemuck::from_bytes_mut(fixed_bytes);
-    // Propagate: a count underflow in `remove_open_loan` is a real
-    // accounting desync and must fail the repay, not be swallowed.
+
     remove_open_loan(fixed, dynamic, loan_pda_key)?;
     Ok(())
 }
 
-/// SPL-transfer `amount` atoms from the user's `borrower_token` to the
-/// market's staging `vault`, signed by the user.
 fn transfer_user_to_vault<'info>(
     token_program: &AccountInfo<'info>,
     trader_token: &AccountInfo<'info>,
