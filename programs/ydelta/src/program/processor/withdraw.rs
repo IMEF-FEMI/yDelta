@@ -85,7 +85,11 @@ pub fn process_withdraw(
         market.get_fixed()?.collateral_mint
     };
 
-    let expected_shares: u128 = if params.withdraw_all {
+    // Look up the seat's current withdrawable shares on this side.
+    // Used by both drain-all (as the request) and amount-driven (as a
+    // sanity check below: requesting more shares than the seat holds is
+    // a user error, not the marginfi-drift case below).
+    let seat_withdrawable_shares: u128 = {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let da = get_mut_dynamic_account::<MarketFixed>(market_data);
         let seat_index = get_seat_index_with_hint(
@@ -95,9 +99,39 @@ pub fn process_withdraw(
             params.trader_index_hint,
         )?;
         da.withdrawable_shares_for_seat(seat_index, is_debt)
-    } else {
-        MarginfiV18Adapter.amount_to_asset_shares(&[bank.info.clone()], params.amount_atoms)?
     };
+
+    let raw_expected_shares: u128 = if params.withdraw_all {
+        seat_withdrawable_shares
+    } else {
+        let req = MarginfiV18Adapter
+            .amount_to_asset_shares(&[bank.info.clone()], params.amount_atoms)?;
+        // Reject when the user asks for more atoms than the seat carries.
+        // Without this check the marginfi-cap below would silently fold
+        // an over-request down to whatever the seat has — masking the
+        // user error and matching `withdraw_above_balance_fails` regress.
+        require!(
+            req <= seat_withdrawable_shares,
+            YdeltaError::InsufficientWithdrawableBalance,
+            "withdraw amount exceeds seat balance: requested {} shares, seat has {}",
+            req,
+            seat_withdrawable_shares
+        )?;
+        req
+    };
+
+    // Cap at marginfi's actual asset_shares for the bank. Seat shares can
+    // sit a few units above marginfi's balance due to floor-rounding at
+    // deposit time (process_matched_loan credits seat shares via a
+    // snapshot share-value while marginfi.deposit floor-rounds the
+    // returned asset_shares slightly lower). Without this cap, drain-all
+    // and "amount near max" withdraws ask marginfi for more atoms than
+    // it has and fail with MarginfiError::OperationWithdrawOnly (6020).
+    // Any leftover seat shares stay as inert dust — they represent
+    // protocol bookkeeping that never had backing atoms in marginfi.
+    let marginfi_asset_shares: u128 =
+        crate::protocol::marginfi::read_asset_shares_u128(marginfi_account.info, bank.info.key)?;
+    let expected_shares: u128 = raw_expected_shares.min(marginfi_asset_shares);
 
     require!(
         expected_shares > 0,

@@ -75,7 +75,13 @@ fn borrow_marginfi_account(data: &[u8]) -> Result<&MarginfiAccount, ProgramError
         .map_err(|_| AdapterError::InvalidIntegrationAccount.into())
 }
 
-pub(crate) fn read_asset_shares_u128(
+/// Reads `marginfi_account.balance_for(bank).asset_shares` as a `u128`
+/// (rounded from I80F48; negative bit patterns clamp to 0). Returns 0
+/// when the account has no active balance for the bank. Public so the
+/// withdraw processor can cap drain-all expected_shares at the bank's
+/// actual share count (the seat may over-count from deposit-time floor
+/// rounding; uncapped withdraws hit MarginfiError::OperationWithdrawOnly).
+pub fn read_asset_shares_u128(
     marginfi_account_info: &AccountInfo,
     bank_pk: &solana_program::pubkey::Pubkey,
 ) -> Result<u128, ProgramError> {

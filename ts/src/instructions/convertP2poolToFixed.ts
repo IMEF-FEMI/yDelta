@@ -7,7 +7,6 @@ import {
   globalVaultIntegrationAccountPda,
   globalVaultPda,
   globalVaultSignerPda,
-  lenderIntegrationAccountPda,
   loanPda,
   marketSignerPda,
   marketTokenVaultPda,
@@ -48,7 +47,6 @@ export function convertP2poolToFixedInstruction(
 ): TransactionInstruction {
   const loan = loanPda(args.market, BigInt(args.loanSequence.toString()))[0];
   const borrowerMa = borrowerIntegrationAccountPda(args.market)[0];
-  const lenderMa = lenderIntegrationAccountPda(args.market)[0];
   const marketSigner = marketSignerPda(args.market)[0];
   const marketDebtVault = marketTokenVaultPda(args.market, args.debtMint)[0];
   const vault = globalVaultPda(args.debtMint)[0];
@@ -60,6 +58,12 @@ export function convertP2poolToFixedInstruction(
     .u16(args.maxAcceptableRateBps)
     .toBuffer();
 
+  // NOTE: lender_marginfi_account is NOT in this account list. The
+  // redeployed convert ix funds matched fills from each vault's own
+  // global_vault_integration_account, not from the per-market lender
+  // marginfi account — that slot would shift `debt_bank` by one and
+  // the loader's `debt_bank.key == market.debt_lending_pool` check
+  // would fail with Custom(10).
   return ydeltaIx(
     [
       signerRw(args.borrower),
@@ -68,7 +72,6 @@ export function convertP2poolToFixedInstruction(
       rw(loan),
       ro(SystemProgram.programId),
       rw(borrowerMa),
-      rw(lenderMa),
       rw(args.debtBank),
       rw(args.debtLiquidityVault),
       ro(args.debtBankLiquidityVaultAuthority),

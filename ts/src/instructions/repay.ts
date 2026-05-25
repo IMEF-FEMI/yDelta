@@ -41,6 +41,13 @@ export interface RepayArgs {
    * key will revert.
    */
   crankerRefund: PublicKey;
+  /**
+   * Lender vault PDA. **Required** for Fixed loans — the processor reads
+   * it on full repay to apply per-loan risk-profile decrements and bump
+   * `pending_claim_atoms`. Omit / pass `null` for P2Pool loans (the
+   * on-chain loader expects the slot absent in that case).
+   */
+  globalVault?: PublicKey | null;
 }
 
 export function repayInstruction(args: RepayArgs): TransactionInstruction {
@@ -57,28 +64,29 @@ export function repayInstruction(args: RepayArgs): TransactionInstruction {
     .optionDataIndex(args.borrowerSeatIndexHint ?? null)
     .toBuffer();
 
-  return ydeltaIx(
-    [
-      signerRw(args.borrower),
-      ro(globalConfigPda()[0]),
-      rw(args.market),
-      rw(loan),
-      rw(args.borrowerToken),
-      rw(vault),
-      ro(args.tokenProgram),
-      ro(args.debtMint),
-      ro(args.marginfiGroup),
-      rw(lenderMa),
-      rw(args.debtBank),
-      rw(args.debtLiquidityVault),
-      ro(args.collateralBank),
-      rw(borrowerMa),
-      ro(marketSigner),
-      ro(args.marginfiProgram),
-      rw(userAccountPda(args.borrower)[0]),
-      ro(SystemProgram.programId),
-      rw(args.crankerRefund),
-    ],
-    data,
-  );
+  const accounts = [
+    signerRw(args.borrower),
+    ro(globalConfigPda()[0]),
+    rw(args.market),
+    rw(loan),
+    rw(args.borrowerToken),
+    rw(vault),
+    ro(args.tokenProgram),
+    ro(args.debtMint),
+    ro(args.marginfiGroup),
+    rw(lenderMa),
+    rw(args.debtBank),
+    rw(args.debtLiquidityVault),
+    ro(args.collateralBank),
+    rw(borrowerMa),
+    ro(marketSigner),
+    ro(args.marginfiProgram),
+    rw(userAccountPda(args.borrower)[0]),
+    ro(SystemProgram.programId),
+    rw(args.crankerRefund),
+  ];
+  if (args.globalVault) {
+    accounts.push(rw(args.globalVault));
+  }
+  return ydeltaIx(accounts, data);
 }
