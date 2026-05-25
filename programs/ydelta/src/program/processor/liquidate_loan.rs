@@ -1,3 +1,8 @@
+//! `LiquidateLoan` instruction. Permissionless when current LTV
+//! breaches the marginfi maintenance threshold. Liquidator pays debt
+//! atoms in and seizes collateral plus a keeper bonus. Full repay
+//! closes the loan PDA; partial repay decrements live state in place.
+
 use std::cell::RefMut;
 
 use solana_program::{
@@ -26,11 +31,22 @@ use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::get_mut_dynamic_account;
 
+/// Liquidate a loan that breaches its LTV gate. Instruction data is
+/// either empty (full repay) or 8 bytes (`u64 repay_atoms_max`).
+/// Partial repays require `>= max(1% of outstanding, 1000 atoms)`. On
+/// `did_full_repay` the PDA closes and rent refunds to the cranker.
 pub fn process_liquidate_loan(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
+    require!(
+        data.is_empty() || data.len() >= 8,
+        YdeltaError::InvalidArgument,
+        "liquidate_loan: instruction data must be empty (full repay) or >= 8 bytes \
+         (u64 repay_atoms_max); rejecting truncated payload that would silently \
+         coerce to full liquidation"
+    )?;
     let repay_atoms_max: u64 = if data.len() >= 8 {
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&data[0..8]);
@@ -127,8 +143,10 @@ pub fn process_liquidate_loan(
         collateral_mint_decimals,
     )?;
 
-    let debt_price_fp48: u128 = MarginfiV18Adapter.oracle_price(&debt_oracle_args)?;
-    let collateral_price_fp48: u128 = MarginfiV18Adapter.oracle_price(&collateral_oracle_args)?;
+    let debt_price_fp48 =
+        crate::math::Fp48::from_raw(MarginfiV18Adapter.oracle_price(&debt_oracle_args)?);
+    let collateral_price_fp48 =
+        crate::math::Fp48::from_raw(MarginfiV18Adapter.oracle_price(&collateral_oracle_args)?);
 
     let actual_repay_atoms: u64 = if repay_atoms_max == 0 {
         outstanding_live_atoms
@@ -163,7 +181,7 @@ pub fn process_liquidate_loan(
         )?;
     }
 
-    const FP48_ONE: u128 = 1u128 << 48;
+    const FP48_ONE: crate::math::Fp48 = crate::math::Fp48::ONE;
     let repay_value_in_collateral_atoms = get_required_quote_collateral_to_back_debt(
         actual_repay_atoms,
         debt_price_fp48,
@@ -347,7 +365,7 @@ pub fn process_liquidate_loan(
         collateral_mint.mint.decimals,
     )?;
 
-    let collateral_snapshot_fp48: u128 = {
+    let collateral_snapshot_fp48: crate::math::Fp48 = {
         let loan_data = loan.info.try_borrow_data()?;
         let header: &LoanFixed = bytemuck::from_bytes(&loan_data[..LOAN_FIXED_SIZE]);
         header.borrower_collateral_share_price_snapshot_fp48
@@ -621,7 +639,8 @@ pub fn process_liquidate_loan(
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             profile.deployed_principal_atoms = profile
                 .deployed_principal_atoms
-                .saturating_sub(loan_principal);
+                .checked_sub(loan_principal)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
 
             // Realized-vs-estimated reconciliation (same as repay).
             let loan_lifetime: u128 = (now.saturating_sub(loan_started_at)).max(0) as u128;
@@ -651,6 +670,7 @@ pub fn process_liquidate_loan(
                 profile.total_assets_atoms =
                     profile.total_assets_atoms.saturating_sub((-assets_delta) as u64);
             }
+            crate::state::vault::restore_assets_principal_invariant(profile);
 
             // pending_claim + curator fee accumulators.
             profile.pending_claim_atoms = profile
@@ -673,13 +693,23 @@ pub fn process_liquidate_loan(
     Ok(())
 }
 
+/// Outcome of splitting a loan's collateral between the liquidator,
+/// the borrower (surplus), and the bad-debt gap, given a bonus rate.
 pub struct CollateralSplit {
+    /// Collateral atoms the liquidator takes (capped by available).
     pub liquidator_seizes_atoms: u64,
+    /// Excess collateral returned to the borrower after the seize.
     pub surplus_atoms: u64,
+    /// Shortfall when collateral cannot cover the seize target.
     pub bad_debt_gap_atoms: u64,
+    /// Bonus portion of the seize, derived from `bonus_bps`.
     pub bonus_atoms: u64,
 }
 
+/// Compute the collateral split for a liquidation. `bonus_bps` is
+/// bounded by `MAX_LIQUIDATION_KEEPER_BPS`; the seize target is
+/// `debt_value_in_collateral_atoms + bonus`, capped at available
+/// collateral, with any shortfall reported as `bad_debt_gap_atoms`.
 pub fn compute_collateral_split(
     debt_value_in_collateral_atoms: u64,
     collateral_atoms: u64,

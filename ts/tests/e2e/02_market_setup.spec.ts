@@ -201,7 +201,7 @@ describe('e2e: market + vault setup', () => {
         createRiskProfileInstruction({
           payer: admin.publicKey,
           mint: USDC_MINT,
-          profileId: 0,
+          profileId: 1,
           curator: curator.publicKey,
           maxLtvBps: 6_000,
           maxTermSeconds: 30 * 86_400,

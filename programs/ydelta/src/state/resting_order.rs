@@ -1,3 +1,9 @@
+//! `RestingOrder` is the per-ask node that lives in a market's `Bookside`
+//! red-black tree. Bids never rest — they are taker-only and matched at
+//! `place_order` time — so every resting order is an ask placed by a
+//! risk-profile curator. Ord/Eq are tuned so the tree's max-index points
+//! at the best (lowest-rate, lowest-sequence) ask.
+
 use std::cmp::Ordering;
 use std::mem::size_of;
 
@@ -24,8 +30,12 @@ use super::constants::{NO_EXPIRATION_LAST_VALID_UNIX_TS, RESTING_ORDER_SIZE};
     TryFromPrimitive,
 )]
 #[repr(u8)]
+/// Order side: `Bid` = borrower side (takers only), `Ask` = lender side
+/// (the only side that rests on book).
 pub enum Side {
+    /// Borrower-side taker. Bids never rest.
     Bid = 0,
+    /// Lender-side ask. The only side that ever rests on book.
     Ask = 1,
 }
 
@@ -48,9 +58,13 @@ impl Default for Side {
     TryFromPrimitive,
 )]
 #[repr(u8)]
+/// Order semantics at placement time.
 pub enum OrderType {
+    /// Match what's available; rest the residual.
     Limit = 0,
+    /// Match what's available; drop the residual (never rests).
     ImmediateOrCancel = 1,
+    /// Rest only; reject if the order would cross.
     PostOnly = 2,
 }
 
@@ -60,31 +74,51 @@ impl Default for OrderType {
     }
 }
 
+/// `true` for order types that may rest on book (everything except IOC).
 pub fn order_type_can_rest(order_type: OrderType) -> bool {
     order_type != OrderType::ImmediateOrCancel
 }
 
+/// `true` for order types that may take liquidity (everything except
+/// `PostOnly`).
 pub fn order_type_can_take(order_type: OrderType) -> bool {
     order_type != OrderType::PostOnly
 }
 
+/// Node stored in the market's ask `Bookside` tree. Holds the immutable
+/// match terms (rate, term, principal, collateral, expiry) plus the
+/// trader's seat index for accounting.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct RestingOrder {
+    /// Index of the placer's claimed seat in the market's seat tree.
     pub trader_seat_index: DataIndex,
     _pad0: [u8; 4],
 
+    /// Monotonic per-market sequence; FIFO tiebreaker for equal-rate
+    /// orders.
     pub sequence_number: u64,
+    /// Outstanding principal the maker is willing to lend.
     pub principal_atoms: u64,
+    /// Borrower-side collateral attached to the order (always 0 for vault
+    /// asks since they are quote-only).
     pub collateral_atoms: u64,
+    /// Unix-ts after which the order is considered expired; `0` means
+    /// never expires.
     pub last_valid_unix_ts: i64,
 
+    /// Loan term in seconds offered by this order.
     pub term_seconds: u32,
+    /// Quoted interest rate in basis points.
     pub rate_bps: u16,
 
+    /// One of [`Side::Bid`] or [`Side::Ask`]; vault asks store
+    /// [`Side::Ask`].
     pub side: u8,
 
+    /// One of the [`OrderType`] variants encoded as `u8`.
     pub order_type: u8,
+    /// Maker-side flag bits (matches the `MATCHED_LOAN_FLAG_*` family).
     pub flags: u8,
     _pad1: [u8; 1],
 
@@ -99,6 +133,8 @@ const_assert_eq!(size_of::<RestingOrder>(), RESTING_ORDER_SIZE);
 const_assert_eq!(size_of::<RestingOrder>() % 8, 0);
 
 impl RestingOrder {
+    /// Build a fully-populated `RestingOrder`. The fp48 snapshot is
+    /// stored as raw 16 little-endian bytes so the struct stays `Pod`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_primary(
         trader_seat_index: DataIndex,
@@ -111,7 +147,7 @@ impl RestingOrder {
         collateral_atoms: u64,
         last_valid_unix_ts: i64,
         flags: u8,
-        share_price_snapshot_fp48: u128,
+        share_price_snapshot_fp48: crate::math::Fp48,
     ) -> Self {
         RestingOrder {
             trader_seat_index,
@@ -126,25 +162,30 @@ impl RestingOrder {
             order_type: order_type as u8,
             flags,
             _pad1: [0; 1],
-            share_price_snapshot_bytes: share_price_snapshot_fp48.to_le_bytes(),
+            share_price_snapshot_bytes: share_price_snapshot_fp48.raw().to_le_bytes(),
             _pad2: [0; 6],
             _reserved: [0; 9],
         }
     }
 
-    pub fn share_price_snapshot(&self) -> u128 {
-        u128::from_le_bytes(self.share_price_snapshot_bytes)
+    /// Decode the stored 16-byte snapshot into an `Fp48`.
+    pub fn share_price_snapshot(&self) -> crate::math::Fp48 {
+        crate::math::Fp48::from_raw(u128::from_le_bytes(self.share_price_snapshot_bytes))
     }
 
-    pub fn set_share_price_snapshot(&mut self, value: u128) {
-        self.share_price_snapshot_bytes = value.to_le_bytes();
+    /// Re-encode `value` into the 16-byte snapshot field.
+    pub fn set_share_price_snapshot(&mut self, value: crate::math::Fp48) {
+        self.share_price_snapshot_bytes = value.raw().to_le_bytes();
     }
 
+    /// `true` if the order has an expiry set and `now_unix_ts` is past
+    /// it. Treats [`NO_EXPIRATION_LAST_VALID_UNIX_TS`] as "no expiry".
     pub fn is_expired(&self, now_unix_ts: i64) -> bool {
         self.last_valid_unix_ts != NO_EXPIRATION_LAST_VALID_UNIX_TS
             && self.last_valid_unix_ts < now_unix_ts
     }
 
+    /// Subtract `atoms` from `principal_atoms`; errors on underflow.
     pub fn reduce(&mut self, atoms: u64) -> ProgramResult {
         self.principal_atoms = self
             .principal_atoms
@@ -153,6 +194,7 @@ impl RestingOrder {
         Ok(())
     }
 
+    /// Add `atoms` to `principal_atoms`; errors on overflow.
     pub fn increase(&mut self, atoms: u64) -> ProgramResult {
         self.principal_atoms = self
             .principal_atoms
@@ -213,7 +255,7 @@ mod tests {
             0,
             0,
             0,
-            1u128 << 48,
+            crate::math::Fp48::ONE,
         )
     }
 
@@ -284,7 +326,7 @@ mod tests {
                             0,
                             0,
                             0,
-                            1u128 << 48,
+                            crate::math::Fp48::ONE,
                         ));
                     }
                 }

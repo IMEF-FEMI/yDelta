@@ -1,3 +1,8 @@
+//! `CancelOrderForRiskProfile` instruction. Curator-gated removal of a
+//! risk profile's resting market ask. Removes both the market-side
+//! resting order and the vault-side `RiskProfileOrderRef`, then emits
+//! `CancelOrderForRiskProfileLog`. Allowed regardless of sunset state.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -20,11 +25,16 @@ use crate::validation::loaders::CancelOrderForRiskProfileContext;
 
 use super::shared::get_mut_dynamic_account;
 
+/// Parameters for [`process_cancel_order_for_risk_profile`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct CancelOrderForRiskProfileParams {
+    /// Identifies the risk profile whose resting ask to cancel.
     pub profile_id: u8,
 }
 
+/// Cancel a risk profile's resting market ask. Signer must equal the
+/// profile's `curator`; errors if no `RiskProfileOrderRef` exists for
+/// the `(market, profile_id)` pair.
 pub fn process_cancel_order_for_risk_profile(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

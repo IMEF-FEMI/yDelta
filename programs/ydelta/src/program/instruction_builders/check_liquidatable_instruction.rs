@@ -1,3 +1,8 @@
+//! Builds the read-only solvency-check instructions
+//! `YdeltaInstruction::CheckLtvLiquidatable` and
+//! `YdeltaInstruction::CheckMaturityLiquidatable` — used by simulations to
+//! decide whether a real liquidate/settle would succeed.
+
 use solana_program::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -8,6 +13,10 @@ use crate::state::global_config::global_config_pda;
 use crate::state::loan::loan_pda;
 use crate::validation::get_borrower_integration_account_address;
 
+/// Builds the `CheckLtvLiquidatable` simulation instruction for loan
+/// `(market, sequence)`. `payer` signs (fee-only). `debt_bank`,
+/// `collateral_bank`, and their oracle slices feed marginfi's maint-LTV
+/// pricing; `marginfi_program` is the program owning those banks.
 #[allow(clippy::too_many_arguments)]
 pub fn check_ltv_liquidatable_instruction(
     market: &Pubkey,
@@ -46,6 +55,9 @@ pub fn check_ltv_liquidatable_instruction(
     }
 }
 
+/// Builds the `CheckMaturityLiquidatable` simulation instruction for loan
+/// `(market, sequence)`. `payer` signs (fee-only). Returns `Ok` iff the
+/// loan is past `matures_at + grace` and still has live debt.
 pub fn check_maturity_liquidatable_instruction(
     market: &Pubkey,
     payer: &Pubkey,

@@ -1,3 +1,9 @@
+//! marginfi v0.1.8 [`LendingProtocol`] adapter. Wraps deposit / withdraw
+//! / borrow / repay CPIs and the read-only share / weight queries. Each
+//! mutating call reads pre-state, invokes marginfi, then re-reads
+//! post-state and returns the realized delta — refusing to mask CPI
+//! drift behind a predicted value.
+
 use solana_program::{
     account_info::AccountInfo, instruction::AccountMeta, program::invoke_signed,
     program_error::ProgramError,
@@ -17,9 +23,15 @@ const WITHDRAW_EXPLICIT_ACCOUNTS: usize = 8;
 const BORROW_EXPLICIT_ACCOUNTS: usize = 8;
 const REPAY_EXPLICIT_ACCOUNTS: usize = 7;
 
+/// Zero-sized [`LendingProtocol`] impl for marginfi v0.1.8. Stateless;
+/// all per-call context is passed through `accounts` and `signer_seeds`.
 #[derive(Default, Clone, Copy)]
 pub struct MarginfiV18Adapter;
 
+/// Reinterprets a marginfi `WrappedI80F48` as the program's unsigned
+/// fp48 `u128`. Rejects negative bit patterns with
+/// `InvalidIntegrationAccount` rather than silently coercing to zero
+/// (asset/liability share values are invariants ≥ 0).
 pub fn wrapped_i80f48_to_u128(w: WrappedI80F48) -> Result<u128, ProgramError> {
     let bits = w.to_i128_bits();
     if bits < 0 {
@@ -32,6 +44,8 @@ pub fn wrapped_i80f48_to_u128(w: WrappedI80F48) -> Result<u128, ProgramError> {
     Ok(bits as u128)
 }
 
+/// Reverse of [`wrapped_i80f48_to_u128`]. Returns the bit-equivalent
+/// `WrappedI80F48` for an unsigned fp48 `u128`. Round-trips losslessly.
 pub fn u128_to_wrapped_i80f48(scaled: u128) -> WrappedI80F48 {
     WrappedI80F48::from_i128_bits(scaled as i128)
 }
@@ -422,6 +436,10 @@ impl LendingProtocol for MarginfiV18Adapter {
 }
 
 impl MarginfiV18Adapter {
+    /// Repay flavour that passes marginfi's `repay_all = true` flag.
+    /// Marginfi treats the atom argument as a cap and zeroes the
+    /// liability shares — used by close-out paths that fund the EXACT
+    /// post-accrue debt via the off-chain accrue predictor.
     pub fn repay_atoms_full<'info>(
         &self,
         accounts: &[AccountInfo<'info>],
@@ -431,6 +449,9 @@ impl MarginfiV18Adapter {
         repay_atoms_inner(accounts, amount_atoms, true, signer_seeds)
     }
 
+    /// Withdraw flavour that passes marginfi's `withdraw_all = true`
+    /// flag. `amount_cap` bounds the post-CPI atom delta; returns the
+    /// realized atoms drained from the marginfi balance.
     pub fn withdraw_atoms_full<'info>(
         &self,
         accounts: &[AccountInfo<'info>],
@@ -473,6 +494,10 @@ impl MarginfiV18Adapter {
         Ok(post_destination.saturating_sub(pre_destination))
     }
 
+    /// Ceiling-rounded variant of `amount_to_asset_shares` — bumps the
+    /// floored share count by 1 when the round-trip back to atoms
+    /// undershoots `amount_atoms`. Used when callers need to guarantee
+    /// the share count fully covers a target atom amount.
     pub fn amount_to_asset_shares_ceil<'info>(
         &self,
         accounts: &[AccountInfo<'info>],
@@ -498,6 +523,10 @@ impl MarginfiV18Adapter {
         }
     }
 
+    /// Convert fp48 liability `shares` to atoms at the current
+    /// `liability_share_value`, floored. The complementary ceiling
+    /// helper takes a pre-computed lsv (see
+    /// [`Self::liability_shares_to_atoms_ceil_at_lsv`]).
     pub fn liability_shares_to_atoms_floor<'info>(
         &self,
         accounts: &[AccountInfo<'info>],
@@ -513,6 +542,10 @@ impl MarginfiV18Adapter {
         u64::try_from(atoms).map_err(|_| ProgramError::ArithmeticOverflow)
     }
 
+    /// Off-chain accrue prediction: returns the bank's projected fp48
+    /// `liability_share_value` at `now_unix`, replicating marginfi's
+    /// interest-rate curve + accrue formula without a CPI. Delegates
+    /// to [`crate::protocol::marginfi_rate_calc`].
     pub fn calc_projected_liability_share_value_fp48(
         &self,
         bank_info: &AccountInfo,
@@ -524,6 +557,9 @@ impl MarginfiV18Adapter {
         )
     }
 
+    /// Off-chain accrue prediction: returns the bank's projected fp48
+    /// `asset_share_value` at `now_unix`. Mirrors the liability path
+    /// but uses the lender APR (base × utilization).
     pub fn calc_projected_asset_share_value_fp48(
         &self,
         bank_info: &AccountInfo,
@@ -535,6 +571,9 @@ impl MarginfiV18Adapter {
         )
     }
 
+    /// `shares_fp48 × lsv_fp48 / 2^48`, ceiled to atoms. Pre-computed
+    /// lsv lets callers pair with [`Self::calc_projected_liability_share_value_fp48`]
+    /// to fund the EXACT post-accrue liability in a close-out CPI.
     pub fn liability_shares_to_atoms_ceil_at_lsv(
         &self,
         shares_fp48: u128,
@@ -545,6 +584,10 @@ impl MarginfiV18Adapter {
         u64::try_from(atoms).map_err(|_| ProgramError::ArithmeticOverflow)
     }
 
+    /// Compose [`Self::calc_projected_liability_share_value_fp48`] with
+    /// [`Self::liability_shares_to_atoms_ceil_at_lsv`]. Returns the
+    /// post-accrue atom liability for `shares_fp48` at `now_unix`; 0
+    /// when `shares_fp48 == 0` short-circuits the CPI math.
     pub fn get_projected_liability_atoms_ceil(
         &self,
         bank_info: &AccountInfo,
@@ -560,6 +603,9 @@ impl MarginfiV18Adapter {
         self.liability_shares_to_atoms_ceil_at_lsv(shares_fp48, new_lsv_fp48)
     }
 
+    /// Read the fp48 liability shares the marginfi account holds in
+    /// the given bank. Returns 0 if the account has no balance row
+    /// for `bank_pk`.
     pub fn read_account_liability_shares_fp48(
         &self,
         marginfi_account_info: &AccountInfo,

@@ -1,3 +1,8 @@
+//! Builds the `YdeltaInstruction::ClaimRepaymentForRiskProfile` instruction:
+//! permissionless sweep of a profile's `pending_claim_atoms` from the
+//! market's `lender_marginfi_account` back into the vault's own
+//! `integration_account`.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -13,6 +18,11 @@ use crate::state::vault::{
 use crate::validation::pdas::get_market_signer_address;
 use crate::validation::token_checkers::get_vault_address;
 
+/// Builds the `ClaimRepaymentForRiskProfile` instruction for
+/// `risk_profile_id` on `market`. `payer` signs (permissionless cranker).
+/// The marginfi inputs (`debt_bank`, `debt_liquidity_vault`, `debt_bank_lva`,
+/// `bank_oracles`, `lender_marginfi_account`) drive the marginfi withdraw
+/// into the vault staging ATA.
 #[allow(clippy::too_many_arguments)]
 pub fn claim_repayment_for_risk_profile_instruction(
     payer: &Pubkey,

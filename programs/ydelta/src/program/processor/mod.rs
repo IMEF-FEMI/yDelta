@@ -1,3 +1,11 @@
+//! Per-instruction processor modules. Each child module exports a single
+//! `pub fn process_X(program_id, accounts, data) -> ProgramResult`
+//! dispatched from [`crate::process_instruction`] via the
+//! [`crate::program::instruction::YdeltaInstruction`] tag. The
+//! [`shared`] and [`fee_config_helpers`] modules host cross-processor
+//! utilities (market expansion, fee-config validation/overrides).
+
+pub mod admin_cancel_risk_profile_order;
 pub mod admin_transfer;
 pub mod cancel_order_for_risk_profile;
 pub mod check_liquidatable;
@@ -20,11 +28,13 @@ pub mod process_matched_loan;
 pub mod protocol_fee_claim;
 pub mod remove_risk_profile;
 pub mod repay;
+pub mod resume_risk_profile;
 pub mod set_fee_config;
 pub mod set_market_pause;
 pub mod set_vault_pause;
 pub mod settle_matured_loan;
 pub mod shared;
+pub mod sunset_risk_profile;
 pub mod sync_market_position;
 pub mod update_order_for_risk_profile;
 pub mod update_risk_profile;

@@ -1,3 +1,10 @@
+//! `UpdateOrderForRiskProfile` — atomic cancel-and-replace of the existing
+//! vault-owned ask for `(market, profile_id)`. Signer is the profile's
+//! curator; blocked when the profile is sunset (curators may still cancel
+//! during wind-down). Looks up the old order via the vault's
+//! `RiskProfileOrderRef`, cancels it on the market, rests a new ask with the
+//! supplied params, and swaps the ref entry on the vault.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -24,14 +31,22 @@ use crate::validation::loaders::CancelOrderForRiskProfileContext;
 
 use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 
+/// Cancel-and-replace parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct UpdateOrderForRiskProfileParams {
+    /// Risk profile ID that owns the order (1-based; 0 is the sentinel).
     pub profile_id: u8,
+    /// Replacement ask rate in bps.
     pub new_rate_bps: u16,
+    /// Replacement term in seconds; must be `<= profile.max_term_seconds`.
     pub new_term_seconds: u32,
+    /// Replacement order flag bits (see `state::market_helpers` flag constants).
     pub new_flags: u8,
 }
 
+/// Cancel the profile's existing ask for this market and rest a new one with
+/// the supplied parameters in a single instruction. Curator-signed; rejected
+/// when the profile is sunset.
 pub fn process_update_order_for_risk_profile(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -68,6 +83,13 @@ pub fn process_update_order_for_risk_profile(
         )?;
         let profile_node = crate::state::vault::get_helper_risk_profile(dynamic, profile_idx);
         let profile = profile_node.get_value();
+        require!(
+            profile.is_sunset == 0,
+            YdeltaError::VaultProfileSunset,
+            "update_order_for_risk_profile: profile_id {} is sunset; updates are rejected \
+             during wind-down (cancel is allowed)",
+            params.profile_id
+        )?;
         require!(
             *curator.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,

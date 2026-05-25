@@ -1,3 +1,8 @@
+//! `CreateRiskProfile` instruction. Vault-admin-gated append of a new
+//! `RiskProfile` to a `GlobalVaultFixed`. Auto-assigns `profile_id`
+//! from `header.next_profile_id` (monotonic, starts at 1) and grows
+//! the vault by one profile block if no free slot remains.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -17,13 +22,23 @@ use crate::state::vault::{
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, RISK_PROFILE_BLOCK_SIZE};
 use crate::validation::loaders::CreateRiskProfileContext;
 
+/// Parameters for [`process_create_risk_profile`].
 #[derive(BorshDeserialize, BorshSerialize, Clone)]
 pub struct CreateRiskProfileParams {
+    /// Initial curator. Must be non-default; can be rotated later via
+    /// `TransferCurator` / `AcceptCurator`.
     pub curator: Pubkey,
-    pub max_ltv_bps: u16,
+    /// Per-profile LTV cap in bps. `Some(v)` requires `0 < v < 10_000`.
+    /// `None` stores `LTV_AUTO_FROM_MARGINFI` (marginfi-derived at match time).
+    pub max_ltv_bps: Option<u16>,
+    /// Maximum term any of this profile's asks will accept, in seconds.
+    /// Must be `> 0`.
     pub max_term_seconds: u32,
 }
 
+/// Append a new `RiskProfile` to the vault. Auto-assigns `profile_id`,
+/// expands the vault by one profile block when needed, increments
+/// `risk_profile_count`, and emits `RiskProfileCreatedLog`.
 pub fn process_create_risk_profile(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -36,12 +51,18 @@ pub fn process_create_risk_profile(
         _system_program: _,
     } = CreateRiskProfileContext::load(accounts)?;
 
-    require!(
-        params.max_ltv_bps > 0 && params.max_ltv_bps < 10_000,
-        YdeltaError::VaultProfileLtvOutOfRange,
-        "max_ltv_bps {} must be in (0, 10_000)",
-        params.max_ltv_bps
-    )?;
+    let stored_max_ltv_bps: u16 = match params.max_ltv_bps {
+        Some(v) => {
+            require!(
+                v > 0 && v < 10_000,
+                YdeltaError::VaultProfileLtvOutOfRange,
+                "max_ltv_bps {} must be in (0, 10_000)",
+                v
+            )?;
+            v
+        }
+        None => crate::state::constants::LTV_AUTO_FROM_MARGINFI,
+    };
     require!(
         params.max_term_seconds > 0,
         YdeltaError::VaultProfileTermInvalid,
@@ -108,7 +129,7 @@ pub fn process_create_risk_profile(
         let profile = RiskProfile::new_empty(
             assigned_profile_id,
             params.curator,
-            params.max_ltv_bps,
+            stored_max_ltv_bps,
             params.max_term_seconds,
         );
 
@@ -129,7 +150,7 @@ pub fn process_create_risk_profile(
         profile_id: assigned_profile_id,
         _reserved0: 0,
         _pad0: [0; 2],
-        max_ltv_bps: params.max_ltv_bps,
+        max_ltv_bps: stored_max_ltv_bps,
         _pad1: [0; 2],
         max_term_seconds: params.max_term_seconds,
         _pad2: [0; 4],

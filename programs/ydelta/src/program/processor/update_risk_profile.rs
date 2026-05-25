@@ -1,3 +1,8 @@
+//! `UpdateRiskProfile` — curator update of a risk profile's mutable
+//! parameters. Signer/payer flow is loaded via `CreateRiskProfileContext`.
+//! Each `Option<>` field is an override; `None` leaves the field unchanged.
+//! Rejected when the profile is sunset.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -12,13 +17,20 @@ use crate::state::vault::{
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::CreateRiskProfileContext;
 
+/// Per-field overrides for a `RiskProfile`. `None` leaves the field
+/// unchanged; `Some(v)` is validated and written.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct UpdateRiskProfileParams {
+    /// Risk profile ID to update (1-based; 0 is the sentinel).
     pub profile_id: u8,
+    /// New max LTV in bps; must be in `(0, 10_000)`.
     pub new_max_ltv_bps: Option<u16>,
+    /// New max term in seconds; must be `> 0`.
     pub new_max_term_seconds: Option<u32>,
 }
 
+/// Update mutable parameters on a risk profile. Rejected when the profile is
+/// sunset.
 pub fn process_update_risk_profile(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -65,6 +77,13 @@ pub fn process_update_risk_profile(
     )?;
 
     let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+    require!(
+        profile.is_sunset == 0,
+        YdeltaError::VaultProfileSunset,
+        "update_risk_profile: profile_id {} is sunset; parameter updates are rejected \
+         during wind-down",
+        params.profile_id
+    )?;
 
     if let Some(v) = params.new_max_ltv_bps {
         profile.max_ltv_bps = v;

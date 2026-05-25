@@ -1,3 +1,12 @@
+//! On-chain account data types and the helpers that mutate them.
+//!
+//! Each submodule owns one logical account or value type:
+//! market order book (`market`, `market_helpers`, `resting_order`),
+//! per-trader seats (`claimed_seat`), settled loans (`loan`, `ltv`),
+//! global lending vaults (`vault`), and per-user position trackers
+//! (`user_account`). `constants` carries the layout sizes and
+//! discriminants shared across these accounts.
+
 pub mod claimed_seat;
 pub mod constants;
 pub mod dynamic_account;

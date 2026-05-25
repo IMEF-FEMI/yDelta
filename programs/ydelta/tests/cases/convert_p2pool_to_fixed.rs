@@ -124,8 +124,8 @@ async fn full_conversion_closes_p2pool_pda() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 10_000,
@@ -208,8 +208,8 @@ async fn partial_conversion_is_rejected() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 40,
@@ -287,8 +287,8 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 100,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(100),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 10_000,
@@ -360,8 +360,8 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 10_000,
@@ -432,7 +432,7 @@ async fn convert_produces_fixed_loan_with_expected_fields() {
     // (30 days) — the new Fixed loan must adopt these.
     const ASK_RATE_BPS: u16 = 425;
     const ASK_TERM_SECONDS: u32 = 30 * 86_400;
-    const VAULT_MAX_LTV_BPS: u16 = 8_000;
+    const VAULT_MAX_LTV_BPS: Option<u16> = Some(8_000);
     const VAULT_DEPOSIT_ATOMS: u64 = 10_000;
 
     let admin = fixture.create_trader().await;
@@ -443,7 +443,7 @@ async fn convert_produces_fixed_loan_with_expected_fields() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
+            /*profile_id=*/ 1,
             VAULT_MAX_LTV_BPS,
             ASK_RATE_BPS,
             ASK_TERM_SECONDS,

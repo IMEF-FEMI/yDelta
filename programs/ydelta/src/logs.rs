@@ -1,3 +1,9 @@
+//! On-chain event log structs emitted via `sol_log_data` for off-chain
+//! indexers. Each event is `repr(C)` + `Pod`, prefixed with the 8-byte
+//! `Discriminant` returned by `keccak(program_id || type_name)[..8]`
+//! (see [`crate::utils::get_discriminant`]) so the indexer can dispatch
+//! by tag without needing IDL metadata.
+
 use bytemuck::{Pod, Zeroable};
 use hypertree::DataIndex;
 use shank::ShankAccount;
@@ -5,6 +11,10 @@ use solana_program::{program_error::ProgramError, pubkey::Pubkey};
 
 use crate::utils::get_discriminant;
 
+/// Emit `e` to the transaction log as `[discriminant(8) | payload]`.
+/// Marked `#[inline(never)]` to keep the 3000-byte buffer off any
+/// caller's stack. Compile-time assert blocks any `T` whose serialized
+/// size (with the discriminant) would exceed the buffer.
 #[inline(never)]
 pub fn emit_stack<T: bytemuck::Pod + Discriminant>(e: T) -> Result<(), ProgramError> {
     const {
@@ -21,7 +31,11 @@ pub fn emit_stack<T: bytemuck::Pod + Discriminant>(e: T) -> Result<(), ProgramEr
     Ok(())
 }
 
+/// 8-byte tag identifying an event variant on the wire. The
+/// `impl_discriminant!` macro implements this by hashing the type's
+/// stringified name with the program id.
 pub trait Discriminant {
+    /// Stable little-endian 8-byte tag for the implementing type.
     fn discriminant() -> [u8; 8];
 }
 
@@ -35,6 +49,8 @@ macro_rules! impl_discriminant {
     };
 }
 
+/// Emitted from `process_create_market` after the `MarketFixed` PDA is
+/// initialized.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct CreateMarketLog {
@@ -45,6 +61,8 @@ pub struct CreateMarketLog {
 }
 impl_discriminant!(CreateMarketLog);
 
+/// Emitted from `process_claim_seat` after a `ClaimedSeat` is inserted
+/// into the market's seat tree.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct ClaimSeatLog {
@@ -53,6 +71,8 @@ pub struct ClaimSeatLog {
 }
 impl_discriminant!(ClaimSeatLog);
 
+/// Emitted from `process_deposit` after seat balances are credited.
+/// `mint` distinguishes debt-side vs collateral-side deposits.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct DepositLog {
@@ -63,6 +83,8 @@ pub struct DepositLog {
 }
 impl_discriminant!(DepositLog);
 
+/// Emitted from `process_withdraw` after seat balances are debited and
+/// atoms transferred to the trader's wallet ATA.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct WithdrawLog {
@@ -73,6 +95,9 @@ pub struct WithdrawLog {
 }
 impl_discriminant!(WithdrawLog);
 
+/// Emitted from `process_place_order` for each accepted order before
+/// matching runs. `order_type` distinguishes bid/ask/post-only variants;
+/// `side` is the borrower/lender flag.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct OrderPlacedLog {
@@ -94,6 +119,9 @@ pub struct OrderPlacedLog {
 }
 impl_discriminant!(OrderPlacedLog);
 
+/// Emitted from the matching engine for each cross that produces a
+/// queued `MatchedLoan` node (one per fill, before cranker promotion
+/// to a `LoanFixed` PDA).
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct MatchedLoanCreatedLog {
@@ -114,6 +142,8 @@ pub struct MatchedLoanCreatedLog {
 }
 impl_discriminant!(MatchedLoanCreatedLog);
 
+/// Emitted when the matching engine reaps an order whose
+/// `last_valid_unix_ts` has passed.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct OrderExpiredLog {
@@ -125,6 +155,8 @@ pub struct OrderExpiredLog {
 }
 impl_discriminant!(OrderExpiredLog);
 
+/// Emitted when an order's unfilled residual rests on the book after
+/// matching. `principal_remaining_atoms` is the size after the fill.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct OrderRestedLog {
@@ -140,6 +172,9 @@ pub struct OrderRestedLog {
 }
 impl_discriminant!(OrderRestedLog);
 
+/// Emitted when an IOC (immediate-or-cancel) order drops its unfilled
+/// residual instead of resting. `principal_dropped_atoms` is the
+/// discarded size.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct OrderFilledIocLog {
@@ -152,6 +187,8 @@ pub struct OrderFilledIocLog {
 }
 impl_discriminant!(OrderFilledIocLog);
 
+/// Emitted from order-cancellation paths (both trader-side and
+/// risk-profile-side) identifying the removed resting order by sequence.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct CancelOrderLog {
@@ -161,6 +198,8 @@ pub struct CancelOrderLog {
 }
 impl_discriminant!(CancelOrderLog);
 
+/// Emitted from `UpdateOrderForRiskProfile` (cancel-and-replace) so the
+/// indexer can link the retired `old_sequence` to the fresh `new_sequence`.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct UpdateOrderLog {
@@ -171,6 +210,9 @@ pub struct UpdateOrderLog {
 }
 impl_discriminant!(UpdateOrderLog);
 
+/// Emitted from `process_process_matched_loan` after a `MatchedLoan`
+/// node is promoted to a `LoanFixed` PDA and the lender has been
+/// credited the principal/origination split.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct LoanPromotedLog {
@@ -186,6 +228,8 @@ pub struct LoanPromotedLog {
 }
 impl_discriminant!(LoanPromotedLog);
 
+/// Emitted from `process_repay` for each repay step. `full_repay = 1`
+/// indicates the loan PDA closed in the same call.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct LoanRepaidLog {
@@ -199,6 +243,10 @@ pub struct LoanRepaidLog {
 }
 impl_discriminant!(LoanRepaidLog);
 
+/// Emitted from the lender-side claim sweeper (`ClaimSeat` repayment
+/// path). `closed = 1` indicates the loan was fully drained and
+/// removed. `protocol_fee_shares_swept` is the marginfi-asset-share
+/// slice diverted to `accumulated_protocol_fee_shares`.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct LoanClaimedLog {
@@ -214,6 +262,8 @@ pub struct LoanClaimedLog {
 }
 impl_discriminant!(LoanClaimedLog);
 
+/// Emitted from `process_claim_repayment_for_risk_profile` per sweep
+/// from the lender_marginfi_account into the risk profile's idle pool.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct RepaymentClaimedForRiskProfileLog {
@@ -229,6 +279,8 @@ pub struct RepaymentClaimedForRiskProfileLog {
 }
 impl_discriminant!(RepaymentClaimedForRiskProfileLog);
 
+/// Emitted from `process_create_vault` after the `GlobalVaultFixed` PDA
+/// and its marginfi integration account are initialized.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct VaultCreatedLog {
@@ -241,6 +293,9 @@ pub struct VaultCreatedLog {
 }
 impl_discriminant!(VaultCreatedLog);
 
+/// Emitted from `process_create_risk_profile` after the profile is
+/// appended to the vault's `risk_profiles` tree. `max_ltv_bps == 0`
+/// means the vault inherited the marginfi-derived cap.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct RiskProfileCreatedLog {
@@ -257,6 +312,8 @@ pub struct RiskProfileCreatedLog {
 }
 impl_discriminant!(RiskProfileCreatedLog);
 
+/// Emitted from `process_remove_risk_profile` after a sunset profile is
+/// removed from the vault tree.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct RiskProfileRemovedLog {
@@ -267,6 +324,9 @@ pub struct RiskProfileRemovedLog {
 }
 impl_discriminant!(RiskProfileRemovedLog);
 
+/// Emitted from `process_global_vault_deposit`. `shares_minted` and
+/// `gain_atoms` reflect the pre-mint snapshot accrual; the totals are
+/// post-deposit.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct GlobalVaultDepositLog {
@@ -282,6 +342,8 @@ pub struct GlobalVaultDepositLog {
 }
 impl_discriminant!(GlobalVaultDepositLog);
 
+/// Emitted from `process_place_order_for_risk_profile` whenever a
+/// curator rests a vault ask on a market.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct PlaceOrderForRiskProfileLog {
@@ -297,6 +359,9 @@ pub struct PlaceOrderForRiskProfileLog {
 }
 impl_discriminant!(PlaceOrderForRiskProfileLog);
 
+/// Emitted from `process_cancel_order_for_risk_profile` and from the
+/// admin-cancel + update-order paths. `is_replace = 1` indicates the
+/// cancel half of a cancel-and-replace.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct CancelOrderForRiskProfileLog {
@@ -309,6 +374,8 @@ pub struct CancelOrderForRiskProfileLog {
 }
 impl_discriminant!(CancelOrderForRiskProfileLog);
 
+/// Emitted from `process_global_vault_withdraw` after profile shares
+/// are burned and atoms returned to the depositor.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct GlobalVaultWithdrawLog {
@@ -323,6 +390,9 @@ pub struct GlobalVaultWithdrawLog {
 }
 impl_discriminant!(GlobalVaultWithdrawLog);
 
+/// Emitted from `process_liquidate_loan` and `process_settle_matured_loan`.
+/// `liquidation_kind` distinguishes LTV vs maturity triggers;
+/// `is_partial = 1` indicates the loan PDA survived the call.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct LoanLiquidatedLog {
@@ -338,6 +408,10 @@ pub struct LoanLiquidatedLog {
 }
 impl_discriminant!(LoanLiquidatedLog);
 
+/// Emitted from a liquidation path when seized collateral was
+/// insufficient to cover the live debt + bonus. `gap_collateral_atoms`
+/// is the shortfall, `debt_atoms_remaining` is the unrecoverable
+/// liability written off.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct BadDebtLog {
@@ -350,6 +424,9 @@ pub struct BadDebtLog {
 }
 impl_discriminant!(BadDebtLog);
 
+/// Emitted from `process_convert_p2pool_to_fixed` per cross — one log
+/// per matched vault ask, regardless of whether the borrower's
+/// P2Pool balance went to zero in the same call.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct P2PoolConvertedToFixedLog {

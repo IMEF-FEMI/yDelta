@@ -1,3 +1,8 @@
+//! `SetVaultPause` — vault-admin toggle for `GlobalVaultFixed::is_paused`.
+//! Signer must equal `GlobalVaultFixed.global_vault_admin`. Sets `is_paused`
+//! to 1 if `paused != 0`, else 0; consulted as a gate by deposit/order
+//! instructions on the global vault.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -9,11 +14,14 @@ use crate::state::vault::GlobalVaultFixed;
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::SetVaultPauseContext;
 
+/// Vault-pause parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct SetVaultPauseParams {
+    /// Non-zero pauses the vault, zero unpauses.
     pub paused: u8,
 }
 
+/// Toggle the global vault's `is_paused` flag. Signer must be the vault admin.
 pub fn process_set_vault_pause(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

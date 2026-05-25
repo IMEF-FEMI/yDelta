@@ -1,3 +1,11 @@
+//! `PlaceOrder` — borrower-side IOC bid. Signer is the borrower (payer).
+//! Matches against resting asks; any unfilled remainder is funded as a
+//! P2Pool (variable-rate marginfi-backed) loan when book liquidity is
+//! exhausted, falling back to an `OrderFilledIoc` log otherwise. Borrower
+//! collateral is encumbered on the seat, the P2Pool tail issues a marginfi
+//! `borrow` against the borrower account and `deposit`s the proceeds into
+//! the lender integration account, and the seat tracks the credited shares.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -22,16 +30,26 @@ use crate::validation::loaders::PlaceOrderContext;
 
 use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 
+/// Borrower-side IOC bid parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct PlaceOrderParams {
+    /// Optional hint pointing at the borrower's `ClaimedSeat`; falls back to lookup if `None` or stale.
     pub seat_index_hint: Option<DataIndex>,
+    /// Order flag bits (see `state::market_helpers` flag constants).
     pub flags: u8,
+    /// Maximum borrower-paid rate in bps; asks at higher rates are skipped.
     pub rate_bps: u16,
+    /// Loan term in seconds for any new fixed-rate match.
     pub term_seconds: u32,
+    /// Principal to borrow in debt-mint atoms.
     pub principal_atoms: u64,
+    /// Collateral to encumber in collateral-mint atoms.
     pub collateral_atoms: u64,
 }
 
+/// Borrower IOC bid. Matches resting asks, encumbers borrower collateral, and
+/// either creates a `MatchedLoan` queue entry (Fixed) or opens a P2Pool tail
+/// via marginfi `borrow` + `deposit`.
 pub fn process_place_order(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -67,23 +85,35 @@ pub fn process_place_order(
 
     expand_market_if_needed(payer.info, &market)?;
 
-    let snapshot_fp48: u128 = {
+    // Adapter calls still return raw u128 fp48; wrap at the boundary so the
+    // PlaceOrderArgs fields (now [`Fp48`]) get the type-safe payload.
+    let snapshot_fp48: crate::math::Fp48 = {
         let data = collateral_bank.info.try_borrow_data()?;
         let bank = marginfi_mocks::state::Bank::try_from_account_data(&data)
             .map_err(|_| crate::program::YdeltaError::IncorrectAccount)?;
-        wrapped_i80f48_to_u128(bank.asset_share_value)?
+        crate::math::Fp48::from_raw(wrapped_i80f48_to_u128(bank.asset_share_value)?)
     };
 
-    let debt_oracle_price_fp48: u128 = MarginfiV18Adapter.oracle_price(
-        &crate::validation::oracle_price_args(debt_bank.info, &debt_oracle_ais),
-    )?;
-    let collateral_oracle_price_fp48: u128 = MarginfiV18Adapter.oracle_price(
-        &crate::validation::oracle_price_args(collateral_bank.info, &collateral_oracle_ais),
-    )?;
-    let (_debt_asset_init, debt_liability_weight_init_fp48) =
+    let debt_oracle_price_fp48: crate::math::Fp48 = crate::math::Fp48::from_raw(
+        MarginfiV18Adapter.oracle_price(&crate::validation::oracle_price_args(
+            debt_bank.info,
+            &debt_oracle_ais,
+        ))?,
+    );
+    let collateral_oracle_price_fp48: crate::math::Fp48 = crate::math::Fp48::from_raw(
+        MarginfiV18Adapter.oracle_price(&crate::validation::oracle_price_args(
+            collateral_bank.info,
+            &collateral_oracle_ais,
+        ))?,
+    );
+    let (_debt_asset_init, debt_liability_weight_init_raw) =
         MarginfiV18Adapter.init_weight(&[debt_bank.info.clone()])?;
-    let (collateral_asset_weight_init_fp48, _coll_liab_init) =
+    let debt_liability_weight_init_fp48 =
+        crate::math::Fp48::from_raw(debt_liability_weight_init_raw);
+    let (collateral_asset_weight_init_raw, _coll_liab_init) =
         MarginfiV18Adapter.init_weight(&[collateral_bank.info.clone()])?;
+    let collateral_asset_weight_init_fp48 =
+        crate::math::Fp48::from_raw(collateral_asset_weight_init_raw);
 
     let market_key = *market.info.key;
     let now = get_now_unix_ts()?;

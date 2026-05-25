@@ -1,3 +1,8 @@
+//! `SetFeeConfig` — market-admin update of selected `MarketFixed::fee_config`
+//! fields. Signer must equal `MarketFixed.admin`. Each `Option<>` field is an
+//! override: `Some(v)` is validated and written, `None` leaves the existing
+//! value untouched.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -17,18 +22,29 @@ use crate::validation::{Program, Signer, YdeltaAccountInfo};
 
 use super::fee_config_helpers::{apply_fee_config_overrides, validate_fee_config_overrides};
 
+/// Per-field overrides for `MarketFixed::fee_config`. `None` means "leave
+/// unchanged"; `Some(v)` is validated and written.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Default)]
 pub struct SetFeeConfigParams {
+    /// Floor on the protocol fee in bps (per-loan; see `fee_config_helpers`).
     pub protocol_fee_bps_floor: Option<u16>,
+    /// Origination fee in bps, charged on net principal at promotion.
     pub origination_bps: Option<u16>,
+    /// Split (bps) of interest paid to the curator.
     pub curator_split_bps: Option<u16>,
+    /// Curator fee in bps applied to a profile's deployed principal at match.
     pub curator_fee_bps: Option<u16>,
+    /// Liquidation keeper bonus in bps of repaid principal.
     pub liquidation_keeper_bps: Option<u16>,
+    /// Liquidation share in bps of repaid principal that accrues to protocol.
     pub liquidation_protocol_bps: Option<u16>,
+    /// Extra LTV buffer in bps subtracted from the auto-LTV ceiling.
     pub ltv_buffer_bps: Option<u16>,
+    /// Grace period in seconds applied after maturity before settle is allowed.
     pub grace_period_seconds: Option<u32>,
 }
 
+/// Apply selected fee_config overrides on a market. Signer must be the market admin.
 pub fn process_set_fee_config(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::UpdateRiskProfile` instruction:
+//! vault-admin patches a profile's mutable policy fields. Rejected on
+//! sunset profiles.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -10,6 +14,11 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
+/// Builds the `UpdateRiskProfile` instruction for the vault keyed by
+/// `mint`. `payer` (signer) must be the vault admin. `new_max_ltv_bps`
+/// overrides the LTV cap in basis points when `Some`; `new_max_term_seconds`
+/// overrides the max term in seconds when `Some`. `None` fields are left
+/// unchanged.
 pub fn update_risk_profile_instruction(
     mint: &Pubkey,
     payer: &Pubkey,

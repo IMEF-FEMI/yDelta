@@ -2,7 +2,7 @@
  * Instruction discriminant tags. Must stay byte-identical to the on-chain
  * `YdeltaInstruction` enum in `programs/ydelta/src/program/instruction.rs`.
  *
- * Tags are a contiguous `0..=37` range. The processor `TryFrom<u8>` rejects
+ * Tags are a contiguous `0..=40` range. The processor `TryFrom<u8>` rejects
  * anything outside that range, so unknown tags fail at the loader.
  */
 export enum InstructionTag {
@@ -44,4 +44,7 @@ export enum InstructionTag {
   CheckMaturityLiquidatable = 35,
   SetVaultPause = 36,
   RemoveRiskProfile = 37,
+  SunsetRiskProfile = 38,
+  ResumeRiskProfile = 39,
+  AdminCancelRiskProfileOrder = 40,
 }

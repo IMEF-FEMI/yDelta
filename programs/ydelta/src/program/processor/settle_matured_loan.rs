@@ -1,3 +1,13 @@
+//! `SettleMaturedLoan` — permissionless keeper-driven settlement of a loan
+//! past maturity + grace period. Keeper supplies debt-token funds, marginfi
+//! repays/deposits, and the proportional share of collateral is seized to the
+//! keeper's collateral token account. Supports partial settlement (must clear
+//! at least max(1% of outstanding, 1000 atoms)) and full settlement; full
+//! settlement performs the same close-out as `repay` for Fixed loans
+//! (lender seat credit, encumbrance + open_lend_count decrement, risk-profile
+//! NAV/weighted-rate/pending-claim/curator-fee updates, loan PDA closed and
+//! rent refunded to the original cranker).
+
 use std::cell::RefMut;
 
 use solana_program::{
@@ -25,6 +35,10 @@ use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::get_mut_dynamic_account;
 
+/// Settle a matured loan past its grace period. `data` is empty or an 8-byte
+/// little-endian `repay_atoms_max`; `0` (or empty) means settle in full.
+/// Permissionless; the keeper provides the debt-side atoms and receives
+/// collateral pro-rata to repaid principal.
 pub fn process_settle_matured_loan(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -370,7 +384,7 @@ pub fn process_settle_matured_loan(
         0
     };
 
-    let collateral_snapshot_fp48: u128 = {
+    let collateral_snapshot_fp48: crate::math::Fp48 = {
         let loan_data = loan.info.try_borrow_data()?;
         let header: &LoanFixed = bytemuck::from_bytes(&loan_data[..LOAN_FIXED_SIZE]);
         header.borrower_collateral_share_price_snapshot_fp48
@@ -591,7 +605,8 @@ pub fn process_settle_matured_loan(
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             profile.deployed_principal_atoms = profile
                 .deployed_principal_atoms
-                .saturating_sub(loan_principal);
+                .checked_sub(loan_principal)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
 
             let loan_lifetime: u128 = (now.saturating_sub(loan_started_at)).max(0) as u128;
             let yield_denom: u128 = (crate::state::loan::BPS_PER_UNIT as u128)
@@ -620,6 +635,7 @@ pub fn process_settle_matured_loan(
                 profile.total_assets_atoms =
                     profile.total_assets_atoms.saturating_sub((-assets_delta) as u64);
             }
+            crate::state::vault::restore_assets_principal_invariant(profile);
 
             profile.pending_claim_atoms = profile
                 .pending_claim_atoms

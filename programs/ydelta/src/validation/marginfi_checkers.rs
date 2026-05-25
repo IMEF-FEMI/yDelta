@@ -1,3 +1,9 @@
+//! Typed proofs over marginfi v0.1.8 account shapes. Each wrapper
+//! asserts the account is owned by the configured marginfi program id
+//! and passes marginfi's own layout check; the optional `_with_expected_*`
+//! constructors additionally pin authority / group / mint fields so
+//! loaders can wire integration accounts to a specific market.
+
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
     program_error::ProgramError,
@@ -13,12 +19,15 @@ use marginfi_mocks::state::{
 use crate::program::YdeltaError;
 use crate::require;
 
+/// Typed proof that `info` is a marginfi `MarginfiGroup` account.
 #[derive(Clone)]
 pub struct MarginfiGroupInfo<'a, 'info> {
     pub info: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> MarginfiGroupInfo<'a, 'info> {
+    /// Construct after asserting owner equals `marginfi_program_id`
+    /// and the account data passes `assert_is_marginfi_group`.
     pub fn new(
         info: &'a AccountInfo<'info>,
         marginfi_program_id: &Pubkey,
@@ -43,12 +52,14 @@ impl<'a, 'info> Deref for MarginfiGroupInfo<'a, 'info> {
     }
 }
 
+/// Typed proof that `info` is a marginfi `Bank` account.
 #[derive(Clone)]
 pub struct MarginfiBankInfo<'a, 'info> {
     pub info: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> MarginfiBankInfo<'a, 'info> {
+    /// Construct after asserting owner + `Bank::try_from_account_data`.
     pub fn new(
         info: &'a AccountInfo<'info>,
         marginfi_program_id: &Pubkey,
@@ -65,6 +76,9 @@ impl<'a, 'info> MarginfiBankInfo<'a, 'info> {
         Ok(Self { info })
     }
 
+    /// Stricter [`Self::new`] that additionally pins `bank.group ==
+    /// expected_group` — ensures cross-market account stitching can't
+    /// route a bank from a different marginfi group.
     pub fn new_with_expected_group(
         info: &'a AccountInfo<'info>,
         marginfi_program_id: &Pubkey,
@@ -97,12 +111,15 @@ impl<'a, 'info> Deref for MarginfiBankInfo<'a, 'info> {
     }
 }
 
+/// Typed proof that `info` is a marginfi `MarginfiAccount` (the per-PDA
+/// position holder that carries asset / liability share rows).
 #[derive(Clone)]
 pub struct MarginfiAccountInfo<'a, 'info> {
     pub info: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> MarginfiAccountInfo<'a, 'info> {
+    /// Construct after asserting owner + `assert_is_marginfi_account`.
     pub fn new(
         info: &'a AccountInfo<'info>,
         marginfi_program_id: &Pubkey,
@@ -119,6 +136,7 @@ impl<'a, 'info> MarginfiAccountInfo<'a, 'info> {
         Ok(Self { info })
     }
 
+    /// [`Self::new`] plus `marginfi_account.authority == expected_authority`.
     pub fn new_with_expected_authority(
         info: &'a AccountInfo<'info>,
         marginfi_program_id: &Pubkey,
@@ -129,6 +147,7 @@ impl<'a, 'info> MarginfiAccountInfo<'a, 'info> {
         Ok(validated)
     }
 
+    /// [`Self::new`] plus `marginfi_account.group == expected_group`.
     pub fn new_with_expected_group(
         info: &'a AccountInfo<'info>,
         marginfi_program_id: &Pubkey,
@@ -139,6 +158,7 @@ impl<'a, 'info> MarginfiAccountInfo<'a, 'info> {
         Ok(validated)
     }
 
+    /// [`Self::new`] plus both authority and group constraints.
     pub fn new_with_expected_authority_and_group(
         info: &'a AccountInfo<'info>,
         marginfi_program_id: &Pubkey,
@@ -188,14 +208,22 @@ impl<'a, 'info> Deref for MarginfiAccountInfo<'a, 'info> {
     }
 }
 
+/// Collected oracle account refs for a marginfi bank, in the order the
+/// adapter expects (matches `bank.config.oracle_keys`).
 #[derive(Clone)]
 pub struct MarginfiOracleAis<'a, 'info> {
     pub ais: Vec<&'a AccountInfo<'info>>,
 
+    /// Number of oracle accounts (1 for plain Pyth/Switchboard, 3 for
+    /// the staked-LST composite).
     pub count: u8,
 }
 
 impl<'a, 'info> MarginfiOracleAis<'a, 'info> {
+    /// Pull the next `bank.config.expected_oracle_account_count()`
+    /// accounts off the iterator and pin each `info.key` to the
+    /// corresponding `bank.config.oracle_keys[i]`. Rejects banks with
+    /// `OracleSetup::None` or counts above [`MAX_ORACLE_KEYS`].
     pub fn load(
         account_iter: &mut Iter<'a, AccountInfo<'info>>,
         bank: &'a AccountInfo<'info>,
@@ -234,13 +262,20 @@ impl<'a, 'info> MarginfiOracleAis<'a, 'info> {
         Ok(Self { ais, count })
     }
 
+    /// Borrow the inner account-ref vec as a slice.
     pub fn as_slice(&self) -> &[&'a AccountInfo<'info>] {
         &self.ais
     }
 }
 
+/// Hard cap on the oracle-account count any bank may declare. Bounds
+/// the temporary vec allocated by [`MarginfiOracleAis::load`].
 pub const MAX_ORACLE_KEYS: usize = 5;
 
+/// Assemble the argument slice for
+/// [`crate::protocol::oracles::read_oracle_price`]: `[bank,
+/// oracle_0, .., oracle_n]`. Clones the underlying `AccountInfo`s so
+/// the result can be passed by value to the adapter call.
 pub fn oracle_price_args<'info>(
     bank: &AccountInfo<'info>,
     oracle_ais: &MarginfiOracleAis<'_, 'info>,
@@ -253,12 +288,14 @@ pub fn oracle_price_args<'info>(
     out
 }
 
+/// Typed proof that `info.key` equals the marginfi program id.
 #[derive(Clone)]
 pub struct MarginfiProgram<'a, 'info> {
     pub info: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> MarginfiProgram<'a, 'info> {
+    /// Construct after asserting `info.key == marginfi_mocks::ID`.
     pub fn new(info: &'a AccountInfo<'info>) -> Result<Self, ProgramError> {
         require!(
             info.key == &marginfi_mocks::ID,

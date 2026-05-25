@@ -1,3 +1,8 @@
+//! `CreateMarket` instruction. Permissionless initializer for a
+//! `MarketFixed` PDA covering one `(debt_mint, collateral_mint)` pair,
+//! plus its two marginfi integration accounts (lender + borrower) and
+//! its debt / collateral token vaults. First caller becomes `admin`.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -22,15 +27,27 @@ use crate::validation::{
 use super::fee_config_helpers::{apply_fee_config_overrides, validate_fee_config_overrides};
 use super::shared::{expand_market, invoke};
 
+/// Initial `FeeConfig` overrides for [`process_create_market`]. Each
+/// `Some` field overrides the default; `None` keeps
+/// `FeeConfig::new_empty()`'s value. All bps fields validated through
+/// [`super::fee_config_helpers::validate_fee_config_overrides`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Default)]
 pub struct CreateMarketParams {
+    /// Minimum cross rate (bps) the matching engine accepts.
     pub protocol_fee_bps_floor: Option<u16>,
+    /// One-time origination fee charged at match time, in bps of principal.
     pub origination_bps: Option<u16>,
+    /// Curator's share of origination fee, in bps of `origination_bps`.
     pub curator_split_bps: Option<u16>,
+    /// Curator's share of interest yield, in bps of accrued interest.
     pub curator_fee_bps: Option<u16>,
+    /// Liquidation keeper bonus, in bps of repaid debt value.
     pub liquidation_keeper_bps: Option<u16>,
+    /// Protocol's share of liquidation proceeds, in bps of repaid debt.
     pub liquidation_protocol_bps: Option<u16>,
+    /// Safety margin baked into the match-time LTV gate, in bps.
     pub ltv_buffer_bps: Option<u16>,
+    /// Seconds past `matures_at` before settle/liquidation is permissionless.
     pub grace_period_seconds: Option<u32>,
 }
 
@@ -49,6 +66,10 @@ impl From<&CreateMarketParams> for crate::program::processor::set_fee_config::Se
     }
 }
 
+/// Initialize a new market for a `(debt_mint, collateral_mint)` pair.
+/// Creates the two marginfi integration accounts, the debt / collateral
+/// SPL token vaults, then writes the `MarketFixed` header (with signer
+/// as `admin`) and expands the market by one block. Emits `CreateMarketLog`.
 pub fn process_create_market(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -205,6 +226,10 @@ pub fn process_create_market(
     Ok(())
 }
 
+/// Reject SPL token-2022 mints carrying extensions the program cannot
+/// safely support (transfer fees, hooks, permanent delegate,
+/// confidential transfer, etc). Plain SPL token mints are allowed
+/// unconditionally; metadata-pointer extension is permitted with a log.
 pub(crate) fn assert_supported_mint_extensions(mint: &MintAccountInfo) -> ProgramResult {
     if mint.info.owner != &spl_token_2022::id() {
         return Ok(());

@@ -63,8 +63,8 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 10_000_000,
@@ -181,8 +181,8 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
 
     // Vault-idle invariant — vault profile's encumbered_in_orders
     // got drained into deployed_principal_atoms at crank time.
-    fixture.assert_vault_idle_invariant(0).await;
-    let profile = fixture.read_risk_profile(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(
         profile.deployed_principal_atoms, principal_atoms,
         "promote must increment deployed_principal_atoms by the loan's principal"
@@ -216,8 +216,8 @@ async fn promote_matched_loan_keeps_borrower_and_fee_claims_backed() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 10_000_000,
@@ -308,8 +308,8 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 10_000_000,
@@ -351,7 +351,7 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
     // lender capital was committed but BEFORE the cranker promotes.
     // This is the exact window the bug opened.
     let mut attack_params = SetFeeConfigParams::default();
-    attack_params.curator_fee_bps = Some(9_000);
+    attack_params.curator_fee_bps = Some(5_000);
     let attack_ix = set_fee_config_instruction(
         &fixture.market.pubkey(),
         &fixture.payer.pubkey(),
@@ -361,7 +361,7 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
     fixture.refresh_blockhash().await;
     let market_post_attack = fixture.read_market_fixed().await;
     assert_eq!(
-        market_post_attack.fee_config.curator_fee_bps, 9_000,
+        market_post_attack.fee_config.curator_fee_bps, 5_000,
         "post-attack: market fee config now reads the attacker's value"
     );
 
@@ -372,13 +372,11 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // (6) THE INVARIANT: loan must reflect the match-time bps, not the
-    // post-front-run bps. Pre-fix this would read 9_000; post-fix 1_000.
     let loan = fixture.read_loan(0).await;
     assert_eq!(
         loan.curator_fee_bps_snapshot, 1_000,
         "loan must lock in the MATCH-time curator_fee_bps (1_000), \
-         NOT the admin-changed value at PROMOTION time (9_000). \
+         NOT the admin-changed value at PROMOTION time (5_000). \
          Got {} — admin front-run succeeded.",
         loan.curator_fee_bps_snapshot,
     );

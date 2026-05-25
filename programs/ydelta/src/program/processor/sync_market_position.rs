@@ -1,3 +1,9 @@
+//! `SyncMarketPosition` — permissionless refresh of a user's per-market
+//! position cache on their `UserAccount`. Any signer may call; the affected
+//! `owner_user_account` PDA must already exist (any signer-side instruction
+//! auto-creates it). Reads the owner's `ClaimedSeat` on the market and
+//! updates the cached snapshot via `sync_signer_market_position`.
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
@@ -12,9 +18,12 @@ use crate::state::MarketFixed;
 use crate::validation::loaders::load_global_config;
 use crate::validation::{Signer, YdeltaAccountInfo};
 
+/// Empty parameter struct; instruction data is unused.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct SyncMarketPositionParams {}
 
+/// Refresh the owner's per-market position cache on their `UserAccount`.
+/// Permissionless; the owner's `UserAccount` PDA must already exist.
 pub fn process_sync_market_position(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

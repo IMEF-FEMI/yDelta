@@ -1,3 +1,12 @@
+//! `Repay` — borrower-driven repayment for Fixed and P2Pool loans. Signer is
+//! the borrower (verified against the borrower seat's owner). Handles partial
+//! and full repayment; on full repay this is the only place that closes the
+//! loan PDA, decrements seat encumbrance/counters, releases collateral,
+//! applies risk-profile bookkeeping (weighted-rate, principal, NAV, pending
+//! claim, curator fee accumulators), and refunds rent to the original
+//! cranker. The companion `claim_repayment_for_risk_profile` is a stateless
+//! seat→vault sweeper and never re-accrues or touches the loan PDA.
+
 use std::cell::{Ref, RefMut};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -29,14 +38,22 @@ use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::{get_mut_dynamic_account, invoke};
 
+/// Repayment parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct RepayParams {
+    /// Atoms to repay for a partial repay; ignored when `full_repay == true`.
     pub repay_atoms: u64,
 
+    /// When true, pays the entire post-accrue outstanding (P2Pool uses marginfi's
+    /// `repay_all` on single-loan accounts with a +1 atom accrue cushion).
     pub full_repay: bool,
+    /// Optional borrower `ClaimedSeat` hint; fallback lookup runs when stale.
     pub borrower_seat_index_hint: Option<DataIndex>,
 }
 
+/// Borrower repay for Fixed and P2Pool loans. Accrues once (the only call site
+/// that does so for repay/claim), applies the repay via marginfi, and on full
+/// repay performs the entire close-out (loan PDA, seats, risk profile).
 pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let params: RepayParams = RepayParams::try_from_slice(data)?;
     let ctx = RepayContext::load(accounts)?;
@@ -517,7 +534,8 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             profile.deployed_principal_atoms = profile
                 .deployed_principal_atoms
-                .saturating_sub(loan_principal);
+                .checked_sub(loan_principal)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
 
             // Reconcile realized vs estimated for NAV (total_assets_atoms)
             // and cost basis (total_principal_atoms). lender_claimable_atoms
@@ -555,6 +573,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
                     .total_assets_atoms
                     .saturating_sub((-assets_delta) as u64);
             }
+            crate::state::vault::restore_assets_principal_invariant(profile);
 
             // Pending-claim bucket — atoms now physically in
             // lender_marginfi_account but not yet swept to this vault's

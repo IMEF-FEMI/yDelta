@@ -5,7 +5,7 @@
  * (`adminTransfers`, `globalConfigAdmin`, `checkLiquidatable`) grouping the
  * tags that the Rust source bundles together.
  *
- * 38 instructions total — tags 0..=37, contiguous (see `_tags.ts`).
+ * 41 instructions total — tags 0..=40, contiguous (see `_tags.ts`).
  */
 export { InstructionTag } from './_tags.js';
 export { cuBudgetIx, withCuBudget } from './_helpers.js';
@@ -117,3 +117,12 @@ export type {
 } from './checkLiquidatable.js';
 
 export { setVaultPauseInstruction } from './setVaultPause.js';
+
+export { sunsetRiskProfileInstruction } from './sunsetRiskProfile.js';
+export type { SunsetRiskProfileArgs } from './sunsetRiskProfile.js';
+
+export { resumeRiskProfileInstruction } from './resumeRiskProfile.js';
+export type { ResumeRiskProfileArgs } from './resumeRiskProfile.js';
+
+export { adminCancelRiskProfileOrderInstruction } from './adminCancelRiskProfileOrder.js';
+export type { AdminCancelRiskProfileOrderArgs } from './adminCancelRiskProfileOrder.js';

@@ -337,7 +337,7 @@ impl MarketFixture {
 
     pub async fn refresh_blockhash(&self) {
         let mut client: RefMut<ProgramTestContext> = self.context.borrow_mut();
-        let bh = client.banks_client.get_latest_blockhash().await.unwrap();
+        let bh = client.get_new_latest_blockhash().await.unwrap();
         client.last_blockhash = bh;
     }
 
@@ -1452,7 +1452,7 @@ impl MarketFixture {
         &self,
         admin: &Keypair,
         curator: Pubkey,
-        max_ltv_bps: u16,
+        max_ltv_bps: Option<u16>,
         max_term_seconds: u32,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = create_risk_profile_instruction(
@@ -1604,7 +1604,7 @@ impl MarketFixture {
         depositor: &Keypair,
         curator: &Keypair,
         profile_id: u8,
-        max_ltv_bps: u16,
+        max_ltv_bps: Option<u16>,
         rate_bps: u16,
         term_seconds: u32,
         deposit_atoms: u64,

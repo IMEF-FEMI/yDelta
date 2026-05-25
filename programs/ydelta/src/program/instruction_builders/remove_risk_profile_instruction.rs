@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::RemoveRiskProfile` instruction: vault-admin
+//! removes a `RiskProfile` from the vault tree (only allowed after the
+//! profile has been sunset and wound down).
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -9,6 +13,9 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
+/// Builds the `RemoveRiskProfile` instruction for the vault keyed by
+/// `mint`. `payer` (signer) must be the vault admin; the target
+/// `profile_id` must already have `is_sunset == 1`.
 pub fn remove_risk_profile_instruction(
     mint: &Pubkey,
     payer: &Pubkey,

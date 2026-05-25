@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::CreateMarket` instruction (and a paired
+//! system `create_account` for the `MarketFixed` PDA), plus small PDA
+//! address derivers re-exported for clients.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -16,22 +20,30 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
+/// Derives the lender-side marginfi integration account PDA for `market`.
 pub fn derive_lender_marginfi_account(market: &Pubkey) -> Pubkey {
     get_lender_integration_account_address(market).0
 }
 
+/// Derives the borrower-side marginfi integration account PDA for `market`.
 pub fn derive_borrower_marginfi_account(market: &Pubkey) -> Pubkey {
     get_borrower_integration_account_address(market).0
 }
 
+/// Backwards-compatible alias for `derive_lender_marginfi_account`.
 pub fn derive_marginfi_account(market: &Pubkey) -> Pubkey {
     derive_lender_marginfi_account(market)
 }
 
+/// Derives the market's signer PDA (token-vault + marginfi CPI authority).
 pub fn derive_market_signer(market: &Pubkey) -> Pubkey {
     get_market_signer_address(market).0
 }
 
+/// Builds the two-instruction sequence to create a market: a system
+/// `create_account` sized to `MARKET_FIXED_SIZE` followed by
+/// `create_market_instruction`. `market_creator` (signer) funds rent and
+/// becomes the initial market admin.
 #[allow(clippy::too_many_arguments)]
 pub fn create_market_instructions(
     market: &Pubkey,
@@ -67,6 +79,9 @@ pub fn create_market_instructions(
     ])
 }
 
+/// Builds the `CreateMarket` instruction alone (assumes the `market` PDA is
+/// already allocated). `market_creator` (signer) becomes the initial admin;
+/// `params` carries fee config, grace period, and initial pause flag.
 #[allow(clippy::too_many_arguments)]
 pub fn create_market_instruction(
     market: &Pubkey,

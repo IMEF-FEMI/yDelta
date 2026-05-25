@@ -1,3 +1,12 @@
+//! `ProcessMatchedLoan` — permissionless promotion of a `MatchedLoan` queue
+//! node into a Loan PDA. Any signer can crank; they pay rent and become the
+//! loan's `created_by` (refunded on repay/settle/liquidate). Allocates the
+//! loan PDA, credits borrower's seat with marginfi shares for the net
+//! principal (Fixed), accrues protocol origination fee shares, and — for
+//! risk-profile-lender Fixed matches — funds the lender integration account
+//! by withdrawing principal from the global vault and depositing it into
+//! the per-market marginfi account.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -23,13 +32,18 @@ use crate::validation::loaders::ProcessMatchedLoanContext;
 
 use super::shared::get_mut_dynamic_account;
 
+/// Matched-loan promotion parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct ProcessMatchedLoanParams {
+    /// Per-market sequence of the `MatchedLoan` to promote.
     pub matched_loan_sequence: u64,
 
+    /// Optional `DataIndex` hint for the queue node; falls back to sequence lookup.
     pub matched_loan_index_hint: Option<DataIndex>,
 }
 
+/// Promote a `MatchedLoan` queue entry into a Loan PDA. Permissionless; the
+/// cranker pays rent and is recorded as `created_by` for later rent refund.
 pub fn process_process_matched_loan(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -427,24 +441,6 @@ fn do_vault_settle<'a, 'info>(
     let _credited: u128 =
         MarginfiV18Adapter.deposit(&deposit_accounts, principal_atoms, &[market_signer_seeds])?;
 
-    if surplus_atoms > 0 {
-        let redeposit_accounts: Vec<AccountInfo> = vec![
-            settle.marginfi_group.info.clone(),
-            settle.global_vault_integration_account.info.clone(),
-            settle.global_vault_signer.clone(),
-            debt_bank.info.clone(),
-            settle.global_vault_staging.info.clone(),
-            settle.liquidity_vault.info.clone(),
-            settle.token_program.info.clone(),
-            settle.marginfi_program.info.clone(),
-        ];
-        let _returned_shares: u128 = MarginfiV18Adapter.deposit(
-            &redeposit_accounts,
-            surplus_atoms,
-            &[global_vault_signer_seeds],
-        )?;
-    }
-
     {
         let data: &mut RefMut<&mut [u8]> = &mut settle.vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
@@ -492,7 +488,20 @@ fn do_vault_settle<'a, 'info>(
             .ok_or(ProgramError::ArithmeticOverflow)?;
         profile.encumbered_in_orders_atoms = profile
             .encumbered_in_orders_atoms
-            .saturating_sub(principal_atoms);
+            .checked_sub(principal_atoms)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+
+        if surplus_atoms > 0 {
+            profile.total_principal_atoms = profile
+                .total_principal_atoms
+                .checked_sub(surplus_atoms)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            profile.total_assets_atoms = profile
+                .total_assets_atoms
+                .checked_sub(surplus_atoms)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            crate::state::vault::restore_assets_principal_invariant(profile);
+        }
     }
 
     Ok(())

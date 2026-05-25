@@ -1,10 +1,22 @@
+//! Oracle decoders. Dispatches on the bank's `OracleSetup` to decode
+//! either Pyth-push price messages or Switchboard pull-feed result
+//! buffers (plus the staked-LST composite that adjusts a SOL price by
+//! a stake-pool's `delegated_lamports / lst_supply`). Every returned
+//! price is fp48; the freshness window matches marginfi's 300-second
+//! gate so a price fresh for yDelta is also fresh for cross-CPI use.
+
 use solana_program::{
     account_info::AccountInfo, clock::Clock, pubkey, pubkey::Pubkey, stake::state::StakeStateV2,
     sysvar::Sysvar,
 };
 
+/// Pyth push-oracle program id (the receiver program that hosts
+/// `PriceUpdateV2` accounts). Bank accounts with Pyth-push setup must
+/// point at accounts owned by this program.
 pub const PYTH_PUSH_PROGRAM_ID: Pubkey = pubkey!("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ");
 
+/// Switchboard on-demand program id. Bank accounts with Switchboard-pull
+/// setup must point at result accounts owned by this program.
 pub const SWITCHBOARD_ON_DEMAND_PROGRAM_ID: Pubkey =
     pubkey!("SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv");
 
@@ -28,6 +40,10 @@ const _MARGINFI_ORACLE_MIN_AGE_SECS: i64 = 10;
 
 const MAX_FUTURE_SKEW_SECS: i64 = 900;
 
+/// Number of oracle accounts the bank's setup requires after the bank
+/// itself. `Some(1)` for plain Pyth-push / Switchboard-pull, `Some(3)`
+/// for the staked-LST composite (Pyth + LST mint + stake state).
+/// `None` flags an unsupported setup — caller must reject the bank.
 pub fn expected_oracle_account_count(setup: OracleSetup) -> Option<usize> {
     match setup {
         OracleSetup::None => None,
@@ -52,6 +68,11 @@ pub fn expected_oracle_account_count(setup: OracleSetup) -> Option<usize> {
     }
 }
 
+/// Decode the fp48 oracle price for the bank at `accounts[0]`.
+/// Dispatches on the bank's `OracleSetup`, validates oracle account
+/// keys and owners, gates on the per-bank `oracle_max_age` /
+/// `oracle_max_confidence` (defaulting to 300s / 10% when unset), and
+/// returns `OracleStale` outside the `[now - max_age, now + 900s]` window.
 pub fn read_oracle_price<'info>(accounts: &[AccountInfo<'info>]) -> AdapterResult<u128> {
     if accounts.is_empty() {
         return Err(AdapterError::InvalidIntegrationAccount.into());

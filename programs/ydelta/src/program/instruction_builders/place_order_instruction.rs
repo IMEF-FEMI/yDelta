@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::PlaceOrder` instruction: borrower submits
+//! an IOC bid that crosses resting vault asks and optionally falls through
+//! to a P2Pool marginfi-backed loan for any unfilled residual.
+
 use borsh::BorshSerialize;
 use hypertree::DataIndex;
 use solana_program::{
@@ -16,6 +20,11 @@ use crate::validation::{
     get_market_signer_address,
 };
 
+/// Builds the `PlaceOrder` instruction. `payer` (signer) is the borrower.
+/// `rate_bps` is the max acceptable rate (basis points); `term_seconds` the
+/// requested term; `principal_atoms` the borrow size and `collateral_atoms`
+/// the collateral pledge (both in token atoms). `flags` carries the IOC /
+/// OB_ONLY bitmask; `seat_index_hint` skips the seat-tree lookup.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_instruction(
     market: &Pubkey,

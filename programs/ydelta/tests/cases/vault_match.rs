@@ -33,8 +33,8 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 500,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 100_000_000,
@@ -43,7 +43,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
 
     // Verify pre-cross profile state — encumbered should be zero
     // (vault hasn't matched yet; just rests open-ended).
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(profile.encumbered_in_orders_atoms, 0);
     assert_eq!(profile.deployed_principal_atoms, 0);
 
@@ -78,7 +78,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
 
     // Post-match: vault profile is encumbered for the matched amount;
     // total principal is untouched until the cranker settles.
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms, principal_atoms,
         "match-time vault encumbrance should bump encumbered_in_orders_atoms"
@@ -92,7 +92,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
         "deployed_principal_atoms must remain 0 until cranker settles"
     );
     // Vault-idle invariant must hold post-match.
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
     // Matched-collateral conservation: Σ MatchedLoan.collateral == bid collateral.
     assert_eq!(
         fixture.sum_matched_loan_collateral().await,
@@ -132,8 +132,8 @@ async fn vault_match_capped_at_idle_pool() {
             &admin,
             &depositor,
             &curator,
-            0,
-            8_000,
+            1,
+            Some(8_000),
             500,
             30 * 86_400,
             /*deposit_atoms=*/ 50,
@@ -170,7 +170,7 @@ async fn vault_match_capped_at_idle_pool() {
     // engine's per-profile marginfi-rounding reserve — the cross caps
     // at `idle - reserve`, not at the gross idle.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms,
         49 - MARGINFI_ROUNDING_RESERVE_ATOMS,
@@ -205,8 +205,8 @@ async fn risk_profile_order_persists_after_full_fill() {
             &admin,
             &depositor,
             &curator,
-            0,
-            8_000,
+            1,
+            Some(8_000),
             500,
             30 * 86_400,
             /*deposit_atoms=*/ 100_000_000,
@@ -251,7 +251,7 @@ async fn risk_profile_order_persists_after_full_fill() {
     );
 
     // Vault profile encumbered for exactly the matched principal.
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms, 1_000_000,
         "vault profile encumbered for the full match",
@@ -264,7 +264,7 @@ async fn risk_profile_order_persists_after_full_fill() {
         "Σ MatchedLoan.collateral_atoms must equal bid collateral"
     );
     // Vault-idle invariant on the crossed profile.
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
     // Borrower seat: the matched collateral stays encumbered (it backs
     // the open loan) and `open_borrow_count` ticks to 1.
     let borrower_seat = fixture.read_seat(&borrower.pubkey()).await;
@@ -296,8 +296,8 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
             &admin,
             &depositor,
             &curator,
-            0,
-            8_000,
+            1,
+            Some(8_000),
             500,
             30 * 86_400,
             /*deposit_atoms=*/ 100,
@@ -378,7 +378,7 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
     // The profile is encumbered at the deposited idle minus the
     // matching engine's marginfi-rounding reserve.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms,
         99 - MARGINFI_ROUNDING_RESERVE_ATOMS,
@@ -432,8 +432,8 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
             &admin,
             &depositor_0,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 500,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 1_500_000,
@@ -443,12 +443,12 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     // Profile 1: a second profile in the same vault with 5 USDC idle.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), 8_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_deposit(&depositor_1, token_1, 1, 5_000_000)
+        .global_vault_deposit(&depositor_1, token_1, 2, 5_000_000)
         .await
         .unwrap();
 
@@ -489,7 +489,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         .await
         .unwrap();
 
-    let p0 = fixture.read_risk_profile(0).await;
+    let p0 = fixture.read_risk_profile(1).await;
     assert_eq!(
         p0.deployed_principal_atoms, 1_000_000,
         "loan settled: 1.0 USDC of profile 0's principal is deployed",
@@ -499,7 +499,8 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         .total_principal_atoms
         .saturating_sub(p0.deployed_principal_atoms)
         .saturating_sub(p0.encumbered_in_orders_atoms);
-    assert_eq!(p0_idle, 499_999, "profile 0 has only 0.5 USDC idle");
+    assert_eq!(p0_idle, 499_998, "profile 0 has only 0.5 USDC idle (minus the 1-atom \
+        vault-funded-match basis-debit for the ceil-rounded withdraw cushion)");
 
     // Profile 0's depositor tries to redeem ALL their shares (~1.5 USDC
     // of assets). The shared marginfi balance (~5.5 USDC) would cover it
@@ -507,7 +508,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     // per-profile gate must reject.
     fixture.refresh_blockhash().await;
     let result = fixture
-        .global_vault_withdraw(&depositor_0, token_0, 0, p0.total_shares)
+        .global_vault_withdraw(&depositor_0, token_0, 1, p0.total_shares)
         .await;
     // Per-profile idle gate must surface the exact
     // VaultInsufficientIdleAtoms variant; a generic is_err() check
@@ -520,7 +521,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     // A withdrawal WITHIN profile 0's idle (0.4 USDC) still succeeds.
     fixture.refresh_blockhash().await;
     let ok = fixture
-        .global_vault_withdraw(&depositor_0, token_0, 0, 400_000_u128)
+        .global_vault_withdraw(&depositor_0, token_0, 1, 400_000_u128)
         .await;
     assert!(
         ok.is_ok(),
@@ -529,13 +530,13 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     );
 
     // Profile 1's capital is untouched.
-    let p1 = fixture.read_risk_profile(1).await;
+    let p1 = fixture.read_risk_profile(2).await;
     assert_eq!(
         p1.total_principal_atoms, 4_999_999,
         "profile 1's principal must be untouched by profile 0's withdrawal",
     );
     // Both profiles must satisfy the vault-idle invariant after the
     // per-profile gate test exercises the share-burn path.
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
 }

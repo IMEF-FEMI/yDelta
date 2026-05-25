@@ -72,7 +72,7 @@ fn create_risk_profile_ix_has_four_accounts() {
     let mint = Pubkey::new_unique();
     let payer = Keypair::new();
     let curator = Pubkey::new_unique();
-    let ix = create_risk_profile_instruction(&mint, &payer.pubkey(), &curator, 5_000, 30 * 86_400);
+    let ix = create_risk_profile_instruction(&mint, &payer.pubkey(), &curator, Some(5_000), 30 * 86_400);
     // payer (signer) + global_config + vault PDA + system_program.
     assert_eq!(
         ix.accounts.len(),
@@ -85,14 +85,14 @@ fn create_risk_profile_ix_has_four_accounts() {
 fn create_risk_profile_params_borsh_round_trip() {
     let original = CreateRiskProfileParams {
         curator: Pubkey::new_unique(),
-        max_ltv_bps: 5_000,
+        max_ltv_bps: Some(5_000),
         max_term_seconds: 30 * 86_400,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
     let decoded = CreateRiskProfileParams::try_from_slice(&data).unwrap();
     assert_eq!(decoded.curator, original.curator);
-    assert_eq!(decoded.max_ltv_bps, 5_000);
+    assert_eq!(decoded.max_ltv_bps, Some(5_000));
     assert_eq!(decoded.max_term_seconds, 30 * 86_400);
 }
 
@@ -230,7 +230,7 @@ fn place_order_for_risk_profile_ix_has_six_accounts() {
         &market,
         &fee_payer.pubkey(),
         &curator.pubkey(),
-        0,
+        1,
         500,
         30 * 86_400,
         0,
@@ -249,7 +249,7 @@ fn cancel_order_for_risk_profile_ix_has_six_accounts() {
         &market,
         &fee_payer.pubkey(),
         &curator.pubkey(),
-        0,
+        1,
     );
     assert_eq!(ix.accounts.len(), 6);
 }
@@ -418,7 +418,7 @@ fn loan_fixed_grows_to_carry_vault_lender_fields() {
     assert_eq!(size_of::<LoanFixed>(), LOAN_FIXED_SIZE);
     // Sanity: LoanFixed has the new fields and they default to zero
     // for a fresh wallet-funded loan.
-    const SHARE_VALUE_ONE: u128 = 1u128 << 48;
+    const SHARE_VALUE_ONE: ydelta::math::Fp48 = ydelta::math::Fp48::ONE;
     let loan = LoanFixed::new_from_matched_loan(
         Pubkey::default(),
         0,
@@ -467,7 +467,7 @@ fn loan_fixed_grows_to_carry_vault_lender_fields() {
 #[test]
 fn loan_fixed_with_vault_lender_fields_stamped() {
     let vault_pk = Pubkey::new_unique();
-    const SHARE_VALUE_ONE: u128 = 1u128 << 48;
+    const SHARE_VALUE_ONE: ydelta::math::Fp48 = ydelta::math::Fp48::ONE;
     let loan = LoanFixed::new_from_matched_loan_with_lender(
         Pubkey::default(),
         0,

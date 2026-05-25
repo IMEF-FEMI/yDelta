@@ -71,15 +71,19 @@ async fn true_required_collateral(
 ) -> u64 {
     let usdc_oracle_data = fixture.account_data(mainnet::usdc_oracle()).await;
     let sol_oracle_data = fixture.account_data(mainnet::sol_oracle()).await;
-    let debt_price_fp48 = decode_pyth_price(&usdc_oracle_data);
-    let collateral_price_fp48 = decode_swb_price(&sol_oracle_data);
+    let debt_price_fp48 = ydelta::math::Fp48::from_raw(decode_pyth_price(&usdc_oracle_data));
+    let collateral_price_fp48 = ydelta::math::Fp48::from_raw(decode_swb_price(&sol_oracle_data));
 
     let usdc_bank_data = fixture.account_data(mainnet::usdc_bank()).await;
     let sol_bank_data = fixture.account_data(mainnet::sol_bank()).await;
     let usdc_cfg = BankConfigView::try_from_account_data(&usdc_bank_data).unwrap();
     let sol_cfg = BankConfigView::try_from_account_data(&sol_bank_data).unwrap();
-    let debt_liability_weight_init = wrapped_i80f48_to_u128(usdc_cfg.liability_weight_init()).unwrap();
-    let collateral_asset_weight_init = wrapped_i80f48_to_u128(sol_cfg.asset_weight_init()).unwrap();
+    let debt_liability_weight_init = ydelta::math::Fp48::from_raw(
+        wrapped_i80f48_to_u128(usdc_cfg.liability_weight_init()).unwrap(),
+    );
+    let collateral_asset_weight_init = ydelta::math::Fp48::from_raw(
+        wrapped_i80f48_to_u128(sol_cfg.asset_weight_init()).unwrap(),
+    );
 
     get_required_quote_collateral_to_back_debt(
         debt_atoms,
@@ -111,8 +115,8 @@ async fn match_passes_with_overcollateralized_bid() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 10_000_000,
@@ -157,9 +161,9 @@ async fn match_passes_with_overcollateralized_bid() {
     assert_eq!(market.matched_loan_sequence, 1);
     // Vault profile encumbered for exactly the matched principal —
     // the cross fully filled.
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
 }
 
 #[tokio::test]
@@ -179,8 +183,8 @@ async fn match_rejected_with_undercollateralized_bid() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 10_000_000,

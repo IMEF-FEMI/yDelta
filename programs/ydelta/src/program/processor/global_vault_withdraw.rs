@@ -1,3 +1,8 @@
+//! `GlobalVaultWithdraw` instruction. Burn risk-profile shares to
+//! redeem realized principal atoms from the vault. Gated by the
+//! profile's idle pool (`total_principal - deployed - encumbered`);
+//! the last-share burn additionally requires zero in-flight capital.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -23,12 +28,19 @@ use crate::state::vault::{
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, USER_ACCOUNT_FIXED_SIZE};
 use crate::validation::loaders::GlobalVaultWithdrawContext;
 
+/// Parameters for [`process_global_vault_withdraw`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct GlobalVaultWithdrawParams {
+    /// Profile shares to redeem. Must be `> 0` and `<= seat.shares`.
     pub shares_to_burn: u128,
+    /// Identifies the risk profile to withdraw from.
     pub profile_id: u8,
 }
 
+/// Burn `shares_to_burn` from the signer's depositor seat and
+/// withdraw the realized principal share to the signer's wallet ATA.
+/// Errors with `VaultInsufficientIdleAtoms` when the burn would drop
+/// idle below the payout. Removes the seat / position when it zeroes.
 pub fn process_global_vault_withdraw(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

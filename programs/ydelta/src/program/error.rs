@@ -1,7 +1,21 @@
+//! Program error enum. Every variant lowers to `ProgramError::Custom(u32)`
+//! via the `From<YdeltaError>` impl below; the `u32` is the explicit
+//! `repr(u32)` discriminant on the variant. Discriminants are stable —
+//! the SDK and indexer decode them by value, so renumbering an existing
+//! variant is a breaking change. New variants append at the end.
+//!
+//! The `#[error("...")]` attribute on each variant is the human-readable
+//! message surfaced by the `thiserror` `Display` impl (and the one shown
+//! in tx logs via `msg!`).
+
 use num_enum::TryFromPrimitive;
 use solana_program::program_error::ProgramError;
 use thiserror::Error;
 
+/// Custom-error namespace for the ydelta program. All variants serialize
+/// as `ProgramError::Custom(self as u32)`; the discriminant is the
+/// public contract. Gaps in the numbering (e.g. 27, 31, 35) are retired
+/// variants — never re-use a retired discriminant.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u32)]
 pub enum YdeltaError {
@@ -117,6 +131,15 @@ pub enum YdeltaError {
     #[error("loan close: seat's encumbered collateral is less than the loan's recorded \
              collateral — state corruption, refusing silent collateral drop")]
     InsufficientEncumberedCollateral = 53,
+
+    #[error("risk profile is sunset: new deposits / new orders / order updates / \
+             matches are rejected; only withdrawals, fee claims, and cancellations \
+             are allowed during wind-down")]
+    VaultProfileSunset = 54,
+
+    #[error("risk profile is not sunset: this admin operation requires the profile \
+             to be in sunset state first (call SunsetRiskProfile)")]
+    VaultProfileNotSunset = 55,
 }
 
 impl From<YdeltaError> for ProgramError {
@@ -125,6 +148,13 @@ impl From<YdeltaError> for ProgramError {
     }
 }
 
+/// Guard-clause macro. If `$test` evaluates to `false`, logs a
+/// `[file:line] message` line (via `msg!` on-chain, `println!` off-chain)
+/// and returns `Err($err.into())` from the caller. Returns `Ok(())` on
+/// success, so it composes with `?`.
+///
+/// `$err` may be any value with `Into<ProgramError>` — typically a
+/// [`YdeltaError`] variant, but `ProgramError::*` works too.
 #[macro_export]
 macro_rules! require {
     ($test:expr, $err:expr, $($arg:tt)*) => {

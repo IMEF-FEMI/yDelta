@@ -45,12 +45,12 @@ async fn borrower_encumbrance_retained_on_full_match() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), 8_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_deposit(&depositor, depositor_token, 0, 100_000_000)
+        .global_vault_deposit(&depositor, depositor_token, 1, 100_000_000)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -58,7 +58,7 @@ async fn borrower_encumbrance_retained_on_full_match() {
     // curator's first place_order_for_risk_profile. The ask is
     // unbounded; each cross is capped by the profile's idle balance.
     fixture
-        .place_order_for_risk_profile(&curator, 0, /*rate_bps=*/ 500, 30 * 86_400, 0)
+        .place_order_for_risk_profile(&curator, 1, /*rate_bps=*/ 500, 30 * 86_400, 0)
         .await
         .unwrap();
 
@@ -126,7 +126,7 @@ async fn borrower_encumbrance_retained_on_full_match() {
     // Vault side: the crossed profile is encumbered by exactly the
     // matched principal; total principal is untouched (atoms migrate
     // only when the cranker settles).
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms, principal_atoms,
         "vault profile encumbered for exactly the matched principal"
@@ -147,7 +147,7 @@ async fn borrower_encumbrance_retained_on_full_match() {
         "fully-matched bid's MatchedLoan.collateral_atoms must equal posted collateral"
     );
     // Vault-idle invariant.
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
 }
 
 /// A borrower bid whose residual drops (OB_ONLY, empty book) must

@@ -1,3 +1,8 @@
+//! `Deposit` instruction. Moves atoms from a user wallet ATA into the
+//! signer's market `ClaimedSeat` (collateral side only — debt-side
+//! direct deposit is rejected; debt arrives via loan settlement). The
+//! atoms route through marginfi.deposit; the seat is credited in shares.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -17,12 +22,20 @@ use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::{get_mut_dynamic_account, invoke};
 
+/// Parameters for [`process_deposit`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct DepositParams {
+    /// Atoms to transfer from the signer's ATA. Must be `> 0`.
     pub amount_atoms: u64,
+    /// Optional hint pointing directly at the signer's `ClaimedSeat`
+    /// index in the market; falls back to tree lookup when absent.
     pub trader_index_hint: Option<DataIndex>,
 }
 
+/// Deposit collateral atoms into the signer's market seat. Transfers
+/// from the trader's ATA into the market staging vault, CPIs
+/// marginfi.deposit, and credits the seat with the resulting shares.
+/// Errors with `InvalidDepositAccounts` on debt-side deposits.
 pub fn process_deposit(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -129,6 +142,8 @@ pub fn process_deposit(
     Ok(())
 }
 
+/// SPL token transfer helper shared with other processors. Routes via
+/// `transfer_checked` for token-2022 mints, otherwise `transfer`.
 pub(crate) fn transfer_user_to_vault<'info>(
     token_program: &AccountInfo<'info>,
     trader_token: &AccountInfo<'info>,

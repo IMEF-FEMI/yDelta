@@ -1,3 +1,9 @@
+//! Cross-processor helpers: dynamic-account splitting, market block
+//! expansion, signer market-position sync, and rent-refunding account
+//! close. Most functions are `pub(crate)`; only the dynamic-account
+//! splitters, `sync_signer_market_position`, `invoke`, and
+//! `close_account_and_refund` are fully `pub`.
+
 use std::cell::{Ref, RefMut};
 use std::mem::size_of;
 
@@ -21,6 +27,8 @@ use crate::state::{
 };
 use crate::validation::{Signer, YdeltaAccount, YdeltaAccountInfo};
 
+/// Split a mutable account buffer into its fixed header `T` and the
+/// trailing dynamic region used by hypertree-backed accounts.
 pub fn get_mut_dynamic_account<'a, T: Get>(
     data: &'a mut RefMut<'_, &mut [u8]>,
 ) -> DynamicAccount<&'a mut T, &'a mut [u8]> {
@@ -29,6 +37,8 @@ pub fn get_mut_dynamic_account<'a, T: Get>(
     DynamicAccount { fixed, dynamic }
 }
 
+/// Read-only counterpart of [`get_mut_dynamic_account`]; splits the
+/// borrowed buffer into the fixed header `T` plus the dynamic tail.
 pub fn get_dynamic_account<'a, T: Get>(
     data: &'a Ref<'a, &'a mut [u8]>,
 ) -> DynamicAccount<&'a T, &'a [u8]> {
@@ -127,6 +137,9 @@ pub(crate) fn expand_market<'a, 'info, T: YdeltaAccount + Pod + Clone>(
     Ok(())
 }
 
+/// Copy the signer's market `ClaimedSeat` snapshot into the matching
+/// `MarketPosition` row of their `UserAccountFixed`. No-op when the
+/// signer has not claimed a seat in this market.
 pub fn sync_signer_market_position(
     market_ai: &AccountInfo,
     user_account_ai: &AccountInfo,
@@ -157,6 +170,9 @@ pub fn sync_signer_market_position(
     Ok(())
 }
 
+/// CPI dispatcher. Uses `solana_invoke::invoke_unchecked` on-chain to
+/// skip duplicate signer-privilege checks; falls back to
+/// `solana_program::program::invoke` off-chain (tests / SDK builds).
 pub fn invoke(ix: &Instruction, account_infos: &[AccountInfo<'_>]) -> ProgramResult {
     #[cfg(target_os = "solana")]
     {
@@ -168,6 +184,9 @@ pub fn invoke(ix: &Instruction, account_infos: &[AccountInfo<'_>]) -> ProgramRes
     }
 }
 
+/// Zero an account's data and send its lamports to `refund_target`,
+/// effectively closing the account. Used for PDA close-out on full
+/// repay / convert / settle paths.
 pub fn close_account_and_refund(
     account: &AccountInfo<'_>,
     refund_target: &AccountInfo<'_>,

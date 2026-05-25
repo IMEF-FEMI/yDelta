@@ -7,6 +7,7 @@
 import { PublicKey } from '@solana/web3.js';
 
 import { atomsToUi, bpsToPercent, fp48ToFloat } from './conversions.js';
+import { LTV_AUTO_FROM_MARGINFI } from './constants.js';
 import type { RiskProfile } from './accounts/riskProfile.js';
 
 export interface RiskProfileUi {
@@ -15,9 +16,28 @@ export interface RiskProfileUi {
   pendingCurator: PublicKey;
   /** Policy. */
   maxLtvBps: number;
+  /**
+   * `maxLtvBps` rendered as a percent. NOTE: when `maxLtvIsAuto` is true,
+   * the underlying stored value is the `LTV_AUTO_FROM_MARGINFI` sentinel
+   * (65535) which renders as 655.35% — UIs should branch on
+   * `maxLtvIsAuto` and show "Auto" instead of this number, or call
+   * `effectiveMaxLtvBpsForProfile(...)` to get the resolved cap.
+   */
   maxLtvPercent: number;
+  /**
+   * `true` when the profile was created with `max_ltv_bps = None`. The
+   * match engine resolves the cap from the live marginfi bank weights
+   * at fill time as `floor(coll_w/debt_w × 10_000) − LTV_AUTO_BUFFER_BPS`.
+   */
+  maxLtvIsAuto: boolean;
   maxTermSeconds: number;
   maxTermDays: number;
+  /**
+   * `true` when `profile.is_sunset == 1`. Sunset profiles reject deposits,
+   * new orders, order updates, and matches; withdrawals, cancels, fee
+   * claims, repay, settle, and liquidate stay open.
+   */
+  isSunset: boolean;
   /** Capital pools. */
   totalPrincipalAtoms: bigint;
   totalPrincipalUi: number;
@@ -80,8 +100,10 @@ export function riskProfileUi(profile: RiskProfile, decimals: number): RiskProfi
     pendingCurator: profile.pendingCurator,
     maxLtvBps: profile.maxLtvBps,
     maxLtvPercent: bpsToPercent(profile.maxLtvBps),
+    maxLtvIsAuto: profile.maxLtvBps === LTV_AUTO_FROM_MARGINFI,
     maxTermSeconds: profile.maxTermSeconds,
     maxTermDays: profile.maxTermSeconds / 86_400,
+    isSunset: profile.isSunset !== 0,
     totalPrincipalAtoms: profile.totalPrincipalAtoms,
     totalPrincipalUi: atomsToUi(profile.totalPrincipalAtoms, decimals),
     totalAssetsAtoms: profile.totalAssetsAtoms,

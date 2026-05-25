@@ -38,14 +38,14 @@ async fn vault_with_asks(
     fixture.create_vault(&admin).await.unwrap();
 
     for (i, (rate_bps, term_seconds, idle_atoms)) in profile_specs.iter().enumerate() {
-        let profile_id = i as u8;
+        let profile_id = (i as u8) + 1;
         let curator = fixture.create_trader().await;
         fixture.refresh_blockhash().await;
         fixture
             .create_risk_profile(
                 &admin,
                 curator.pubkey(),
-                /*max_ltv_bps=*/ 8_000,
+                /*max_ltv_bps=*/ Some(8_000),
                 /*max_term_seconds=*/ 90 * 86_400,
             )
             .await
@@ -122,7 +122,7 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
     );
 
     // Vault encumbrance bumped by exactly the matched principal.
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
     // Borrower seat's collateral STAYS encumbered — it backs the open
     // loan and is released only at close. The single Fixed cross also
@@ -143,7 +143,7 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
         "Σ MatchedLoan.collateral_atoms == bid collateral"
     );
     // Vault-idle invariant on the crossed profile.
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
 }
 
 /// Three profiles post asks at 500 / 600 / 700 bps. A small borrower
@@ -183,9 +183,9 @@ async fn match_picks_best_ask_first() {
     assert_eq!(market.matched_loan_sequence, 1, "one fill");
 
     // Only profile 1 (the 500bps ask) was encumbered.
-    let p0 = fixture.read_risk_profile(0).await;
-    let p1 = fixture.read_risk_profile(1).await;
-    let p2 = fixture.read_risk_profile(2).await;
+    let p0 = fixture.read_risk_profile(1).await;
+    let p1 = fixture.read_risk_profile(2).await;
+    let p2 = fixture.read_risk_profile(3).await;
     assert_eq!(
         p1.encumbered_in_orders_atoms, 1_000_000,
         "best-priced (500bps) ask must be crossed first"
@@ -200,7 +200,7 @@ async fn match_picks_best_ask_first() {
         "Σ MatchedLoan.collateral_atoms == bid collateral"
     );
     // Vault-idle invariant must hold on every profile.
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(2).await;
 }
@@ -243,8 +243,8 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
         "exactly one fill (profile 1)"
     );
 
-    let p0 = fixture.read_risk_profile(0).await;
-    let p1 = fixture.read_risk_profile(1).await;
+    let p0 = fixture.read_risk_profile(1).await;
+    let p1 = fixture.read_risk_profile(2).await;
     assert_eq!(
         p0.encumbered_in_orders_atoms, 0,
         "term-incompatible best ask must be skipped"
@@ -254,7 +254,7 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
         "compatible worse-rate ask must be crossed"
     );
     // Vault-idle invariant on both profiles.
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
 }
 
@@ -304,8 +304,8 @@ async fn match_sweeps_multiple_vault_asks() {
     // idle-capped at its 50M − 1 reserve = 49_999_999; profile 1
     // absorbs the remainder.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    let p0 = fixture.read_risk_profile(0).await;
-    let p1 = fixture.read_risk_profile(1).await;
+    let p0 = fixture.read_risk_profile(1).await;
+    let p1 = fixture.read_risk_profile(2).await;
     let p0_expected: u64 = 49_999_999 - MARGINFI_ROUNDING_RESERVE_ATOMS;
     let p1_expected: u64 = 70_000_000 - p0_expected;
     assert_eq!(
@@ -323,7 +323,7 @@ async fn match_sweeps_multiple_vault_asks() {
     );
     // Vault-idle invariant must hold on both profiles after the
     // double-cross.
-    fixture.assert_vault_idle_invariant(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
 }
 

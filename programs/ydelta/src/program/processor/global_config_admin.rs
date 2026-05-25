@@ -1,3 +1,8 @@
+//! `CreateGlobalConfig`, `TransferProtocolAdmin`, `AcceptProtocolAdmin`,
+//! and `SetGlobalPause` instructions. The `GlobalConfig` singleton PDA
+//! holds the protocol-admin pubkey and the master `is_paused` flag.
+//! First `CreateGlobalConfig` caller becomes the initial `protocol_admin`.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -23,6 +28,9 @@ use crate::validation::loaders::{
     TransferProtocolAdminContext,
 };
 
+/// One-shot initializer for the `GlobalConfig` singleton PDA. Signer
+/// is recorded as `protocol_admin`. Errors if the PDA is already
+/// allocated or its address doesn't match the expected derivation.
 pub fn process_create_global_config(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -80,11 +88,15 @@ pub fn process_create_global_config(
     Ok(())
 }
 
+/// Parameters for [`process_transfer_protocol_admin`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct TransferProtocolAdminParams {
+    /// Pubkey to set as `GlobalConfig.pending_protocol_admin`.
     pub new_admin: Pubkey,
 }
 
+/// Initiate a protocol-admin transfer. Signer must equal the current
+/// `protocol_admin`; writes `params.new_admin` into `pending_protocol_admin`.
 pub fn process_transfer_protocol_admin(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -110,6 +122,9 @@ pub fn process_transfer_protocol_admin(
     Ok(())
 }
 
+/// Complete a protocol-admin transfer. Signer must equal
+/// `pending_protocol_admin` (non-default); promotes it to
+/// `protocol_admin` and clears the pending slot.
 pub fn process_accept_protocol_admin(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -137,11 +152,16 @@ pub fn process_accept_protocol_admin(
     Ok(())
 }
 
+/// Parameters for [`process_set_global_pause`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct SetGlobalPauseParams {
+    /// Non-zero sets `is_paused = 1`; zero sets `is_paused = 0`.
     pub paused: u8,
 }
 
+/// Toggle the protocol-wide pause flag. Signer must equal
+/// `protocol_admin`. The pause gate is consulted by other processors
+/// to refuse state-mutating user actions while set.
 pub fn process_set_global_pause(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

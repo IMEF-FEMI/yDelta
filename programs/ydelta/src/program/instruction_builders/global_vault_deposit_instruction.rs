@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::GlobalVaultDeposit` instruction: lender
+//! moves atoms from their wallet ATA into a risk profile, minting profile
+//! shares against the vault NAV.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -14,6 +18,11 @@ use crate::state::vault::{
     global_vault_staging_pda,
 };
 
+/// Builds the `GlobalVaultDeposit` instruction for the vault keyed by
+/// `mint`. `depositor` (signer) is the lender; `depositor_token` is their
+/// wallet ATA. `lending_pool` + `liquidity_vault` are the marginfi bank
+/// accounts the deposit flows into. `profile_id` selects the target
+/// `RiskProfile`; `amount_atoms` is the deposit in token atoms.
 #[allow(clippy::too_many_arguments)]
 pub fn global_vault_deposit_instruction(
     mint: &Pubkey,

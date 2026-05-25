@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "name": "ydelta",
   "programId": "A1fNwJV5C2BTKWcnHmaELNq2TLB11UP7mp9P7q4ahWnu",
-  "description": "Quote-only fixed-rate lending on Solana. 38 instructions, tags 0..=37. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` (Phase 3) and read raw byte offsets.",
+  "description": "Quote-only fixed-rate lending on Solana. 41 instructions, tags 0..=40. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` and read raw byte offsets.",
   "conventions": {
     "instructionDataHeader": "1-byte u8 tag (see `tag` per instruction). Tail is borsh-encoded except for `SettleMaturedLoan` and `LiquidateLoan`, whose tail is a bare little-endian u64 (`repay_atoms_max`).",
     "amounts": "All atoms are bigint at the wire level. All bps fields are u16. All term_seconds are u32. All u128 fields (shares, fp48 share-values) are LE 16 bytes.",
@@ -242,7 +242,7 @@
     {
       "name": "CreateRiskProfile",
       "tag": 9,
-      "note": "profile_id is assigned by the program from vault.next_profile_id (monotonic, never reused). The assigned id is reported back via RiskProfileCreatedLog.profile_id.",
+      "note": "profile_id is assigned by the program from vault.next_profile_id (1-based, monotonic, never reused; 0 is the sentinel/invalid id). The assigned id is reported back via RiskProfileCreatedLog.profile_id. max_ltv_bps: Some(v) requires 0 < v < 10_000; None stores the LTV_AUTO_FROM_MARGINFI sentinel (u16::MAX = 65535) and the match engine derives the cap at fill time as floor(coll_asset_weight / debt_liability_weight × 10_000) − LTV_AUTO_BUFFER_BPS (500).",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
         { "name": "global_config", "writable": false },
@@ -251,7 +251,7 @@
       ],
       "args": [
         { "name": "curator", "type": "publicKey" },
-        { "name": "max_ltv_bps", "type": "u16" },
+        { "name": "max_ltv_bps", "type": { "option": "u16" } },
         { "name": "max_term_seconds", "type": "u32" }
       ]
     },
@@ -720,11 +720,45 @@
     {
       "name": "RemoveRiskProfile",
       "tag": 37,
-      "note": "Tears down an empty RiskProfile. Rejects with VaultProfileNotEmpty (code 34) unless every balance field on the profile is zero. The freed 512-byte block returns to the profile free list; vault.next_profile_id is NOT decremented so the id is retired forever.",
+      "note": "Tears down a sunset, empty RiskProfile. Rejects with VaultProfileNotSunset (code 55) unless profile.is_sunset == 1, and with VaultProfileNotEmpty (code 34) unless every balance field on the profile is zero. The freed 512-byte block returns to the profile free list; vault.next_profile_id is NOT decremented so the id is retired forever.",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true }
+      ],
+      "args": [{ "name": "profile_id", "type": "u8" }]
+    },
+    {
+      "name": "SunsetRiskProfile",
+      "tag": 38,
+      "note": "Vault-admin flips profile.is_sunset = 1, beginning wind-down. Sunset profiles reject deposits, new orders, order updates, and matches (VaultProfileSunset, code 54); withdrawals, curator-fee claims, cancels, repay, settle, and liquidate stay open. Reversible via ResumeRiskProfile (tag 39). Pre-required by RemoveRiskProfile (tag 37) and AdminCancelRiskProfileOrder (tag 40).",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true }
+      ],
+      "args": [{ "name": "profile_id", "type": "u8" }]
+    },
+    {
+      "name": "ResumeRiskProfile",
+      "tag": 39,
+      "note": "Vault-admin flips profile.is_sunset = 0, reversing SunsetRiskProfile (tag 38). Admin escape hatch — no time lock on sunset.",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true }
+      ],
+      "args": [{ "name": "profile_id", "type": "u8" }]
+    },
+    {
+      "name": "AdminCancelRiskProfileOrder",
+      "tag": 40,
+      "note": "Vault-admin force-cancels a sunset profile's resting market ask. Rejects with VaultProfileNotSunset (code 55) unless profile.is_sunset == 1. Non-sunset profiles must use the curator-gated CancelOrderForRiskProfile (tag 13). Removes both the market resting order and the vault-side RiskProfileOrderRef; emits CancelOrderForRiskProfileLog with is_replace = 0.",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "market", "writable": true }
       ],
       "args": [{ "name": "profile_id", "type": "u8" }]
     }
@@ -739,7 +773,7 @@
     },
     { "name": "GlobalConfig", "encoding": "bytemuck Pod", "note": "Holds `protocol_admin`, `pending_protocol_admin`, `is_paused`. See state/global_config.rs." },
     { "name": "GlobalVaultFixed", "size": 320, "encoding": "bytemuck Pod", "note": "Per-mint vault header. Dynamic region holds the risk_profiles RB-tree (512-byte blocks) and claimed_seats + market_orders RB-trees backed by 160-byte node blocks carrying 144-byte payloads. See state/vault.rs." },
-    { "name": "RiskProfile", "size": 496, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by profile_id. See state/vault.rs." },
+    { "name": "RiskProfile", "size": 496, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by profile_id (1-based; 0 is sentinel). Carries is_sunset flag at offset 1, max_ltv_bps (with LTV_AUTO_FROM_MARGINFI = 65535 sentinel) at offset 40, and pending_claim_atoms (retired atoms awaiting claim_repayment_for_risk_profile sweep) at offset 240. See state/vault.rs." },
     { "name": "RiskProfileDepositorSeat", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (owner, profile_id)." },
     { "name": "RiskProfileOrderRef", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (market, profile_id). At most one live order per (profile, market)." },
     { "name": "ClaimedSeat", "encoding": "bytemuck Pod tree-node payload", "note": "Per-trader bookkeeping in a market — debt/collateral × withdrawable/encumbered shares + matched-loan running aggregates." },
@@ -796,6 +830,11 @@
     { "code": 47, "name": "GlobalPaused" },
     { "code": 48, "name": "ProtocolAdminRequired" },
     { "code": 49, "name": "OracleDegenerate" },
-    { "code": 50, "name": "VaultPaused" }
+    { "code": 50, "name": "VaultPaused" },
+    { "code": 51, "name": "MathDivisionByZero" },
+    { "code": 52, "name": "MathOverflow" },
+    { "code": 53, "name": "InsufficientEncumberedCollateral" },
+    { "code": 54, "name": "VaultProfileSunset" },
+    { "code": 55, "name": "VaultProfileNotSunset" }
   ]
 }

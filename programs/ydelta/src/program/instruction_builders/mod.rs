@@ -1,3 +1,10 @@
+//! Client-side instruction builders for every `YdeltaInstruction` tag.
+//! Each submodule exports one or more `pub fn *_instruction(...) ->
+//! solana_program::instruction::Instruction` helpers that assemble the
+//! `AccountMeta` list + Borsh-serialized `Params` expected by the matching
+//! on-chain processor in `crate::program::processor`.
+
+pub mod admin_cancel_risk_profile_order_instruction;
 pub mod admin_transfer_instructions;
 pub mod cancel_order_for_risk_profile_instruction;
 pub mod check_liquidatable_instruction;
@@ -19,15 +26,18 @@ pub mod process_matched_loan_instruction;
 pub mod protocol_fee_claim_instruction;
 pub mod remove_risk_profile_instruction;
 pub mod repay_instruction;
+pub mod resume_risk_profile_instruction;
 pub mod set_fee_config_instruction;
 pub mod set_market_pause_instruction;
 pub mod set_vault_pause_instruction;
 pub mod settle_matured_loan_instruction;
+pub mod sunset_risk_profile_instruction;
 pub mod sync_market_position_instruction;
 pub mod update_order_for_risk_profile_instruction;
 pub mod update_risk_profile_instruction;
 pub mod withdraw_instruction;
 
+pub use admin_cancel_risk_profile_order_instruction::*;
 pub use admin_transfer_instructions::*;
 pub use cancel_order_for_risk_profile_instruction::*;
 pub use check_liquidatable_instruction::*;
@@ -49,10 +59,12 @@ pub use process_matched_loan_instruction::*;
 pub use protocol_fee_claim_instruction::*;
 pub use remove_risk_profile_instruction::*;
 pub use repay_instruction::*;
+pub use resume_risk_profile_instruction::*;
 pub use set_fee_config_instruction::*;
 pub use set_market_pause_instruction::*;
 pub use set_vault_pause_instruction::*;
 pub use settle_matured_loan_instruction::*;
+pub use sunset_risk_profile_instruction::*;
 pub use sync_market_position_instruction::*;
 pub use update_order_for_risk_profile_instruction::*;
 pub use update_risk_profile_instruction::*;

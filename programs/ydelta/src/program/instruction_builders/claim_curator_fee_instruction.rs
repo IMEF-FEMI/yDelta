@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::ClaimCuratorFee` instruction: curator
+//! withdraws the profile's accumulated curator-fee atoms via marginfi
+//! withdraw into `curator_token`.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -12,6 +16,10 @@ use crate::state::vault::{
     global_vault_staging_pda,
 };
 
+/// Builds the `ClaimCuratorFee` instruction for `profile_id` on the vault
+/// keyed by `mint`. `payer` (signer) must equal the profile's curator;
+/// fees are routed to `curator_token` via marginfi's `debt_bank` /
+/// `liquidity_vault` / oracle path.
 #[allow(clippy::too_many_arguments)]
 pub fn claim_curator_fee_instruction(
     mint: &Pubkey,

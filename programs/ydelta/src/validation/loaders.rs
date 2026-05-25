@@ -1,3 +1,12 @@
+//! Single source of truth for every instruction's account-list shape.
+//! Each `XContext::load(accounts)` parses the raw `&[AccountInfo]` slice
+//! in fixed positional order, runs all per-account-shape checks via the
+//! validation wrappers ([`Signer`], [`MarginfiBankInfo`],
+//! [`YdeltaAccountInfo`], etc), enforces the per-instruction
+//! pause / admin gates, and returns a typed context the matching
+//! processor consumes. The corresponding `AccountMeta` order lives in
+//! [`crate::program::instruction_builders`] — keep the two in lockstep.
+
 use std::cell::Ref;
 use std::slice::Iter;
 
@@ -20,6 +29,12 @@ use crate::validation::{
     Program, Signer, TokenAccountInfo, TokenProgram, YdeltaAccountInfo,
 };
 
+/// Account context for `CreateMarket` (tag 0). Order: `[payer,
+/// global_config, market, system_program, debt_mint, collateral_mint,
+/// debt_vault, collateral_vault, spl_token, spl_token_2022,
+/// marginfi_group, debt_bank, collateral_bank, lender_marginfi_account,
+/// borrower_marginfi_account, market_signer, marginfi_program]`. Gated
+/// on `signer == GlobalConfig.protocol_admin`.
 pub(crate) struct CreateMarketContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -169,6 +184,9 @@ impl<'a, 'info> CreateMarketContext<'a, 'info> {
     }
 }
 
+/// Account context for `ClaimSeat` (tag 1). Order: `[payer,
+/// global_config, market, system_program, user_account]`. Lazy-creates
+/// the signer's `UserAccountFixed` on first call.
 #[allow(dead_code)]
 pub(crate) struct ClaimSeatContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
@@ -210,6 +228,12 @@ impl<'a, 'info> ClaimSeatContext<'a, 'info> {
     }
 }
 
+/// Account context for `Deposit` (tag 2). Order: `[payer,
+/// global_config, market, trader_token, vault, token_program, mint,
+/// marginfi_group, marginfi_account, bank, liquidity_vault,
+/// market_signer, marginfi_program, user_account, system_program]`.
+/// `is_debt` is inferred from the trader ATA mint matching the market's
+/// debt vs collateral side.
 pub(crate) struct DepositContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -379,6 +403,10 @@ impl<'a, 'info> DepositContext<'a, 'info> {
     }
 }
 
+/// Account context for `Withdraw` (tag 3). Extends the deposit shape
+/// with the bank's liquidity-vault authority plus both debt and
+/// collateral banks + their oracles (so a debt-side withdraw can
+/// re-prove the seat's LTV health before draining).
 pub(crate) struct WithdrawContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -594,6 +622,11 @@ impl<'a, 'info> WithdrawContext<'a, 'info> {
     }
 }
 
+/// Account context for `PlaceOrder` (tag 4). Carries the borrower's
+/// marginfi accounts + both bank oracles for the LTV / fee-floor gates,
+/// plus an optional vault-side `GlobalVaultFixed` ref when the order
+/// will cross a vault ask. Trailing accounts after `user_account` are
+/// the lender_marginfi_account, market_debt_vault, and the optional vault.
 pub(crate) struct PlaceOrderContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -812,6 +845,10 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
     }
 }
 
+/// Account context for `ProcessMatchedLoan` (tag 5). Carries the
+/// soon-to-be-allocated loan PDA + bump, the debt bank for the asv
+/// snapshot, and (optionally) the per-vault settle accounts when the
+/// matched lender is a risk profile.
 pub(crate) struct ProcessMatchedLoanContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -831,6 +868,9 @@ pub(crate) struct ProcessMatchedLoanContext<'a, 'info> {
 }
 
 #[allow(dead_code)]
+/// Per-vault settle accounts pulled when a `ProcessMatchedLoan` cross
+/// involves a vault-funded ask. Loaded by [`load_vault_settle_accounts`]
+/// after the loan / debt-bank prefix.
 pub(crate) struct VaultSettleAccounts<'a, 'info> {
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
     pub global_vault_signer: &'a AccountInfo<'info>,
@@ -952,6 +992,9 @@ impl<'a, 'info> ProcessMatchedLoanContext<'a, 'info> {
     }
 }
 
+/// Pull the vault-side accounts a matched-loan promotion needs to move
+/// atoms from the vault's `integration_account` into the market's
+/// `lender_marginfi_account` and update the lender seat / risk profile.
 pub(crate) fn load_vault_settle_accounts<'a, 'info>(
     iter: &mut Iter<'a, AccountInfo<'info>>,
     market_key: &Pubkey,
@@ -974,6 +1017,7 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
     let marginfi_program_ai = next_account_info(iter)?;
 
     let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(vault_ai)?;
+    require_vault_not_paused(&vault)?;
     let vault_key = *vault_ai.key;
 
     let (expected_signer, global_vault_signer_bump) =
@@ -1137,6 +1181,10 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
 }
 
 #[allow(dead_code)]
+/// Account context for `ClaimRepaymentForRiskProfile` (tag 20). Wires
+/// the market's `lender_marginfi_account` source to the vault's
+/// `integration_account` destination so the keeper sweep can move
+/// `pending_claim_atoms` back into the profile's idle pool.
 pub(crate) struct ClaimRepaymentForRiskProfileContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -1364,6 +1412,10 @@ impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
     }
 }
 
+/// Account context for `Repay` (tag 6). Carries the loan PDA, the
+/// borrower's debt ATA, the market's debt-side marginfi account + bank
+/// for the repay CPI, and (for P2Pool loans) the borrower marginfi
+/// account holding the live liability shares.
 pub(crate) struct RepayContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -1595,6 +1647,10 @@ impl<'a, 'info> RepayContext<'a, 'info> {
     }
 }
 
+/// Account context for `SettleMaturedLoan` (tag 16). Keeper-facing
+/// shape: a liquidator ATA pair (debt + collateral), both market
+/// integration accounts, and both oracles so the loan can be priced
+/// and the seizure transferred under the market signer.
 pub(crate) struct SettleMaturedLoanContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -1894,6 +1950,9 @@ impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
 }
 
 #[allow(dead_code)]
+/// Account context for `ProtocolFeeClaim` (tag 19). Drains the
+/// market's accumulated protocol-fee shares from the lender marginfi
+/// account into the market admin's debt ATA via marginfi.withdraw.
 pub(crate) struct ProtocolFeeClaimContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -2042,6 +2101,9 @@ impl<'a, 'info> ProtocolFeeClaimContext<'a, 'info> {
     }
 }
 
+/// Account context for `CreateVault` (tag 8). One-shot per mint:
+/// initializes `GlobalVaultFixed` + its marginfi integration account
+/// + the vault signer PDA. First caller becomes `global_vault_admin`.
 pub(crate) struct CreateVaultContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
 
@@ -2173,6 +2235,9 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
     }
 }
 
+/// Account context for `GlobalVaultDeposit` (tag 10). Routes the
+/// depositor's ATA into the vault's marginfi integration account and
+/// mints fp48 profile shares against the selected `profile_id`.
 pub(crate) struct GlobalVaultDepositContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2317,6 +2382,10 @@ impl<'a, 'info> GlobalVaultDepositContext<'a, 'info> {
     }
 }
 
+/// Account context for `GlobalVaultWithdraw` (tag 11). Burns profile
+/// shares, withdraws atoms from the vault's marginfi account to the
+/// depositor's ATA. Rejects burns that would drop idle below the per-
+/// profile gate.
 pub(crate) struct GlobalVaultWithdrawContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2483,6 +2552,9 @@ impl<'a, 'info> GlobalVaultWithdrawContext<'a, 'info> {
 }
 
 #[allow(dead_code)]
+/// Account context for `ClaimCuratorFee` (tag 15). Curator-gated;
+/// transfers the profile's accumulated curator fee atoms from the
+/// vault's marginfi account to the curator's ATA.
 pub(crate) struct ClaimCuratorFeeContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2638,6 +2710,9 @@ impl<'a, 'info> ClaimCuratorFeeContext<'a, 'info> {
     }
 }
 
+/// Account context for `CancelOrderForRiskProfile` (tag 13).
+/// Curator-gated; clears both the resting order on the market book
+/// and the vault-side `RiskProfileOrderRef`.
 pub(crate) struct CancelOrderForRiskProfileContext<'a, 'info> {
     pub fee_payer: Signer<'a, 'info>,
     pub curator: Signer<'a, 'info>,
@@ -2675,6 +2750,8 @@ impl<'a, 'info> CancelOrderForRiskProfileContext<'a, 'info> {
     }
 }
 
+/// Account context for `CreateRiskProfile` (tag 9). Vault-admin gated;
+/// appends a `RiskProfile` to the vault tree with a monotonic profile_id.
 pub(crate) struct CreateRiskProfileContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2712,6 +2789,8 @@ impl<'a, 'info> CreateRiskProfileContext<'a, 'info> {
     }
 }
 
+/// Account context for `RemoveRiskProfile` (tag 37). Vault-admin
+/// gated; removes a sunset, fully drained profile from the vault tree.
 pub(crate) struct RemoveRiskProfileContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2744,6 +2823,103 @@ impl<'a, 'info> RemoveRiskProfileContext<'a, 'info> {
     }
 }
 
+/// Account context for `SunsetRiskProfile` (tag 38). Vault-admin
+/// gated; flips `profile.is_sunset = 1`.
+pub(crate) struct SunsetRiskProfileContext<'a, 'info> {
+    pub _payer: Signer<'a, 'info>,
+    pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
+}
+
+impl<'a, 'info> SunsetRiskProfileContext<'a, 'info> {
+    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
+        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
+        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let _ = load_global_config_no_pause(account_iter)?;
+        let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
+            next_account_info(account_iter)?,
+        )?;
+        let global_vault_admin: Pubkey = vault.get_fixed()?.global_vault_admin;
+        require!(
+            *payer.info.key == global_vault_admin,
+            YdeltaError::VaultAdminRequired,
+            "sunset_risk_profile: signer ({}) is not global_vault_admin ({})",
+            payer.info.key,
+            global_vault_admin
+        )?;
+        Ok(Self {
+            _payer: payer,
+            vault,
+        })
+    }
+}
+
+/// Account context for `ResumeRiskProfile` (tag 39). Vault-admin
+/// gated; flips `profile.is_sunset = 0`.
+pub(crate) struct ResumeRiskProfileContext<'a, 'info> {
+    pub _payer: Signer<'a, 'info>,
+    pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
+}
+
+impl<'a, 'info> ResumeRiskProfileContext<'a, 'info> {
+    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
+        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
+        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let _ = load_global_config_no_pause(account_iter)?;
+        let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
+            next_account_info(account_iter)?,
+        )?;
+        let global_vault_admin: Pubkey = vault.get_fixed()?.global_vault_admin;
+        require!(
+            *payer.info.key == global_vault_admin,
+            YdeltaError::VaultAdminRequired,
+            "resume_risk_profile: signer ({}) is not global_vault_admin ({})",
+            payer.info.key,
+            global_vault_admin
+        )?;
+        Ok(Self {
+            _payer: payer,
+            vault,
+        })
+    }
+}
+
+/// Account context for `AdminCancelRiskProfileOrder` (tag 40).
+/// Vault-admin gated; force-cancels a sunset profile's resting ask
+/// (curator-only on non-sunset profiles).
+pub(crate) struct AdminCancelRiskProfileOrderContext<'a, 'info> {
+    pub _payer: Signer<'a, 'info>,
+    pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
+    pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
+}
+
+impl<'a, 'info> AdminCancelRiskProfileOrderContext<'a, 'info> {
+    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
+        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
+        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let _ = load_global_config_no_pause(account_iter)?;
+        let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
+            next_account_info(account_iter)?,
+        )?;
+        let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
+        let global_vault_admin: Pubkey = vault.get_fixed()?.global_vault_admin;
+        require!(
+            *payer.info.key == global_vault_admin,
+            YdeltaError::VaultAdminRequired,
+            "admin_cancel_risk_profile_order: signer ({}) is not global_vault_admin ({})",
+            payer.info.key,
+            global_vault_admin
+        )?;
+        require_vault_mint_matches_market(&vault, &market)?;
+        Ok(Self {
+            _payer: payer,
+            vault,
+            market,
+        })
+    }
+}
+
+/// Account context for `TransferMarketAdmin` (tag 21). Two-step
+/// handoff: sets `pending_admin`; gated on `signer == current admin`.
 pub(crate) struct TransferMarketAdminContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -2760,6 +2936,8 @@ impl<'a, 'info> TransferMarketAdminContext<'a, 'info> {
     }
 }
 
+/// Account context for `AcceptMarketAdmin` (tag 22). Finalizes the
+/// handoff; gated on `signer == pending_admin`.
 pub(crate) struct AcceptMarketAdminContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -2776,6 +2954,8 @@ impl<'a, 'info> AcceptMarketAdminContext<'a, 'info> {
     }
 }
 
+/// Account context for `TransferGlobalVaultAdmin` (tag 23). Two-step
+/// vault-admin handoff.
 pub(crate) struct TransferGlobalVaultAdminContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2794,6 +2974,7 @@ impl<'a, 'info> TransferGlobalVaultAdminContext<'a, 'info> {
     }
 }
 
+/// Account context for `AcceptGlobalVaultAdmin` (tag 24).
 pub(crate) struct AcceptGlobalVaultAdminContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2812,6 +2993,8 @@ impl<'a, 'info> AcceptGlobalVaultAdminContext<'a, 'info> {
     }
 }
 
+/// Account context for `TransferCurator` (tag 25). Per-profile
+/// two-step handoff; gated on `signer == profile.curator`.
 pub(crate) struct TransferCuratorContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2830,6 +3013,7 @@ impl<'a, 'info> TransferCuratorContext<'a, 'info> {
     }
 }
 
+/// Account context for `AcceptCurator` (tag 26).
 pub(crate) struct AcceptCuratorContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2848,6 +3032,8 @@ impl<'a, 'info> AcceptCuratorContext<'a, 'info> {
     }
 }
 
+/// Account context for `SetMarketPause` (tag 27). Market-admin gated;
+/// flips `MarketFixed.is_paused`.
 pub(crate) struct SetMarketPauseContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -2864,6 +3050,8 @@ impl<'a, 'info> SetMarketPauseContext<'a, 'info> {
     }
 }
 
+/// Account context for `SetVaultPause` (tag 36). Vault-admin gated;
+/// flips `GlobalVaultFixed.is_paused`.
 pub(crate) struct SetVaultPauseContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2882,6 +3070,7 @@ impl<'a, 'info> SetVaultPauseContext<'a, 'info> {
     }
 }
 
+/// Reject state-mutating market ixs when `MarketFixed.is_paused == 1`.
 pub(crate) fn require_market_not_paused(
     market: &YdeltaAccountInfo<'_, '_, MarketFixed>,
 ) -> Result<(), ProgramError> {
@@ -2893,6 +3082,7 @@ pub(crate) fn require_market_not_paused(
     Ok(())
 }
 
+/// Reject state-mutating vault ixs when `GlobalVaultFixed.is_paused == 1`.
 pub(crate) fn require_vault_not_paused(
     vault: &YdeltaAccountInfo<'_, '_, crate::state::vault::GlobalVaultFixed>,
 ) -> Result<(), ProgramError> {
@@ -2904,6 +3094,9 @@ pub(crate) fn require_vault_not_paused(
     Ok(())
 }
 
+/// Reject crosses where the vault's mint does not equal
+/// `MarketFixed.debt_mint` (a vault can only fund debt-side asks on
+/// markets denominated in its own mint).
 pub(crate) fn require_vault_mint_matches_market(
     vault: &YdeltaAccountInfo<'_, '_, crate::state::vault::GlobalVaultFixed>,
     market: &YdeltaAccountInfo<'_, '_, MarketFixed>,
@@ -2920,6 +3113,9 @@ pub(crate) fn require_vault_mint_matches_market(
     Ok(())
 }
 
+/// Account context for `CreateGlobalConfig` (tag 28). One-shot:
+/// initializes the singleton `GlobalConfig` PDA. Signer becomes
+/// `protocol_admin`.
 pub(crate) struct CreateGlobalConfigContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub global_config: &'a AccountInfo<'info>,
@@ -2990,6 +3186,8 @@ impl<'a, 'info> CreateGlobalConfigContext<'a, 'info> {
     }
 }
 
+/// Account context for `TransferProtocolAdmin` (tag 29). Two-step
+/// protocol-admin handoff on `GlobalConfig`.
 pub(crate) struct TransferProtocolAdminContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub global_config: YdeltaAccountInfo<'a, 'info, crate::state::global_config::GlobalConfig>,
@@ -3007,6 +3205,7 @@ impl<'a, 'info> TransferProtocolAdminContext<'a, 'info> {
     }
 }
 
+/// Account context for `AcceptProtocolAdmin` (tag 30).
 pub(crate) struct AcceptProtocolAdminContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub global_config: YdeltaAccountInfo<'a, 'info, crate::state::global_config::GlobalConfig>,
@@ -3024,6 +3223,8 @@ impl<'a, 'info> AcceptProtocolAdminContext<'a, 'info> {
     }
 }
 
+/// Account context for `SetGlobalPause` (tag 31). Protocol-admin
+/// gated; flips `GlobalConfig.is_paused`.
 pub(crate) struct SetGlobalPauseContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub global_config: YdeltaAccountInfo<'a, 'info, crate::state::global_config::GlobalConfig>,
@@ -3041,6 +3242,7 @@ impl<'a, 'info> SetGlobalPauseContext<'a, 'info> {
     }
 }
 
+/// Reject state-mutating ixs whenever `GlobalConfig.is_paused == 1`.
 pub(crate) fn require_global_not_paused(
     global_config: &YdeltaAccountInfo<'_, '_, crate::state::global_config::GlobalConfig>,
 ) -> Result<(), ProgramError> {
@@ -3052,6 +3254,8 @@ pub(crate) fn require_global_not_paused(
     Ok(())
 }
 
+/// Pull the singleton `GlobalConfig` PDA off the account iterator and
+/// reject the call if the global pause flag is set.
 pub(crate) fn load_global_config<'a, 'info>(
     account_iter: &mut Iter<'a, AccountInfo<'info>>,
 ) -> Result<YdeltaAccountInfo<'a, 'info, crate::state::global_config::GlobalConfig>, ProgramError> {
@@ -3060,6 +3264,9 @@ pub(crate) fn load_global_config<'a, 'info>(
     Ok(global_config)
 }
 
+/// Same as [`load_global_config`] but skips the pause gate — used by
+/// the protocol-admin transfer / pause ixs so admin can recover a
+/// paused program.
 pub(crate) fn load_global_config_no_pause<'a, 'info>(
     account_iter: &mut Iter<'a, AccountInfo<'info>>,
 ) -> Result<YdeltaAccountInfo<'a, 'info, crate::state::global_config::GlobalConfig>, ProgramError> {
@@ -3075,6 +3282,10 @@ pub(crate) fn load_global_config_no_pause<'a, 'info>(
 }
 
 #[allow(dead_code)]
+/// Account context for `ConvertP2PoolToFixed` (tag 33). Borrower-side
+/// upgrade: takes the live P2Pool loan, both market integration
+/// accounts, the vault settle accounts for each crossed ask, and the
+/// oracle pair so the new loans pass the LTV gate.
 pub(crate) struct ConvertP2PoolToFixedContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -3350,6 +3561,9 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
 }
 
 #[allow(dead_code)]
+/// Account context for `CheckLtvLiquidatable` (tag 34). Read-only
+/// simulation; loads the loan + both oracles to reproduce the
+/// maintenance-LTV gate `LiquidateLoan` enforces.
 pub(crate) struct CheckLtvLiquidatableContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -3452,6 +3666,9 @@ impl<'a, 'info> CheckLtvLiquidatableContext<'a, 'info> {
 }
 
 #[allow(dead_code)]
+/// Account context for `CheckMaturityLiquidatable` (tag 35). Read-only
+/// simulation; loads the loan to reproduce the maturity + grace gate
+/// `SettleMaturedLoan` enforces.
 pub(crate) struct CheckMaturityLiquidatableContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,

@@ -1,3 +1,8 @@
+//! `ClaimCuratorFee` instruction. Curator-gated withdrawal of a risk
+//! profile's `accumulated_curator_fee_atoms` to the curator's wallet.
+//! Withdraws from the per-vault marginfi integration account; any
+//! over-withdraw surplus is redeposited back into marginfi.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -16,11 +21,17 @@ use crate::state::vault::{
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::ClaimCuratorFeeContext;
 
+/// Parameters for [`process_claim_curator_fee`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct ClaimCuratorFeeParams {
+    /// Identifies the risk profile whose curator fee is being claimed.
     pub profile_id: u8,
 }
 
+/// Withdraw a profile's `accumulated_curator_fee_atoms` to the
+/// curator's wallet. Signer must equal the profile's `curator`; no-op
+/// when accumulated fees are zero. Decrements the accumulator by the
+/// actual paid-out amount.
 pub fn process_claim_curator_fee(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

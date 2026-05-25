@@ -1,3 +1,10 @@
+//! `ProtocolFeeClaim` — sweep accumulated protocol fee shares from a market
+//! into the admin's debt-token account. Gated to the market admin via
+//! `ProtocolFeeClaimContext`. Zeroes `accumulated_protocol_fee_shares`,
+//! withdraws the corresponding atoms from the lender marginfi integration
+//! account, pays the admin via the market signer, and re-deposits any
+//! marginfi rounding surplus back into the pool.
+
 use std::cell::RefMut;
 
 use solana_program::{
@@ -11,6 +18,8 @@ use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::get_mut_dynamic_account;
 
+/// Drain the market's accumulated protocol fees to the admin debt-token
+/// account. No-op if the accumulator is zero.
 pub fn process_protocol_fee_claim(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

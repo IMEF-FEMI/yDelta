@@ -1,3 +1,10 @@
+//! `Withdraw` — trader-side debt or collateral withdrawal from their
+//! `ClaimedSeat`. Signer is the seat owner (payer). Drains either the
+//! seat's withdrawable share balance (`withdraw_all`) or the exact
+//! `amount_atoms`, decrements the seat's per-side balance, withdraws from
+//! the per-market marginfi integration account through the market signer,
+//! and pays out the user via SPL token transfer.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -19,14 +26,20 @@ use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::get_mut_dynamic_account;
 
+/// Withdrawal parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct WithdrawParams {
+    /// Atoms to withdraw; ignored when `withdraw_all == true`. Must be `> 0` otherwise.
     pub amount_atoms: u64,
+    /// Optional `ClaimedSeat` hint for the trader; falls back to lookup if stale.
     pub trader_index_hint: Option<DataIndex>,
 
+    /// When true, withdraws the trader's entire withdrawable share balance on this side.
     pub withdraw_all: bool,
 }
 
+/// Withdraw from the trader's `ClaimedSeat` on either the debt or collateral
+/// side (determined by which mint matches the supplied bank).
 pub fn process_withdraw(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

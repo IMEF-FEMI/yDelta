@@ -1,3 +1,8 @@
+//! `CreateVault` instruction. Permissionless one-shot initializer for
+//! a per-mint `GlobalVaultFixed` PDA, its staging token account, and
+//! its marginfi integration account. First caller becomes
+//! `global_vault_admin`. Emits `VaultCreatedLog`.
+
 use std::cell::RefMut;
 
 use solana_program::{
@@ -22,6 +27,10 @@ use crate::validation::loaders::CreateVaultContext;
 
 use super::create_market::assert_supported_mint_extensions;
 
+/// Initialize a global vault for one debt mint. Creates the vault PDA,
+/// the staging SPL token account (signer = `global_vault_signer`), and
+/// the marginfi integration account, then writes the `GlobalVaultFixed`
+/// header with the signer as `global_vault_admin`.
 pub fn process_create_vault(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

@@ -1,3 +1,6 @@
+//! Builds the `YdeltaInstruction::CancelOrderForRiskProfile` instruction:
+//! curator-gated cancel of a vault ask on a given market.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -10,6 +13,9 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
+/// Builds the `CancelOrderForRiskProfile` instruction. `curator` must sign;
+/// `fee_payer` covers tx fees. Removes the `profile_id` resting ask on
+/// `market` for the vault keyed by `mint`.
 pub fn cancel_order_for_risk_profile_instruction(
     mint: &Pubkey,
     market: &Pubkey,

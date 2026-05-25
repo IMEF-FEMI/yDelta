@@ -37,7 +37,7 @@ async fn vault_genesis_round_trip() {
         .create_risk_profile(
             &admin,
             curator.pubkey(),
-            /*max_ltv_bps=*/ 8_000,
+            /*max_ltv_bps=*/ Some(8_000),
             /*max_term_seconds=*/ 30 * 86_400,
         )
         .await
@@ -46,7 +46,7 @@ async fn vault_genesis_round_trip() {
     // 3. Deposit 100 USDC.
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_deposit(&depositor, depositor_token, 0, 100_000_000)
+        .global_vault_deposit(&depositor, depositor_token, 1, 100_000_000)
         .await
         .unwrap();
 
@@ -60,7 +60,7 @@ async fn vault_genesis_round_trip() {
     );
 
     // Verify profile state reflects the deposit.
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     let total_principal = profile.total_principal_atoms;
     let total_assets = profile.total_assets_atoms;
     let total_shares = profile.total_shares;
@@ -74,22 +74,22 @@ async fn vault_genesis_round_trip() {
     //    replays of the same tx.
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_withdraw(&depositor, depositor_token, 0, 40_000_000_u128)
+        .global_vault_withdraw(&depositor, depositor_token, 1, 40_000_000_u128)
         .await
         .unwrap();
 
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     let total_shares = profile.total_shares;
     assert_eq!(total_shares, 59_999_999_u128);
 
     // Withdraw the rest (60).
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_withdraw(&depositor, depositor_token, 0, 59_999_999_u128)
+        .global_vault_withdraw(&depositor, depositor_token, 1, 59_999_999_u128)
         .await
         .unwrap();
 
-    let profile = fixture.read_risk_profile(0).await;
+    let profile = fixture.read_risk_profile(1).await;
     let total_shares = profile.total_shares;
     let total_assets = profile.total_assets_atoms;
     let total_principal = profile.total_principal_atoms;
@@ -135,13 +135,13 @@ async fn global_vault_withdraw_rejects_overburn() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), 8_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
 
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_deposit(&depositor, depositor_token, 0, 100_000_000)
+        .global_vault_deposit(&depositor, depositor_token, 1, 100_000_000)
         .await
         .unwrap();
 
@@ -149,7 +149,7 @@ async fn global_vault_withdraw_rejects_overburn() {
     // with the exact InvalidArgument variant from the shares-balance gate.
     fixture.refresh_blockhash().await;
     let result = fixture
-        .global_vault_withdraw(&depositor, depositor_token, 0, 200_000_000_u128)
+        .global_vault_withdraw(&depositor, depositor_token, 1, 200_000_000_u128)
         .await;
     crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
 }
@@ -173,8 +173,8 @@ async fn first_place_order_auto_creates_vault_seat() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 0,
-            /*max_ltv_bps=*/ 8_000,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 500,
             /*term_seconds=*/ 30 * 86_400,
             /*deposit_atoms=*/ 100_000_000,
@@ -184,7 +184,7 @@ async fn first_place_order_auto_creates_vault_seat() {
     // The vault seat keyed by (global_vault, OWNER_KIND_RISK_PROFILE, 0)
     // exists — read_vault_seat panics if it is missing.
     let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
-    let _seat = fixture.read_vault_seat(&gv, 0).await;
+    let _seat = fixture.read_vault_seat(&gv, 1).await;
 
     // The resting risk-profile ask is on book.
     let market = fixture.read_market_fixed().await;
@@ -195,8 +195,8 @@ async fn first_place_order_auto_creates_vault_seat() {
     );
     // Vault-idle invariant: nothing in flight yet, profile is fully
     // idle. Tightens this test to verify no spurious encumbrance.
-    fixture.assert_vault_idle_invariant(0).await;
-    let p = fixture.read_risk_profile(0).await;
+    fixture.assert_vault_idle_invariant(1).await;
+    let p = fixture.read_risk_profile(1).await;
     assert_eq!(p.deployed_principal_atoms, 0);
     assert_eq!(p.encumbered_in_orders_atoms, 0);
 }
@@ -217,7 +217,7 @@ async fn create_risk_profile_rejects_non_admin() {
         .create_risk_profile(
             &interloper, // not the admin
             curator.pubkey(),
-            8_000,
+            Some(8_000),
             30 * 86_400,
         )
         .await;
@@ -249,7 +249,7 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), 8_000, 30 * 86_400)
+        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
 
@@ -257,7 +257,7 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     // withdraw has shares to act on).
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_deposit(&depositor, depositor_token, 0, 100_000_000)
+        .global_vault_deposit(&depositor, depositor_token, 1, 100_000_000)
         .await
         .unwrap();
 
@@ -268,21 +268,21 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     // Deposit must reject while paused — exact VaultPaused variant.
     fixture.refresh_blockhash().await;
     let deposit_res = fixture
-        .global_vault_deposit(&depositor, depositor_token, 0, 10_000_000)
+        .global_vault_deposit(&depositor, depositor_token, 1, 10_000_000)
         .await;
     crate::assert_custom_error!(deposit_res, ydelta::program::YdeltaError::VaultPaused);
 
     // Withdraw must reject while paused.
     fixture.refresh_blockhash().await;
     let withdraw_res = fixture
-        .global_vault_withdraw(&depositor, depositor_token, 0, 10_000_000_u128)
+        .global_vault_withdraw(&depositor, depositor_token, 1, 10_000_000_u128)
         .await;
     crate::assert_custom_error!(withdraw_res, ydelta::program::YdeltaError::VaultPaused);
 
     // Curator place-order must reject while paused.
     fixture.refresh_blockhash().await;
     let place_res = fixture
-        .place_order_for_risk_profile(&curator, 0, 500, 30 * 86_400, 0)
+        .place_order_for_risk_profile(&curator, 1, 500, 30 * 86_400, 0)
         .await;
     crate::assert_custom_error!(place_res, ydelta::program::YdeltaError::VaultPaused);
 
@@ -317,7 +317,7 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
 
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_deposit(&depositor, depositor_token, 0, 10_000_000)
+        .global_vault_deposit(&depositor, depositor_token, 1, 10_000_000)
         .await
         .expect("deposit must succeed once the vault is unpaused");
 }

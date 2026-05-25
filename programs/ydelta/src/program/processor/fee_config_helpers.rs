@@ -1,3 +1,8 @@
+//! Fee-config validation and override application shared by
+//! `create_market` and `set_fee_config`. Bounds-check every bps field
+//! at 10_000 and enforces stricter sanity caps on liquidation-keeper
+//! and curator fee splits plus the grace-period seconds ceiling.
+
 use solana_program::entrypoint::ProgramResult;
 
 use crate::program::YdeltaError;
@@ -6,12 +11,22 @@ use crate::state::market::FeeConfig;
 
 use super::set_fee_config::SetFeeConfigParams;
 
+/// Re-exported [`SetFeeConfigParams`] used by both `create_market`
+/// (initial config) and `set_fee_config` (later overrides).
 pub type FeeConfigOverrides = SetFeeConfigParams;
 
+/// Hard cap on `FeeConfig.grace_period_seconds` (90 days).
 pub const MAX_GRACE_PERIOD_SECONDS: u32 = 90 * 86_400;
 
+/// Sanity cap on the liquidation keeper's bonus share (50%).
 pub const MAX_LIQUIDATION_KEEPER_BPS: u16 = 5_000;
 
+/// Sanity cap on the curator's slice of interest (50%).
+pub const MAX_CURATOR_FEE_BPS: u16 = 5_000;
+
+/// Bounds-check every `Some` field in `params`. Each bps value must
+/// be `<= 10_000`; `liquidation_keeper_bps` and `curator_fee_bps`
+/// additionally cap at 5_000; `grace_period_seconds` caps at 90 days.
 pub fn validate_fee_config_overrides(params: &FeeConfigOverrides) -> ProgramResult {
     fn check_bps(value: Option<u16>) -> ProgramResult {
         if let Some(v) = value {
@@ -42,6 +57,17 @@ pub fn validate_fee_config_overrides(params: &FeeConfigOverrides) -> ProgramResu
         )?;
     }
 
+    if let Some(v) = params.curator_fee_bps {
+        require!(
+            v <= MAX_CURATOR_FEE_BPS,
+            YdeltaError::InvalidFeeConfig,
+            "curator_fee_bps {} exceeds {} (50%) sanity cap — protects depositors \
+             from a compromised market admin maxing the curator's slice",
+            v,
+            MAX_CURATOR_FEE_BPS
+        )?;
+    }
+
     if let Some(v) = params.grace_period_seconds {
         require!(
             v <= MAX_GRACE_PERIOD_SECONDS,
@@ -55,6 +81,8 @@ pub fn validate_fee_config_overrides(params: &FeeConfigOverrides) -> ProgramResu
     Ok(())
 }
 
+/// Apply each `Some` field from `params` onto `target` in place.
+/// `None` fields leave the existing value untouched.
 pub fn apply_fee_config_overrides(target: &mut FeeConfig, params: &FeeConfigOverrides) {
     if let Some(v) = params.protocol_fee_bps_floor {
         target.protocol_fee_bps_floor = v;

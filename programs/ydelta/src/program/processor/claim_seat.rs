@@ -1,3 +1,8 @@
+//! `ClaimSeat` instruction. Inserts a per-user `ClaimedSeat` into the
+//! market's seat tree (rejects a second seat for the same trader),
+//! expanding the market if no free block remains. Auto-creates the
+//! signer's `UserAccountFixed` PDA on first call.
+
 use std::cell::RefMut;
 
 use hypertree::{HyperTreeReadOperations, NIL};
@@ -13,6 +18,9 @@ use crate::validation::loaders::ClaimSeatContext;
 
 use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 
+/// Claim a `ClaimedSeat` for the signer in this market and upsert the
+/// matching `MarketPosition` row in the signer's `UserAccountFixed`.
+/// Emits `ClaimSeatLog`. Errors with `AlreadyClaimedSeat` on retry.
 pub fn process_claim_seat(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

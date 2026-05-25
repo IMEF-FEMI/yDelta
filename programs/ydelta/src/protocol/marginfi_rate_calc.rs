@@ -1,3 +1,11 @@
+//! Off-chain replica of marginfi v0.1.8's accrue formula. Decodes the
+//! bank's interest-rate config + the group's program-fee state directly
+//! from raw account data (no `marginfi_mocks` types to keep the read
+//! path zero-copy), projects the borrowing / lending APRs at the bank's
+//! current utilization, and applies continuous-time accrual to lsv/asv
+//! through `dt = now - bank.last_update`. Used by repay / convert /
+//! close-out flows to fund the EXACT post-CPI liability without dust.
+
 use solana_program::{account_info::AccountInfo, program_error::ProgramError};
 
 use crate::math::{div_scale, mul_scale, SCALE};
@@ -19,6 +27,9 @@ fn assert_marginfi_owned(account: &AccountInfo) -> Result<(), ProgramError> {
 
 const ANCHOR_HEADER_LEN: usize = 8;
 
+/// Year length marginfi uses for APR → per-second-rate conversion
+/// (365.25 days). Must match marginfi exactly or accrue predictions
+/// drift from the post-CPI state.
 pub const MARGINFI_SECONDS_PER_YEAR: u128 = 31_557_600;
 
 const INTEREST_CURVE_LEGACY: u8 = 0;
@@ -103,6 +114,10 @@ fn read_i64(data: &[u8], body_offset: usize) -> Result<i64, ProgramError> {
     Ok(read_u64(data, body_offset)? as i64)
 }
 
+/// Read the bank's `last_update` unix timestamp from raw account data.
+/// `dt = now - last_update` drives the accrue projection in
+/// [`calc_projected_liability_share_value_fp48`] /
+/// [`calc_projected_asset_share_value_fp48`].
 pub fn read_bank_last_update(bank_info: &AccountInfo) -> Result<i64, ProgramError> {
     assert_marginfi_owned(bank_info)?;
     let data = bank_info.try_borrow_data()?;
@@ -384,6 +399,12 @@ fn calc_accrued_share_value_fp48(
     Ok(share_value_fp48.saturating_add(accrued_fp48))
 }
 
+/// Project the bank's fp48 `liability_share_value` to `now_unix` by
+/// applying the borrowing APR (base + IR fees + program-rate fee +
+/// fixed fees) over `now_unix - bank.last_update`. Returns the current
+/// lsv unchanged when `dt == 0` or utilization is zero. Pair with
+/// [`crate::protocol::marginfi::MarginfiV18Adapter::liability_shares_to_atoms_ceil_at_lsv`]
+/// to predict the exact post-CPI atom liability.
 pub fn calc_projected_liability_share_value_fp48(
     bank_info: &AccountInfo,
     group_info: &AccountInfo,
@@ -413,6 +434,10 @@ pub fn calc_projected_liability_share_value_fp48(
     calc_accrued_share_value_fp48(borrowing_apr_fp48, dt, lsv_fp48)
 }
 
+/// Project the bank's fp48 `asset_share_value` to `now_unix` using the
+/// lending APR (base × utilization). Returns the current asv unchanged
+/// when `dt == 0` or utilization is zero. Used by the lender-side
+/// accrue predictor for vault deposits / claims.
 pub fn calc_projected_asset_share_value_fp48(
     bank_info: &AccountInfo,
     group_info: &AccountInfo,

@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::ConvertP2PoolToFixed` instruction:
+//! borrower-initiated upgrade of a P2Pool variable-rate loan into one or
+//! more Fixed loans by crossing compatible vault asks.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -12,6 +16,11 @@ use crate::validation::{
     get_borrower_integration_account_address, get_market_signer_address, get_vault_address,
 };
 
+/// Builds the `ConvertP2PoolToFixed` instruction. `borrower` (signer) owns
+/// the loan at `(market, loan_sequence)`. `max_acceptable_rate_bps` caps
+/// the worst per-cross rate the borrower will accept (basis points).
+/// `cranker_refund` receives rent freed when matched-loan nodes are
+/// consumed.
 #[allow(clippy::too_many_arguments)]
 pub fn convert_p2pool_to_fixed_instruction(
     market: &Pubkey,

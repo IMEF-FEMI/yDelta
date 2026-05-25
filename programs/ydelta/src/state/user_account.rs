@@ -1,3 +1,11 @@
+//! Per-user account that mirrors what the wallet has touched across the
+//! protocol. The header is followed by a free-list-backed dynamic region
+//! that holds three node types: `VaultPosition` (the user's shares in a
+//! `GlobalVault` risk profile), `MarketPosition` (a cached view of the
+//! user's market seat balances), and `UserLoanRef` (an open-loan
+//! pointer). All three are payload-size identical so they share the
+//! same free list.
+
 use std::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
@@ -20,29 +28,46 @@ use super::constants::{
 };
 use super::dynamic_account::DynamicAccount;
 
+/// PDA seed prefix for user accounts. Full seeds: `[USER_ACCOUNT_SEED, owner]`.
 pub const USER_ACCOUNT_SEED: &[u8] = b"user";
 
+/// Derives the user-account PDA for `owner` and its bump.
 pub fn user_account_pda(owner: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[USER_ACCOUNT_SEED, owner.as_ref()], &crate::id())
 }
 
+/// Fixed-size user-account header. Holds the three tree roots into the
+/// dynamic region (vault positions, market positions, open loans), the
+/// free-list head, and per-tree counts.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankAccount)]
 pub struct UserAccountFixed {
+    /// Layout tag; must equal [`USER_ACCOUNT_FIXED_DISCRIMINANT`].
     pub discriminator: u64,
+    /// Wallet that owns this account.
     pub owner: Pubkey,
 
+    /// Root of the [`VaultPosition`] tree.
     pub vault_positions_root_index: DataIndex,
+    /// Root of the [`MarketPosition`] tree.
     pub market_positions_root_index: DataIndex,
+    /// Root of the [`UserLoanRef`] tree.
     pub open_loans_root_index: DataIndex,
+    /// Head of the free-block list.
     pub free_list_head_index: DataIndex,
+    /// Total bytes currently allocated in the dynamic region.
     pub num_bytes_allocated: u32,
 
+    /// Number of live `VaultPosition` nodes.
     pub vault_position_count: u16,
+    /// Number of live `MarketPosition` nodes.
     pub market_position_count: u16,
+    /// Number of live `UserLoanRef` nodes.
     pub open_loan_count: u32,
 
+    /// PDA bump.
     pub bump: u8,
+    /// Account layout version; checked by loaders.
     pub version: u8,
     _padding: [u8; 2],
 
@@ -52,6 +77,8 @@ const_assert_eq!(size_of::<UserAccountFixed>(), USER_ACCOUNT_FIXED_SIZE);
 const_assert_eq!(size_of::<UserAccountFixed>() % 8, 0);
 
 impl UserAccountFixed {
+    /// Build a fresh user-account header for `owner` with empty trees
+    /// and an empty free list.
     pub fn new_empty(owner: Pubkey, bump: u8) -> Self {
         Self {
             discriminator: USER_ACCOUNT_FIXED_DISCRIMINANT,
@@ -71,6 +98,8 @@ impl UserAccountFixed {
         }
     }
 
+    /// `true` when the dynamic region has at least one block on the
+    /// free list.
     pub fn has_free_block(&self) -> bool {
         self.free_list_head_index != NIL
     }
@@ -102,6 +131,10 @@ impl YdeltaAccount for UserAccountFixed {
     }
 }
 
+/// Padding type whose size matches
+/// [`super::constants::USER_ACCOUNT_FREE_LIST_BLOCK_SIZE`]; used as the
+/// `FreeList` payload so free blocks occupy the same on-disk size as
+/// live nodes.
 #[repr(C, packed)]
 #[derive(Default, Copy, Clone, Pod, Zeroable)]
 pub struct UserAccountUnusedFreeListPadding {
@@ -113,15 +146,26 @@ const_assert_eq!(
     USER_ACCOUNT_FREE_LIST_BLOCK_SIZE
 );
 
+/// User's slice of a single risk profile inside a `GlobalVault`. Mirrors
+/// the depositor seat held inside the vault account so off-chain UIs can
+/// read shares without loading the vault.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct VaultPosition {
+    /// Global vault pubkey this position is inside.
     pub vault: Pubkey,
+    /// Risk profile id within the vault.
     pub profile_id: u8,
     _pad0: [u8; 15],
+    /// User's share balance in the profile.
     pub shares: u128,
+    /// Snapshot of the profile's `cumulative_supply_yield_index_scaled`
+    /// at last touch.
     pub snapshot_supply_yield_index_scaled: u128,
+    /// Snapshot of the profile's `cumulative_delta_yield_index_scaled`
+    /// at last touch.
     pub snapshot_delta_yield_index_scaled: u128,
+    /// Unix-ts of the last update.
     pub last_updated_unix: i64,
     _padding: [u8; 8],
 
@@ -163,6 +207,8 @@ impl std::fmt::Display for VaultPosition {
 }
 
 impl VaultPosition {
+    /// Build a position with identity fields set and balance fields
+    /// zeroed; equality only checks `(vault, profile_id)`.
     pub fn new_empty(vault: Pubkey, profile_id: u8) -> Self {
         Self {
             vault,
@@ -172,15 +218,23 @@ impl VaultPosition {
     }
 }
 
+/// Cached mirror of a user's seat balances in a specific market.
+/// Refreshed by the seat-side update paths and by `SyncMarketPosition`.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct MarketPosition {
+    /// Market pubkey this position tracks.
     pub market: Pubkey,
+    /// User's seat index inside the market account.
     pub seat_index_in_market: DataIndex,
     _pad0: [u8; 12],
+    /// Mirror of the seat's `debt_withdrawable_shares`.
     pub debt_withdrawable_shares: u128,
+    /// Mirror of the seat's `debt_encumbered_shares`.
     pub debt_encumbered_shares: u128,
+    /// Mirror of the seat's `collateral_withdrawable_shares`.
     pub collateral_withdrawable_shares: u128,
+    /// Mirror of the seat's `collateral_encumbered_shares`.
     pub collateral_encumbered_shares: u128,
 
     _reserved_padding: [u64; 4],
@@ -217,6 +271,8 @@ impl std::fmt::Display for MarketPosition {
 }
 
 impl MarketPosition {
+    /// Build a position with identity fields set and balance fields
+    /// zeroed; equality only checks `market`.
     pub fn new_empty(market: Pubkey, seat_index_in_market: DataIndex) -> Self {
         Self {
             market,
@@ -230,6 +286,8 @@ impl MarketPosition {
         }
     }
 
+    /// Overwrites the four balance fields with the live values from
+    /// `seat`. Identity fields are untouched.
     pub fn sync_from_seat(&mut self, seat: &super::claimed_seat::ClaimedSeat) {
         self.debt_withdrawable_shares = seat.debt_withdrawable_shares;
         self.debt_encumbered_shares = seat.debt_encumbered_shares;
@@ -238,17 +296,28 @@ impl MarketPosition {
     }
 }
 
+/// Pointer to an open loan PDA the user is on either side of. Lets the
+/// UI enumerate the user's loans without scanning every market.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct UserLoanRef {
+    /// Loan PDA.
     pub loan: Pubkey,
+    /// Market the loan belongs to.
     pub market: Pubkey,
+    /// Principal at origination.
     pub principal_atoms: u64,
+    /// Loan start unix-ts.
     pub started_at_unix: i64,
+    /// Loan maturity unix-ts.
     pub matures_at_unix: i64,
+    /// Side rate from the user's perspective.
     pub rate_bps: u16,
+    /// One of the [`LoanRole`] variants.
     pub role: u8,
+    /// One of the [`CounterpartyKind`] variants.
     pub counterparty_kind: u8,
+    /// Counterparty's risk-profile id when applicable.
     pub counterparty_profile_id: u8,
     _padding: [u8; 19],
 
@@ -281,49 +350,70 @@ impl std::fmt::Display for UserLoanRef {
     }
 }
 
+/// User's side of a loan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum LoanRole {
+    /// User borrows on this loan.
     Borrower = 0,
+    /// User lends on this loan.
     Lender = 1,
 }
 
+/// Identifies what the counterparty is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CounterpartyKind {
+    /// Counterparty is another user wallet.
     UserWallet = 0,
+    /// Counterparty is a risk profile inside a `GlobalVault`.
     GlobalVault = 1,
 }
 
+/// Mutable view of the `VaultPosition` tree.
 pub type VaultPositionTree<'a> = RedBlackTree<'a, VaultPosition>;
+/// Read-only view of the `VaultPosition` tree.
 pub type VaultPositionTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, VaultPosition>;
+/// Mutable view of the `MarketPosition` tree.
 pub type MarketPositionTree<'a> = RedBlackTree<'a, MarketPosition>;
+/// Read-only view of the `MarketPosition` tree.
 pub type MarketPositionTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, MarketPosition>;
+/// Mutable view of the open-loan tree.
 pub type OpenLoanTree<'a> = RedBlackTree<'a, UserLoanRef>;
+/// Read-only view of the open-loan tree.
 pub type OpenLoanTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, UserLoanRef>;
 
+/// Owned user-account view backed by a `Vec<u8>` dynamic tail (tests).
 pub type UserAccountValue = DynamicAccount<UserAccountFixed, Vec<u8>>;
+/// Read-only user-account view borrowed from on-chain account bytes.
 pub type UserAccountRef<'a> = DynamicAccount<&'a UserAccountFixed, &'a [u8]>;
+/// Mutable user-account view borrowed from on-chain account bytes.
 pub type UserAccountRefMut<'a> = DynamicAccount<&'a mut UserAccountFixed, &'a mut [u8]>;
 
+/// Returns a shared reference to the `MarketPosition` node at `index`.
 pub fn get_helper_market_position(data: &[u8], index: DataIndex) -> &RBNode<MarketPosition> {
     get_helper::<RBNode<MarketPosition>>(data, index)
 }
+/// Returns a mutable reference to the `MarketPosition` node at `index`.
 pub fn get_mut_helper_market_position(
     data: &mut [u8],
     index: DataIndex,
 ) -> &mut RBNode<MarketPosition> {
     get_mut_helper::<RBNode<MarketPosition>>(data, index)
 }
+/// Returns a shared reference to the `UserLoanRef` node at `index`.
 pub fn get_helper_open_loan(data: &[u8], index: DataIndex) -> &RBNode<UserLoanRef> {
     get_helper::<RBNode<UserLoanRef>>(data, index)
 }
+/// Returns a mutable reference to the `UserLoanRef` node at `index`.
 pub fn get_mut_helper_open_loan(data: &mut [u8], index: DataIndex) -> &mut RBNode<UserLoanRef> {
     get_mut_helper::<RBNode<UserLoanRef>>(data, index)
 }
+/// Returns a shared reference to the `VaultPosition` node at `index`.
 pub fn get_helper_vault_position(data: &[u8], index: DataIndex) -> &RBNode<VaultPosition> {
     get_helper::<RBNode<VaultPosition>>(data, index)
 }
+/// Returns a mutable reference to the `VaultPosition` node at `index`.
 pub fn get_mut_helper_vault_position(
     data: &mut [u8],
     index: DataIndex,
@@ -341,6 +431,8 @@ const _CHECK_USER_ACCOUNT_BLOCK_PAYLOAD: () = {
     assert!(USER_LOAN_REF_SIZE == USER_ACCOUNT_BLOCK_PAYLOAD_SIZE);
 };
 
+/// Pops a free block from the user-account dynamic region, returning
+/// its index (or `NIL` when empty).
 pub fn get_free_address_on_user_account_fixed(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -352,6 +444,7 @@ pub fn get_free_address_on_user_account_fixed(
     free_address
 }
 
+/// Pushes `index` back onto the user-account free list.
 pub fn release_address_on_user_account_fixed(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -363,6 +456,9 @@ pub fn release_address_on_user_account_fixed(
     fixed.free_list_head_index = free_list.get_head();
 }
 
+/// Grows the user-account dynamic region by one block, pushing it onto
+/// the free list. Caller is responsible for first realloc'ing the
+/// underlying account.
 pub fn user_account_expand(fixed: &mut UserAccountFixed, dynamic: &mut [u8]) -> ProgramResult {
     let mut free_list: FreeList<UserAccountUnusedFreeListPadding> =
         FreeList::new(dynamic, fixed.free_list_head_index);
@@ -375,6 +471,9 @@ pub fn user_account_expand(fixed: &mut UserAccountFixed, dynamic: &mut [u8]) -> 
     Ok(())
 }
 
+/// Inserts a `MarketPosition` for `(market, seat_index_in_market)` if
+/// absent; returns the existing node index on hit. Bumps
+/// `market_position_count` on insert.
 pub fn upsert_market_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -409,6 +508,9 @@ pub fn upsert_market_position(
     Ok(order_index)
 }
 
+/// Inserts a `VaultPosition` for `(vault, profile_id)` if absent;
+/// returns the existing node index on hit. Bumps
+/// `vault_position_count` on insert.
 pub fn upsert_vault_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -443,6 +545,8 @@ pub fn upsert_vault_position(
     Ok(order_index)
 }
 
+/// Removes the `VaultPosition` for `(vault, profile_id)` and returns the
+/// freed node index, or `NIL` when not present.
 pub fn remove_vault_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
@@ -513,6 +617,8 @@ fn assert_open_loan_count(fixed: &UserAccountFixed, dynamic: &[u8]) {
 #[cfg(not(debug_assertions))]
 fn assert_open_loan_count(_fixed: &UserAccountFixed, _dynamic: &[u8]) {}
 
+/// Overwrites the `MarketPosition` at `market_position_index` with the
+/// live seat balances from `seat`.
 pub fn write_market_position_from_seat(
     dynamic: &mut [u8],
     market_position_index: DataIndex,
@@ -523,6 +629,8 @@ pub fn write_market_position_from_seat(
     mp.sync_from_seat(seat);
 }
 
+/// Inserts a `UserLoanRef` for `loan_pda`. Returns the existing node
+/// index on hit; bumps `open_loan_count` on insert.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_open_loan(
     fixed: &mut UserAccountFixed,
@@ -581,6 +689,8 @@ pub fn insert_open_loan(
     Ok(order_index)
 }
 
+/// Removes the `UserLoanRef` for `loan_pda` and returns the freed node
+/// index, or `NIL` when not present.
 pub fn remove_open_loan(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],

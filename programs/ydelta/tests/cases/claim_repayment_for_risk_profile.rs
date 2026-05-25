@@ -25,7 +25,7 @@ use ydelta::state::Side;
 
 use crate::test_utils::{mainnet, MarketFixture};
 
-const PROFILE_ID: u8 = 0;
+const PROFILE_ID: u8 = 1;
 const VAULT_DEPOSIT_ATOMS: u64 = 100_000_000;
 const PRINCIPAL_ATOMS: u64 = 1_000_000;
 // The match-time LTV gate normalizes for the USDC(6-dec) /
@@ -65,7 +65,7 @@ async fn setup_through_promote(
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), 8_000, TERM_SECONDS)
+        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), TERM_SECONDS)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -552,7 +552,7 @@ async fn claim_reconciles_total_assets_to_realized_interest() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0)
+        .claim_repayment_for_risk_profile(&stranger, 1)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -923,12 +923,12 @@ async fn risk_profile_earns_yield_from_two_markets() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 0)
+        .claim_repayment_for_risk_profile(&stranger, 1)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile_in_market(&stranger, market2_pk, 0)
+        .claim_repayment_for_risk_profile_in_market(&stranger, market2_pk, 1)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;

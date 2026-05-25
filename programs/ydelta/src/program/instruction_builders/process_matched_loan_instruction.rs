@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::ProcessMatchedLoan` instruction: cranker
+//! promotes a queued `MatchedLoan` into a `LoanFixed` PDA, optionally
+//! running the vault-side atom migration when `vault_settle` is provided.
+
 use borsh::BorshSerialize;
 use hypertree::DataIndex;
 use solana_program::{
@@ -11,23 +15,46 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::loan::loan_pda;
 
+/// Bundle of vault-side accounts the processor needs when the matched loan
+/// is vault-funded. Pass `Some(VaultSettleAddrs { .. })` to
+/// `process_matched_loan_instruction` for vault matches; pass `None` for
+/// pure P2Pool promotions.
 pub struct VaultSettleAddrs {
+    /// `GlobalVaultFixed` PDA for the debt mint.
     pub global_vault: Pubkey,
+    /// Vault signer PDA (marginfi CPI + staging ATA authority).
     pub global_vault_signer: Pubkey,
+    /// Vault's debt-mint staging ATA.
     pub global_vault_staging: Pubkey,
+    /// Vault's own marginfi integration account.
     pub global_vault_integration_account: Pubkey,
+    /// Market's debt-side token vault.
     pub market_debt_vault: Pubkey,
+    /// Market's lender-side marginfi integration account.
     pub market_lender_integration_account: Pubkey,
+    /// Market signer PDA.
     pub market_signer: Pubkey,
+    /// Debt bank's marginfi liquidity vault.
     pub debt_liquidity_vault: Pubkey,
+    /// Debt bank's liquidity-vault authority PDA.
     pub debt_bank_liquidity_vault_authority: Pubkey,
+    /// Oracle accounts for the debt bank, in marginfi-expected order.
     pub debt_oracles: Vec<Pubkey>,
+    /// Debt token mint.
     pub debt_mint: Pubkey,
+    /// SPL token program owning the debt mint.
     pub token_program: Pubkey,
+    /// Marginfi group account.
     pub marginfi_group: Pubkey,
+    /// Marginfi program id.
     pub marginfi_program: Pubkey,
 }
 
+/// Builds the `ProcessMatchedLoan` instruction. `payer` (signer) is the
+/// cranker funding the `LoanFixed` rent. `sequence` selects the queued
+/// match; `matched_loan_index_hint` skips the matched-loan tree lookup.
+/// Pass `vault_settle = Some(..)` for vault-funded matches, `None` for
+/// P2Pool promotions.
 #[allow(clippy::too_many_arguments)]
 pub fn process_matched_loan_instruction(
     market: &Pubkey,

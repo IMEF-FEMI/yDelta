@@ -1,3 +1,10 @@
+//! `RemoveRiskProfile` — vault-admin removal of a risk profile from the global
+//! vault. Only allowed when `is_sunset == 1`; admin must first run
+//! `SunsetRiskProfile` and complete the wind-down (depositors withdrawn,
+//! remaining orders cancelled) before calling this. Frees the
+//! `RiskProfile` node from the vault's tree and emits a
+//! `RiskProfileRemovedLog`.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -14,11 +21,15 @@ use crate::state::vault::{
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::RemoveRiskProfileContext;
 
+/// Risk-profile removal parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct RemoveRiskProfileParams {
+    /// Risk profile ID to remove (1-based; 0 is the sentinel).
     pub profile_id: u8,
 }
 
+/// Remove a sunset risk profile from the global vault. Errors with
+/// `VaultProfileNotSunset` if the profile is still active.
 pub fn process_remove_risk_profile(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -44,18 +55,12 @@ pub fn process_remove_risk_profile(
         )?;
         let profile: &RiskProfile = get_helper_risk_profile(dynamic, idx).get_value();
         require!(
-            profile.is_empty(),
-            YdeltaError::VaultProfileNotEmpty,
-            "remove_risk_profile: profile_id {} carries live balances \
-             (shares={}, assets={}, principal={}, deployed={}, encumbered={}, \
-             curator_fee={}); refusing to strand them",
-            params.profile_id,
-            { profile.total_shares },
-            profile.total_assets_atoms,
-            profile.total_principal_atoms,
-            profile.deployed_principal_atoms,
-            profile.encumbered_in_orders_atoms,
-            profile.accumulated_curator_fee_atoms
+            profile.is_sunset != 0,
+            YdeltaError::VaultProfileNotSunset,
+            "remove_risk_profile: profile_id {} is not sunset; call SunsetRiskProfile and \
+             complete the wind-down (depositors withdraw, admin force-cancels remaining orders) \
+             before removing",
+            params.profile_id
         )?;
         profile.curator
     };
@@ -68,8 +73,7 @@ pub fn process_remove_risk_profile(
         require!(
             freed != NIL,
             YdeltaError::VaultProfileNotFound,
-            "remove_risk_profile: profile_id {} disappeared between gate and removal \
-             (concurrent mutation — should be impossible inside a single ix)",
+            "remove_risk_profile: profile_id {} disappeared between gate and removal",
             params.profile_id
         )?;
     }

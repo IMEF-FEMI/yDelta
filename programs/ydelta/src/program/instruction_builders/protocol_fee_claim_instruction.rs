@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::ProtocolFeeClaim` instruction: market admin
+//! drains `market.accumulated_protocol_fee_shares` to their debt ATA via a
+//! marginfi withdraw.
+
 use solana_program::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -9,6 +13,10 @@ use crate::validation::{
     get_lender_integration_account_address, get_market_signer_address, get_vault_address,
 };
 
+/// Builds the `ProtocolFeeClaim` instruction. `admin` (signer) must equal
+/// the market admin; accumulated protocol fees are withdrawn into
+/// `admin_debt_token` via the marginfi `debt_bank` /
+/// `debt_liquidity_vault` / `debt_bank_lva` / `debt_oracles` path.
 #[allow(clippy::too_many_arguments)]
 pub fn protocol_fee_claim_instruction(
     market: &Pubkey,

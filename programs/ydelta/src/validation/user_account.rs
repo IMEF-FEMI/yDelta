@@ -1,3 +1,8 @@
+//! Per-signer `UserAccountFixed` PDA bootstrap + dynamic-region growth.
+//! Loaders call [`ensure_user_account_for_signer`] to lazy-init the PDA
+//! on first use and append a fresh free block whenever the existing
+//! free list is empty.
+
 use std::cell::RefMut;
 
 use solana_program::{
@@ -18,6 +23,10 @@ use crate::state::user_account::{
 use crate::state::USER_ACCOUNT_FIXED_SIZE;
 use crate::validation::{Signer, YdeltaAccountInfo};
 
+/// Return a typed handle on the signer's `UserAccountFixed` PDA,
+/// allocating + initializing the header on first use. Validates the
+/// dynamic-region indices fall within the live data length, then
+/// expands the account by one block when no free slot remains.
 pub fn ensure_user_account_for_signer<'a, 'info>(
     signer: &Signer<'a, 'info>,
     user_account_ai: &'a AccountInfo<'info>,
@@ -99,6 +108,9 @@ pub fn ensure_user_account_for_signer<'a, 'info>(
     Ok(typed)
 }
 
+/// Grow the user account by one `USER_ACCOUNT_BLOCK_SIZE` and seed the
+/// new bytes onto the free list. `payer` funds the rent-exempt
+/// top-up; the realloc keeps the existing header untouched.
 pub fn expand_user_account<'a, 'info>(
     payer: &Signer<'a, 'info>,
     user_account_ai: &'a AccountInfo<'info>,

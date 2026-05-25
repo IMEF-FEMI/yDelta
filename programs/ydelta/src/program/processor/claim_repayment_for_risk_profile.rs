@@ -1,3 +1,8 @@
+//! `ClaimRepaymentForRiskProfile` instruction. Permissionless stateless
+//! sweeper that moves a risk profile's `debt_withdrawable_shares` from
+//! the per-market `lender_marginfi_account` into the per-vault marginfi
+//! integration account. Never touches loan PDAs, never re-accrues.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -22,6 +27,7 @@ use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::get_mut_dynamic_account;
 
+/// Parameters for [`process_claim_repayment_for_risk_profile`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Default)]
 pub struct ClaimRepaymentForRiskProfileParams {
     /// Identifies the risk-profile seat to sweep. Combined with the

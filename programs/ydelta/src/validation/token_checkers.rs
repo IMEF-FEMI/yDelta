@@ -1,3 +1,7 @@
+//! SPL Token / Token-2022 account-shape wrappers and the market-vault
+//! PDA derivation. Loaders use these to prove a `&AccountInfo` is an
+//! initialized mint or token account with the expected mint/owner.
+
 use crate::require;
 use solana_program::{account_info::AccountInfo, program_error::ProgramError, pubkey::Pubkey};
 use spl_token_2022::{
@@ -7,6 +11,8 @@ use spl_token_2022::{
 };
 use std::ops::Deref;
 
+/// Typed proof that `info` is an initialized SPL or Token-2022 mint.
+/// Carries a decoded [`Mint`] snapshot taken at construction.
 #[derive(Clone)]
 pub struct MintAccountInfo<'a, 'info> {
     pub mint: Mint,
@@ -14,6 +20,9 @@ pub struct MintAccountInfo<'a, 'info> {
 }
 
 impl<'a, 'info> MintAccountInfo<'a, 'info> {
+    /// Construct after asserting owner is SPL Token / Token-2022 and
+    /// `Mint::is_initialized`. Decodes the mint via Token-2022
+    /// `StateWithExtensions` so legacy and extended mints both unpack.
     pub fn new(info: &'a AccountInfo<'info>) -> Result<MintAccountInfo<'a, 'info>, ProgramError> {
         check_spl_token_program_account(info.owner)?;
 
@@ -34,12 +43,16 @@ impl<'a, 'info> AsRef<AccountInfo<'info>> for MintAccountInfo<'a, 'info> {
     }
 }
 
+/// Typed proof that `info` is an initialized SPL / Token-2022 token
+/// account with a specific mint.
 #[derive(Clone)]
 pub struct TokenAccountInfo<'a, 'info> {
     pub info: &'a AccountInfo<'info>,
 }
 
 impl<'a, 'info> TokenAccountInfo<'a, 'info> {
+    /// Construct after asserting the SPL Token program owner,
+    /// `AccountState::Initialized`, and `account.mint == mint`.
     pub fn new(
         info: &'a AccountInfo<'info>,
         mint: &Pubkey,
@@ -66,6 +79,8 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
         Ok(Self { info })
     }
 
+    /// Decode the `owner` field (bytes 32..64) without re-unpacking
+    /// the full token-account layout.
     pub fn get_owner(&self) -> Result<Pubkey, ProgramError> {
         let data = self.info.try_borrow_data()?;
         if data.len() < 64 {
@@ -77,6 +92,8 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
         Ok(Pubkey::new_from_array(arr))
     }
 
+    /// Decode the `amount` field (bytes 64..72) without re-unpacking
+    /// the full token-account layout.
     pub fn get_balance_atoms(&self) -> Result<u64, ProgramError> {
         let data = self.info.try_borrow_data()?;
         if data.len() < 72 {
@@ -88,6 +105,8 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
         Ok(u64::from_le_bytes(bytes))
     }
 
+    /// Stricter [`Self::new`] that additionally asserts
+    /// `account.owner == owner`.
     pub fn new_with_owner(
         info: &'a AccountInfo<'info>,
         mint: &Pubkey,
@@ -104,6 +123,8 @@ impl<'a, 'info> TokenAccountInfo<'a, 'info> {
         Ok(token_account_info)
     }
 
+    /// Strictest variant — asserts `info.key == key` first (used to
+    /// pin a vault PDA), then delegates to [`Self::new_with_owner`].
     pub fn new_with_owner_and_key(
         info: &'a AccountInfo<'info>,
         mint: &Pubkey,
@@ -148,6 +169,8 @@ macro_rules! market_vault_seeds_with_bump {
     };
 }
 
+/// Derive `(vault_ata, bump)` for a market's per-mint vault PDA.
+/// Authority is the market signer PDA from [`crate::validation::pdas`].
 pub fn get_vault_address(market: &Pubkey, mint: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(market_vault_seeds!(market, mint), &crate::ID)
 }

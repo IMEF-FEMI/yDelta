@@ -1,3 +1,8 @@
+//! Two-step admin / curator role transfers for markets, global vaults,
+//! and risk profiles. Each role exposes a `Transfer*` initiator (signer
+//! must be the current role-holder; sets `pending_*`) and an `Accept*`
+//! confirm (signer must match `pending_*`; promotes pending to live).
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -16,11 +21,15 @@ use crate::validation::loaders::{
     TransferCuratorContext, TransferGlobalVaultAdminContext, TransferMarketAdminContext,
 };
 
+/// Parameters for [`process_transfer_market_admin`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct TransferMarketAdminParams {
+    /// Pubkey to set as `MarketFixed.pending_admin`.
     pub new_admin: Pubkey,
 }
 
+/// Initiates a market admin transfer. Signer must equal the current
+/// `MarketFixed.admin`; writes `params.new_admin` into `pending_admin`.
 pub fn process_transfer_market_admin(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -44,6 +53,9 @@ pub fn process_transfer_market_admin(
     Ok(())
 }
 
+/// Completes a market admin transfer. Signer must equal
+/// `pending_admin` (non-default); promotes it to `admin` and clears
+/// `pending_admin`.
 pub fn process_accept_market_admin(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -69,11 +81,16 @@ pub fn process_accept_market_admin(
     Ok(())
 }
 
+/// Parameters for [`process_transfer_global_vault_admin`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct TransferGlobalVaultAdminParams {
+    /// Pubkey to set as `GlobalVaultFixed.pending_global_vault_admin`.
     pub new_admin: Pubkey,
 }
 
+/// Initiates a global-vault admin transfer. Signer must equal the
+/// current `global_vault_admin`; writes `params.new_admin` into
+/// `pending_global_vault_admin`.
 pub fn process_transfer_global_vault_admin(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -98,6 +115,9 @@ pub fn process_transfer_global_vault_admin(
     Ok(())
 }
 
+/// Completes a global-vault admin transfer. Signer must equal
+/// `pending_global_vault_admin` (non-default); promotes it to
+/// `global_vault_admin` and clears the pending slot.
 pub fn process_accept_global_vault_admin(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -124,12 +144,18 @@ pub fn process_accept_global_vault_admin(
     Ok(())
 }
 
+/// Parameters for [`process_transfer_curator`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct TransferCuratorParams {
+    /// Identifies the risk profile whose curator is being transferred.
     pub profile_id: u8,
+    /// Pubkey to set as `RiskProfile.pending_curator`.
     pub new_curator: Pubkey,
 }
 
+/// Initiates a risk-profile curator transfer. Signer must equal the
+/// profile's current `curator`; writes `params.new_curator` into
+/// `pending_curator`.
 pub fn process_transfer_curator(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -166,11 +192,16 @@ pub fn process_transfer_curator(
     Ok(())
 }
 
+/// Parameters for [`process_accept_curator`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct AcceptCuratorParams {
+    /// Identifies the risk profile to take curator control of.
     pub profile_id: u8,
 }
 
+/// Completes a curator transfer. Signer must equal the profile's
+/// `pending_curator` (non-default); promotes it to `curator` and
+/// clears the pending slot.
 pub fn process_accept_curator(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

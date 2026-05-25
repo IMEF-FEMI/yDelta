@@ -1,3 +1,9 @@
+//! `PlaceOrderForRiskProfile` — curator rests a vault-owned ask on a market for
+//! one of their risk profiles. Signer is the profile's `curator`. Rejected if
+//! the profile is sunset; clamps `term_seconds` to `profile.max_term_seconds`.
+//! Claims a vault-owned `ClaimedSeat` on first use, rests an ask via
+//! `rest_vault_ask`, and inserts a `RiskProfileOrderRef` on the global vault.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -23,14 +29,21 @@ use crate::validation::loaders::CancelOrderForRiskProfileContext;
 
 use super::shared::{expand_market_to_free_blocks, get_mut_dynamic_account};
 
+/// Vault-owned ask parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct PlaceOrderForRiskProfileParams {
+    /// Risk profile ID on the global vault (1-based; 0 is the sentinel).
     pub profile_id: u8,
+    /// Ask rate in bps that the profile is willing to lend at.
     pub rate_bps: u16,
+    /// Loan term in seconds; must be `<= profile.max_term_seconds`.
     pub term_seconds: u32,
+    /// Order flag bits (see `state::market_helpers` flag constants).
     pub flags: u8,
 }
 
+/// Rest a vault-owned ask on a market on behalf of a risk profile. Signer is
+/// the profile's curator; blocked when the profile is sunset.
 pub fn process_place_order_for_risk_profile(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -67,6 +80,13 @@ pub fn process_place_order_for_risk_profile(
         )?;
         let profile_node = crate::state::vault::get_helper_risk_profile(dynamic, profile_idx);
         let profile = profile_node.get_value();
+        require!(
+            profile.is_sunset == 0,
+            YdeltaError::VaultProfileSunset,
+            "place_order_for_risk_profile: profile_id {} is sunset; no new orders during \
+             wind-down (curator may still cancel existing orders)",
+            params.profile_id
+        )?;
         require!(
             *curator.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,

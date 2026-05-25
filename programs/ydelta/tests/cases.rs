@@ -67,6 +67,8 @@ mod cases {
     #[cfg(feature = "test-sbf")]
     mod repay;
     #[cfg(feature = "test-sbf")]
+    mod sunset_risk_profile;
+    #[cfg(feature = "test-sbf")]
     mod vault_e2e;
     #[cfg(feature = "test-sbf")]
     mod vault_match;

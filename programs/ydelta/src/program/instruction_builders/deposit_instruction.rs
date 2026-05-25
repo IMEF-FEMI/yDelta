@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::Deposit` instruction: moves atoms from a
+//! trader's wallet ATA into the signer's market seat (debt-side or
+//! collateral-side, selected by the token-account mint).
+
 use borsh::BorshSerialize;
 use hypertree::DataIndex;
 use solana_program::{
@@ -15,6 +19,11 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
+/// Builds the `Deposit` instruction for `market`. `payer` (signer) owns
+/// the seat. `mint` is the side being deposited (debt vs collateral, picked
+/// against `debt_mint`); `bank` + `liquidity_vault` are the matching
+/// marginfi accounts. `amount_atoms` is the deposit in token atoms;
+/// `trader_index_hint` is an optional seat-tree index to skip the lookup.
 #[allow(clippy::too_many_arguments)]
 pub fn deposit_instruction(
     market: &Pubkey,

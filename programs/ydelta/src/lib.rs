@@ -1,3 +1,21 @@
+//! yDelta on-chain program — entrypoint and module roots.
+//!
+//! Top-level layout:
+//! - [`state`] — on-chain account data types (markets, vaults, loans,
+//!   risk profiles, seats, orders) and the helpers that mutate them.
+//! - [`program`] — instruction tag enum, error enum, processor handlers
+//!   (one per instruction), and client-side instruction builders.
+//! - [`protocol`] — adapters to external programs (marginfi v0.1.8 CPIs,
+//!   Pyth / Switchboard oracle decoders).
+//! - [`validation`] — account-list loaders that build typed contexts
+//!   from raw `&[AccountInfo]` for each instruction.
+//! - [`math`] — `Fp48` fixed-point wrapper plus `mul_div` / `mul_scale`
+//!   / `div_scale` helpers that funnel every multiplication through
+//!   `U256` to avoid the `u128` overflow class.
+//! - [`logs`] — `Pod` structs emitted via `emit_stack` for off-chain
+//!   indexers; each variant is keyed by an 8-byte discriminant.
+//! - [`utils`] — small cross-module helpers (PDA account creation, etc).
+
 pub mod logs;
 pub mod math;
 pub mod program;
@@ -6,11 +24,14 @@ pub mod state;
 pub mod utils;
 pub mod validation;
 
+/// Re-exports of upstream crates so SDK consumers can pull them through
+/// the program crate instead of pinning a separate `hypertree` version.
 pub mod deps {
     pub use hypertree;
 }
 
 use program::{
+    admin_cancel_risk_profile_order::process_admin_cancel_risk_profile_order,
     admin_transfer::{
         process_accept_curator, process_accept_global_vault_admin, process_accept_market_admin,
         process_transfer_curator, process_transfer_global_vault_admin,
@@ -39,10 +60,12 @@ use program::{
     protocol_fee_claim::process_protocol_fee_claim,
     remove_risk_profile::process_remove_risk_profile,
     repay::process_repay,
+    resume_risk_profile::process_resume_risk_profile,
     set_fee_config::process_set_fee_config,
     set_market_pause::process_set_market_pause,
     set_vault_pause::process_set_vault_pause,
     settle_matured_loan::process_settle_matured_loan,
+    sunset_risk_profile::process_sunset_risk_profile,
     sync_market_position::process_sync_market_position,
     update_order_for_risk_profile::process_update_order_for_risk_profile,
     update_risk_profile::process_update_risk_profile,
@@ -72,11 +95,19 @@ declare_id!("A1fNwJV5C2BTKWcnHmaELNq2TLB11UP7mp9P7q4ahWnu");
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program::entrypoint!(process_instruction);
 
+/// Program entrypoint. Reads the first instruction-data byte as a
+/// [`YdeltaInstruction`] tag, then dispatches to the matching processor
+/// in [`program::processor`]. Hard-rejects if `program_id` is not this
+/// program's `crate::id()`.
 pub fn process_instruction(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
     instruction_data: &[u8],
 ) -> ProgramResult {
+    if program_id != &crate::id() {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+
     let (tag, data) = instruction_data
         .split_first()
         .ok_or(ProgramError::InvalidInstructionData)?;
@@ -170,6 +201,15 @@ pub fn process_instruction(
         YdeltaInstruction::SetVaultPause => process_set_vault_pause(program_id, accounts, data)?,
         YdeltaInstruction::RemoveRiskProfile => {
             process_remove_risk_profile(program_id, accounts, data)?
+        }
+        YdeltaInstruction::SunsetRiskProfile => {
+            process_sunset_risk_profile(program_id, accounts, data)?
+        }
+        YdeltaInstruction::ResumeRiskProfile => {
+            process_resume_risk_profile(program_id, accounts, data)?
+        }
+        YdeltaInstruction::AdminCancelRiskProfileOrder => {
+            process_admin_cancel_risk_profile_order(program_id, accounts, data)?
         }
     }
 

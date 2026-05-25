@@ -1,3 +1,6 @@
+//! Builds the `YdeltaInstruction::Repay` instruction: borrower pays down a
+//! `LoanFixed` from their debt ATA; full repay closes the loan PDA.
+
 use borsh::BorshSerialize;
 use hypertree::DataIndex;
 use solana_program::{
@@ -16,6 +19,11 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
+/// Builds the `Repay` instruction for loan `(market, sequence)`.
+/// `borrower` (signer) pays from `borrower_token`. `repay_atoms` is the
+/// debt-token amount; `full_repay = true` closes the loan PDA after the
+/// pay-down. `cranker_refund` receives rent from closed accounts.
+/// `global_vault` must be `Some` for Fixed loans, `None` for P2Pool loans.
 #[allow(clippy::too_many_arguments)]
 pub fn repay_instruction(
     market: &Pubkey,

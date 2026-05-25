@@ -1,3 +1,10 @@
+//! `LoanFixed` is the per-loan account that opens when a `MatchedLoan` is
+//! settled by `process_matched_loan`. Holds principal, accrued interest,
+//! collateral, the lender/borrower identities, and the snapshots needed
+//! to close out cleanly through repay, settlement, or liquidation.
+//! Fixed-term loans accrue here in-place; P2Pool loans hold a stake in
+//! marginfi and the on-chain ledger only tracks the protocol's slice.
+
 use std::cmp::Ordering;
 use std::mem::size_of;
 
@@ -11,24 +18,37 @@ use crate::program::YdeltaError;
 use crate::require;
 use crate::validation::YdeltaAccount;
 
+/// Eight-byte tag at the head of every loan account.
 pub const LOAN_FIXED_DISCRIMINANT: u64 = 0x79_64_65_6C_74_61_4C_4E;
 
+/// Byte size of [`LoanFixed`].
 pub const LOAN_FIXED_SIZE: usize = 288;
 
+/// Bps denominator (10_000 = 100%) used throughout rate math.
 pub const BPS_PER_UNIT: u32 = 10_000;
 
+/// Seconds per Julian-365 year, used as the simple-interest denominator.
 pub const SECONDS_PER_YEAR: i64 = 365 * 24 * 60 * 60;
 
+/// PDA seed prefix for loan accounts. Full seeds:
+/// `[LOAN_SEED, market, sequence_le]`.
 pub const LOAN_SEED: &[u8] = b"loan";
 
+/// Lifecycle state stored in [`LoanFixed::state`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum LoanState {
+    /// Open loan; accrues interest and is reachable by repay /
+    /// settle / liquidate.
     Active = 0,
+    /// Fully resolved; outstanding debt is 0 and the account is awaiting
+    /// rent reclaim.
     Repaid = 3,
 }
 
 impl LoanState {
+    /// Decode the byte stored on the loan account into the strongly-typed
+    /// enum; errors on any value outside the declared discriminants.
     pub fn from_u8(v: u8) -> Result<Self, ProgramError> {
         match v {
             0 => Ok(Self::Active),
@@ -38,14 +58,20 @@ impl LoanState {
     }
 }
 
+/// Two flavours of loan the protocol supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum LoanType {
+    /// Fixed-term, fixed-rate book-matched loan with on-ledger accrual.
     Fixed = 0,
+    /// P2Pool residual borrowed from marginfi at the variable pool rate;
+    /// ledger fields hold only the static metadata.
     P2Pool = 1,
 }
 
 impl LoanType {
+    /// Decode the byte stored on the loan account into the strongly-typed
+    /// enum; errors on any value outside the declared discriminants.
     pub fn from_u8(v: u8) -> Result<Self, ProgramError> {
         match v {
             0 => Ok(Self::Fixed),
@@ -55,58 +81,103 @@ impl LoanType {
     }
 }
 
+/// Per-loan PDA written at match-time and updated by accrual, repay,
+/// settle, and liquidate. The conservation invariant
+/// `outstanding_debt + principal_retired == lender_claimable +
+/// protocol_fee + curator_fee` is enforced by [`assert_loan_conservation`]
+/// before and after every partial resolution.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankAccount)]
 pub struct LoanFixed {
+    /// Layout tag; must equal [`LOAN_FIXED_DISCRIMINANT`].
     pub discriminator: u64,
+    /// Market this loan belongs to.
     pub market: Pubkey,
+    /// Wallet that signed the place_order which created this loan.
     pub created_by: Pubkey,
 
+    /// Per-market loan sequence (matches the `MatchedLoan.sequence` it
+    /// was minted from).
     pub matched_loan_sequence: u64,
 
+    /// Borrower's recorded marginfi liability-share count; used for
+    /// P2Pool live-outstanding lookups.
     pub borrower_marginfi_borrow_shares: u128,
+    /// Reserved snapshot of marginfi's debt index at last accrual.
     pub debt_index_at_last_accrual: u128,
 
+    /// Atoms borrowed at origination (the fixed principal).
     pub principal_debt_atoms: u64,
+    /// Atoms still owed by the borrower, inclusive of accrued interest.
     pub outstanding_debt_atoms: u64,
+    /// Atoms the lender can claim (principal share + lender-net
+    /// interest).
     pub lender_claimable_atoms: u64,
+    /// Collateral encumbered by this loan.
     pub collateral_atoms: u64,
+    /// Spread-side interest accumulated for the protocol.
     pub accumulated_protocol_fee_atoms: u64,
+    /// Curator-side fee accumulated when the lender is a risk profile.
     pub accumulated_curator_fee_atoms: u64,
 
+    /// Unix-ts when the loan started.
     pub started_at_unix: i64,
+    /// Unix-ts when the fixed term expires; after this plus the grace
+    /// period the loan becomes settle-eligible.
     pub matures_at_unix: i64,
+    /// Unix-ts of the last accrual pass.
     pub last_accrued_unix: i64,
 
+    /// Lender's seat index in the market's seat tree.
     pub lender_seat_index: DataIndex,
+    /// Borrower's seat index in the market's seat tree.
     pub borrower_seat_index: DataIndex,
 
+    /// Effective borrower interest rate (max of bid rate and lender rate
+    /// + protocol floor).
     pub borrower_rate_bps: u16,
+    /// Effective lender interest rate.
     pub lender_rate_bps: u16,
+    /// One of the [`LoanState`] discriminants encoded as `u8`.
     pub state: u8,
+    /// One of the [`LoanType`] discriminants encoded as `u8`.
     pub loan_type: u8,
+    /// Match-time flags carried over from the source `MatchedLoan`.
     pub flags: u8,
+    /// Layout version stamped at creation.
     pub version: u8,
+    /// PDA bump.
     pub bump: u8,
 
+    /// Lender's `owner_kind` tag (user wallet vs risk profile).
     pub lender_kind: u8,
 
+    /// Lender risk-profile id when `lender_kind == OWNER_KIND_RISK_PROFILE`.
     pub lender_profile_id: u8,
 
     _reserved_byte: u8,
 
+    /// Curator fee in bps captured at match time; frozen for the life of
+    /// the loan even if the market's fee config changes.
     pub curator_fee_bps_snapshot: u16,
     _padding1: [u8; 2],
 
+    /// Lender's global-vault pubkey when the lender is a risk profile.
     pub lender_global_vault: Pubkey,
 
+    /// Principal portion physically retired by all partial resolutions.
     pub principal_retired_atoms: u64,
 
+    /// Running total of lender gross interest accrued over the loan's
+    /// life; used for path-independent curator-fee math.
     pub cumulative_lender_gross_interest_atoms: u64,
 
-    pub lender_debt_share_price_snapshot_fp48: u128,
+    /// Lender-side debt share price at match time. Lets repay convert
+    /// retired atoms back to vault shares at the original basis.
+    pub lender_debt_share_price_snapshot_fp48: crate::math::Fp48,
 
-    pub borrower_collateral_share_price_snapshot_fp48: u128,
+    /// Borrower-side collateral share price at match time.
+    pub borrower_collateral_share_price_snapshot_fp48: crate::math::Fp48,
 }
 
 const_assert_eq!(size_of::<LoanFixed>(), LOAN_FIXED_SIZE);
@@ -139,6 +210,8 @@ impl YdeltaAccount for LoanFixed {
 impl hypertree::Get for LoanFixed {}
 
 impl LoanFixed {
+    /// Errors with `InvalidArgument` if `self.state` does not decode to
+    /// `expected`.
     pub fn assert_state(&self, expected: LoanState) -> ProgramResult {
         let actual = LoanState::from_u8(self.state)?;
         require!(
@@ -151,18 +224,24 @@ impl LoanFixed {
         Ok(())
     }
 
+    /// `true` iff the loan is currently `LoanState::Active`. Errors when
+    /// the on-account byte does not decode.
     pub fn is_active(&self) -> Result<bool, ProgramError> {
         Ok(matches!(self.loan_state()?, LoanState::Active))
     }
 
+    /// `true` iff the loan is currently `LoanState::Repaid`. Errors when
+    /// the on-account byte does not decode.
     pub fn is_repaid(&self) -> Result<bool, ProgramError> {
         Ok(matches!(self.loan_state()?, LoanState::Repaid))
     }
 
+    /// Decode `self.loan_type` into the strongly-typed enum.
     pub fn loan_type(&self) -> Result<LoanType, ProgramError> {
         LoanType::from_u8(self.loan_type)
     }
 
+    /// Decode `self.state` into the strongly-typed enum.
     pub fn loan_state(&self) -> Result<LoanState, ProgramError> {
         LoanState::from_u8(self.state)
     }
@@ -190,12 +269,16 @@ impl PartialEq for LoanFixed {
 
 impl Eq for LoanFixed {}
 
+/// Derives the loan PDA for `(market, sequence)` and its bump.
 pub fn loan_pda(market: &Pubkey, sequence: u64) -> (Pubkey, u8) {
     let seq_le = sequence.to_le_bytes();
     Pubkey::find_program_address(&[LOAN_SEED, market.as_ref(), &seq_le], &crate::ID)
 }
 
 impl LoanFixed {
+    /// Thin wrapper that calls [`Self::new_from_matched_loan_with_lender`]
+    /// with the lender-vault fields zeroed; used by paths where the
+    /// lender is a user wallet.
     #[allow(clippy::too_many_arguments)]
     pub fn new_from_matched_loan(
         market: Pubkey,
@@ -214,8 +297,8 @@ impl LoanFixed {
         flags: u8,
         loan_type: LoanType,
         borrower_marginfi_borrow_shares: u128,
-        lender_debt_share_price_snapshot_fp48: u128,
-        borrower_collateral_share_price_snapshot_fp48: u128,
+        lender_debt_share_price_snapshot_fp48: crate::math::Fp48,
+        borrower_collateral_share_price_snapshot_fp48: crate::math::Fp48,
     ) -> Self {
         Self::new_from_matched_loan_with_lender(
             market,
@@ -243,6 +326,9 @@ impl LoanFixed {
         )
     }
 
+    /// Build a fresh `LoanFixed` from a settled `MatchedLoan`. Stamps
+    /// `state = Active`, `last_accrued_unix = matched_at_unix`, and
+    /// derives `matures_at_unix` as `started + term_seconds`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_from_matched_loan_with_lender(
         market: Pubkey,
@@ -265,8 +351,8 @@ impl LoanFixed {
         lender_profile_id: u8,
         lender_global_vault: Pubkey,
         curator_fee_bps_snapshot: u16,
-        lender_debt_share_price_snapshot_fp48: u128,
-        borrower_collateral_share_price_snapshot_fp48: u128,
+        lender_debt_share_price_snapshot_fp48: crate::math::Fp48,
+        borrower_collateral_share_price_snapshot_fp48: crate::math::Fp48,
     ) -> Self {
         let started_at_unix = matched_at_unix;
         let matures_at_unix = started_at_unix.saturating_add(term_seconds as i64);
@@ -309,6 +395,12 @@ impl LoanFixed {
     }
 }
 
+/// Apply simple-interest accrual on a fixed-term loan from
+/// `last_accrued_unix` up to `now`. P2Pool loans are a no-op here — their
+/// outstanding is read live from marginfi via [`super::ltv::loan_live_outstanding_atoms`].
+/// Splits accrued interest into lender-net, curator-fee, and protocol-fee
+/// buckets in a path-independent way (cumulative-at-now minus
+/// cumulative-at-prior). Hard-errors on time rewinds.
 pub fn accrue_loan(loan: &mut LoanFixed, now: i64, _grace_period_seconds: u32) -> ProgramResult {
     if now == loan.last_accrued_unix {
         return Ok(());
@@ -438,6 +530,10 @@ pub fn accrue_loan(loan: &mut LoanFixed, now: i64, _grace_period_seconds: u32) -
     Ok(())
 }
 
+/// Of `settlement_atoms` paid against this loan, returns how many atoms
+/// correspond to principal (vs accrued interest), scaled proportionally
+/// against `outstanding_debt_atoms`. Settles full when settlement covers
+/// the whole outstanding.
 pub fn principal_portion_of_settlement(
     loan: &LoanFixed,
     settlement_atoms: u64,
@@ -462,6 +558,10 @@ pub fn principal_portion_of_settlement(
     Ok(raw.min(principal_remaining).min(u64::MAX as u128) as u64)
 }
 
+/// Enforces the loan's bucket-conservation invariant:
+/// `lender_claimable + protocol_fee + curator_fee ==
+///  outstanding_debt + principal_retired`. Run before and after every
+/// resolution to surface accounting drift immediately.
 pub fn assert_loan_conservation(loan: &LoanFixed) -> ProgramResult {
     let claim_side = loan
         .lender_claimable_atoms
@@ -488,6 +588,11 @@ pub fn assert_loan_conservation(loan: &LoanFixed) -> ProgramResult {
     Ok(())
 }
 
+/// Apply `repaid` atoms against the loan and return the
+/// `(lender, protocol, curator)` portion split. On a full close-out
+/// returns the actual remaining claimable in each bucket; on a partial
+/// resolution slices proportionally against accumulated fees. Asserts
+/// conservation on entry and exit.
 pub fn apply_partial_resolution(
     loan: &mut LoanFixed,
     repaid: u64,
@@ -588,7 +693,7 @@ mod tests {
     use super::*;
 
     fn fresh_loan() -> LoanFixed {
-        const SHARE_VALUE_ONE: u128 = 1u128 << 48;
+        const SHARE_VALUE_ONE: crate::math::Fp48 = crate::math::Fp48::ONE;
         LoanFixed::new_from_matched_loan(
             Pubkey::default(),
             42,

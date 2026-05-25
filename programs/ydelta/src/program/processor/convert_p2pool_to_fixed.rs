@@ -1,4 +1,7 @@
-//! Convert a P2Pool fallback loan into fixed loan exposure.
+//! `ConvertP2PoolToFixed` instruction. Borrower-gated refinance of a
+//! P2Pool (marginfi-variable) loan into one or more vault-funded
+//! fixed-rate loans by crossing resting vault asks. Must-full-fill at
+//! the rate cap; the original P2Pool PDA closes on full conversion.
 
 use std::cell::RefMut;
 
@@ -27,6 +30,7 @@ use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::get_mut_dynamic_account;
 
+/// Parameters for [`process_convert_p2pool_to_fixed`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct ConvertP2PoolToFixedParams {
     /// Reject any ask whose `rate_bps` exceeds this value. Bounds the
@@ -37,6 +41,10 @@ pub struct ConvertP2PoolToFixedParams {
     pub max_acceptable_rate_bps: u16,
 }
 
+/// Refinance a P2Pool loan into vault-funded fixed loans. Signer must
+/// own the source loan's borrower seat. Crosses resting asks up to
+/// `max_acceptable_rate_bps`; aborts if cumulative fills don't equal
+/// the live marginfi liability. Closes the P2Pool PDA on full conversion.
 pub fn process_convert_p2pool_to_fixed(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -147,13 +155,20 @@ pub fn process_convert_p2pool_to_fixed(
     let debt_oracle_args = crate::validation::oracle_price_args(debt_bank.info, &debt_oracle_ais);
     let collateral_oracle_args =
         crate::validation::oracle_price_args(collateral_bank.info, &collateral_oracle_ais);
-    let debt_oracle_price_fp48: u128 = MarginfiV18Adapter.oracle_price(&debt_oracle_args)?;
-    let collateral_oracle_price_fp48: u128 =
-        MarginfiV18Adapter.oracle_price(&collateral_oracle_args)?;
-    let (_debt_asset_init, debt_liability_weight_init_fp48) =
+    // Adapter calls still return raw u128 fp48; wrap at the boundary so the
+    // P2PoolMatchArgs fields (now [`Fp48`]) get the type-safe payload.
+    let debt_oracle_price_fp48: crate::math::Fp48 =
+        crate::math::Fp48::from_raw(MarginfiV18Adapter.oracle_price(&debt_oracle_args)?);
+    let collateral_oracle_price_fp48: crate::math::Fp48 =
+        crate::math::Fp48::from_raw(MarginfiV18Adapter.oracle_price(&collateral_oracle_args)?);
+    let (_debt_asset_init, debt_liability_weight_init_raw) =
         MarginfiV18Adapter.init_weight(&[debt_bank.info.clone()])?;
-    let (collateral_asset_weight_init_fp48, _coll_liab_init) =
+    let debt_liability_weight_init_fp48 =
+        crate::math::Fp48::from_raw(debt_liability_weight_init_raw);
+    let (collateral_asset_weight_init_raw, _coll_liab_init) =
         MarginfiV18Adapter.init_weight(&[collateral_bank.info.clone()])?;
+    let collateral_asset_weight_init_fp48 =
+        crate::math::Fp48::from_raw(collateral_asset_weight_init_raw);
     let (ltv_buffer_bps, debt_mint_decimals, collateral_mint_decimals): (u16, u8, u8) = {
         let m = market.get_fixed()?;
         (
@@ -500,11 +515,10 @@ pub fn process_convert_p2pool_to_fixed(
                 .total_weighted_net_rate_bps
                 .checked_add(net_weighted_delta)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            // `saturating_sub` mirrors `do_vault_settle`: the matching
-            // accept bumped `encumbered_in_orders_atoms` by exactly this
-            // `principal`.
-            profile.encumbered_in_orders_atoms =
-                profile.encumbered_in_orders_atoms.saturating_sub(principal);
+            profile.encumbered_in_orders_atoms = profile
+                .encumbered_in_orders_atoms
+                .checked_sub(principal)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
         }
     }
 

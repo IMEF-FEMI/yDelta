@@ -1,3 +1,8 @@
+//! Builds the `YdeltaInstruction::SettleMaturedLoan` instruction:
+//! permissionless keeper repays up to `repay_atoms_max` of a loan that's
+//! past `matures_at + grace` and seizes proportional collateral; full
+//! repay closes the loan PDA.
+
 use solana_program::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -11,6 +16,11 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
+/// Builds the `SettleMaturedLoan` instruction for loan `(market, sequence)`.
+/// `payer` (signer) is the settler; `liquidator_debt_token` funds the repay
+/// and `liquidator_collateral_token` receives collateral. `repay_atoms_max`
+/// caps the repay in debt-token atoms. `global_vault` must be `Some` for
+/// Fixed loans and `None` for P2Pool loans.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_matured_loan_instruction(
     market: &Pubkey,

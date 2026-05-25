@@ -32,3 +32,19 @@ export const NIL_DATA_INDEX = 0xffff_ffff;
 
 /** Origination / liquidation fee scaling factor. */
 export const BPS_PER_UNIT = 10_000n;
+
+/**
+ * Sentinel value stored on `RiskProfile.max_ltv_bps` when the profile was
+ * created with `max_ltv_bps = None`. Resolved at match time by the program
+ * to `floor(coll_asset_weight / debt_liability_weight × 10_000)` minus
+ * {@link LTV_AUTO_BUFFER_BPS}, using the live marginfi bank weights.
+ *
+ * Wire value: `u16::MAX` = 0xFFFF = 65535.
+ */
+export const LTV_AUTO_FROM_MARGINFI = 0xffff;
+
+/**
+ * Subtracted from the marginfi-derived LTV when `max_ltv_bps` is the auto
+ * sentinel. Mirrors `state::constants::LTV_AUTO_BUFFER_BPS` (500 bps = 5%).
+ */
+export const LTV_AUTO_BUFFER_BPS = 500;

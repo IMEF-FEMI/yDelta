@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::SyncMarketPosition` instruction:
+//! permissionless copy of a market `ClaimedSeat`'s balances onto the
+//! matching `MarketPosition` row in the owner's `UserAccountFixed`.
+
 use solana_program::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -7,6 +11,9 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::user_account::user_account_pda;
 
+/// Builds the `SyncMarketPosition` instruction. `payer` (signer) is the
+/// permissionless caller; `owner` is the seat owner whose `UserAccountFixed`
+/// row gets refreshed against `market`.
 pub fn sync_market_position_instruction(
     market: &Pubkey,
     payer: &Pubkey,

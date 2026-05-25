@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::UpdateOrderForRiskProfile` instruction:
+//! curator-gated cancel-and-replace of a vault ask in a single transaction
+//! with a fresh order sequence.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -10,6 +14,10 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
+/// Builds the `UpdateOrderForRiskProfile` instruction. `curator` must sign;
+/// `fee_payer` covers tx fees. Replaces the `profile_id` resting ask on
+/// `market` with `new_rate_bps` (basis points), `new_term_seconds`
+/// (seconds), and `new_flags`.
 #[allow(clippy::too_many_arguments)]
 pub fn update_order_for_risk_profile_instruction(
     mint: &Pubkey,

@@ -126,7 +126,7 @@ describe('e2e: authz negative paths (non-admin/non-curator attempts)', () => {
             curator: outsider.publicKey, // not the real curator
             mint: USDC_MINT,
             market: market.publicKey,
-            profileId: 0,
+            profileId: 1,
             rateBps: 500,
             termSeconds: 30 * 86_400,
           }),
@@ -147,7 +147,7 @@ describe('e2e: authz negative paths (non-admin/non-curator attempts)', () => {
             curator: outsider.publicKey,
             mint: USDC_MINT,
             market: market.publicKey,
-            profileId: 0,
+            profileId: 1,
           }),
         ],
         [outsider],

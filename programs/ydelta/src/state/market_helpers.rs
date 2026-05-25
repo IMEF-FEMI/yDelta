@@ -1,3 +1,10 @@
+//! Mutation primitives over the market account's dynamic region: seat
+//! balance bookkeeping, free-list allocation, the order-matching engine
+//! (`match_order`, `match_borrower_bid`), risk-profile ask placement
+//! (`rest_vault_ask`), and the P2Pool residual refinance scan
+//! (`match_p2pool_residual_against_asks`). Each function pairs a
+//! `MarketFixed` mutator with a `&mut [u8]` view of the tree region.
+
 use hypertree::{
     is_not_nil, DataIndex, FreeList, HyperTreeReadOperations, HyperTreeValueIteratorTrait,
     HyperTreeWriteOperations, RedBlackTreeReadOnly, NIL,
@@ -20,8 +27,13 @@ use crate::state::vault::{
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 
+/// One-atom dust cushion subtracted from per-profile idle capacity at
+/// match time so the lender pool stays one atom above marginfi's
+/// share-rounding floor.
 pub const MARGINFI_ROUNDING_RESERVE_ATOMS: u64 = 1;
 
+/// Pops a block off the market's free list and returns its index, or
+/// `NIL` when the list is empty.
 pub fn get_free_address_on_market_fixed(fixed: &mut MarketFixed, dynamic: &mut [u8]) -> DataIndex {
     let mut free_list: FreeList<MarketUnusedFreeListPadding> =
         FreeList::new(dynamic, fixed.free_list_head_index);
@@ -30,6 +42,7 @@ pub fn get_free_address_on_market_fixed(fixed: &mut MarketFixed, dynamic: &mut [
     free_address
 }
 
+/// Allocator alias used at seat-claim sites.
 pub fn get_free_address_on_market_fixed_for_seat(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -37,6 +50,7 @@ pub fn get_free_address_on_market_fixed_for_seat(
     get_free_address_on_market_fixed(fixed, dynamic)
 }
 
+/// Allocator alias used at ask-rest sites.
 pub fn get_free_address_on_market_fixed_for_ask_order(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -44,6 +58,7 @@ pub fn get_free_address_on_market_fixed_for_ask_order(
     get_free_address_on_market_fixed(fixed, dynamic)
 }
 
+/// Allocator alias used at matched-loan insert sites.
 pub fn get_free_address_on_market_fixed_for_matched_loan(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -51,6 +66,7 @@ pub fn get_free_address_on_market_fixed_for_matched_loan(
     get_free_address_on_market_fixed(fixed, dynamic)
 }
 
+/// Pushes `index` back onto the market's free list.
 pub fn release_address_on_market_fixed(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -62,6 +78,9 @@ pub fn release_address_on_market_fixed(
     fixed.free_list_head_index = free_list.get_head();
 }
 
+/// Grows the market's dynamic region by one block, pushing the new
+/// block's address onto the free list. Caller is responsible for first
+/// realloc'ing the underlying account.
 pub fn market_expand(fixed: &mut MarketFixed, dynamic: &mut [u8]) -> ProgramResult {
     let mut free_list: FreeList<MarketUnusedFreeListPadding> =
         FreeList::new(dynamic, fixed.free_list_head_index);
@@ -74,21 +93,31 @@ pub fn market_expand(fixed: &mut MarketFixed, dynamic: &mut [u8]) -> ProgramResu
     Ok(())
 }
 
+/// Selects which axis (debt or collateral) of a `ClaimedSeat` to mutate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BalanceAxis {
+    /// The debt-side shares fields.
     Debt,
+    /// The collateral-side shares fields.
     Collateral,
 }
 
+/// Selects which bucket (withdrawable or encumbered) of a `ClaimedSeat`
+/// to mutate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BalanceBucket {
+    /// Free balance, transferable out.
     Withdrawable,
+    /// Locked balance backing an open order or active loan.
     Encumbered,
 }
 
+/// Direction of a balance update.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BalanceSign {
+    /// Add to the selected bucket.
     Plus,
+    /// Subtract from the selected bucket.
     Minus,
 }
 
@@ -120,17 +149,25 @@ fn update_balance(
     Ok(())
 }
 
-pub const PLACEHOLDER_SHARE_PRICE_FP48: u128 = 1u128 << 48;
+/// Identity share-price (`1.0` in fp48) used where a real share price is
+/// not yet wired in.
+pub const PLACEHOLDER_SHARE_PRICE_FP48: crate::math::Fp48 = crate::math::Fp48::ONE;
 
+/// Converts a u64 atom count to I80F48-scaled shares at the given share
+/// price snapshot. Errors with `MathDivisionByZero` on a zero snapshot.
+/// Result keeps the `value × 2^48` scale used by `ClaimedSeat.*_shares`.
 pub fn atoms_to_shares_at_snapshot(
     atoms: u64,
-    snapshot_fp48: u128,
+    snapshot: crate::math::Fp48,
 ) -> Result<u128, ProgramError> {
-    if snapshot_fp48 == 0 {
+    if snapshot.is_zero() {
         return Err(crate::program::YdeltaError::MathDivisionByZero.into());
     }
-    let atoms_fp48 = crate::math::to_scaled(atoms as u128)?;
-    crate::math::div_scale(atoms_fp48, snapshot_fp48)
+    // Result is I80F48-scaled shares (real_shares × 2^48). Stays raw u128
+    // for now because the seat's `*_shares` fields are still u128; they
+    // will be ported to [`Fp48`] in a follow-up stage.
+    let atoms_fp48 = crate::math::Fp48::from_atoms(atoms);
+    Ok(atoms_fp48.checked_div(snapshot)?.raw())
 }
 
 fn encumber_for_order(
@@ -238,7 +275,6 @@ fn unencumber_for_order(
 /// moved without the loan-close accounting that should have decremented
 /// `encumbered`), and silently clamping the release would permanently
 /// strand the difference (neither released to withdrawable nor seized).
-///
 pub fn release_loan_collateral(
     dynamic: &mut [u8],
     seat_index: DataIndex,
@@ -266,6 +302,9 @@ pub fn release_loan_collateral(
     Ok(())
 }
 
+/// Resolves the user seat index for `signer`, validating a client-supplied
+/// `hint` when present. Falls back to a tree lookup when the hint is
+/// missing or invalid; errors with `NoSeatClaimed` when there is no seat.
 pub fn get_seat_index_with_hint(
     fixed: &MarketFixed,
     dynamic: &[u8],
@@ -293,53 +332,92 @@ pub fn get_seat_index_with_hint(
     Ok(idx)
 }
 
+/// Inputs to [`match_order`]; one struct per call so the engine doesn't
+/// take a 14-argument signature.
 #[derive(Clone, Copy)]
 pub struct MatchArgs {
+    /// Market the match runs against.
     pub market_pubkey: Pubkey,
+    /// Taker's seat index in the market.
     pub taker_seat_index: DataIndex,
 
+    /// Side the taker is on (currently always `Bid`).
     pub side: Side,
+    /// Taker's quoted rate.
     pub rate_bps: u16,
+    /// Taker's requested term.
     pub term_seconds: u32,
+    /// Taker's principal to fill.
     pub principal_atoms: u64,
+    /// Taker's collateral attached to the bid.
     pub collateral_atoms: u64,
+    /// Taker order type (controls residual handling).
     pub order_type: OrderType,
+    /// Now-timestamp for expiry checks.
     pub now_unix_ts: i64,
+    /// Market-level protocol-fee floor applied to the lender rate.
     pub fee_floor_bps: u16,
 
-    pub taker_share_price_snapshot_fp48: u128,
+    /// Taker-side share-price snapshot used when minting MatchedLoan
+    /// nodes.
+    pub taker_share_price_snapshot_fp48: crate::math::Fp48,
 
-    pub debt_oracle_price_fp48: u128,
+    /// Debt-side oracle price for LTV gating.
+    pub debt_oracle_price_fp48: crate::math::Fp48,
 
-    pub collateral_oracle_price_fp48: u128,
+    /// Collateral-side oracle price for LTV gating.
+    pub collateral_oracle_price_fp48: crate::math::Fp48,
 
-    pub debt_liability_weight_init_fp48: u128,
+    /// Marginfi `liability_weight_init` for the debt bank.
+    pub debt_liability_weight_init_fp48: crate::math::Fp48,
 
-    pub collateral_asset_weight_init_fp48: u128,
+    /// Marginfi `asset_weight_init` for the collateral bank.
+    pub collateral_asset_weight_init_fp48: crate::math::Fp48,
 
+    /// When `true`, gate each fill on the LTV requirement; otherwise
+    /// match without an oracle check.
     pub enforce_ltv: bool,
 }
 
+/// Output of a single [`match_order`] / [`match_borrower_bid`] call.
 #[derive(Default, Clone)]
 pub struct MatchResult {
+    /// Principal left unmatched after the scan.
     pub remaining_principal: u64,
+    /// Collateral left attached to the residual.
     pub remaining_collateral: u64,
+    /// Principal that successfully filled against resting asks.
     pub total_filled_principal: u64,
+    /// Number of resting orders consumed.
     pub num_fills: u32,
 
+    /// What to do with the residual (set by `match_borrower_bid` based
+    /// on the `FLAG_OB_ONLY` bit).
     pub residual_action: ResidualAction,
 }
 
+/// What the placement path does with an unfilled residual.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResidualAction {
+    /// Cancel the leftover and unwind its encumbrance.
     #[default]
     Drop,
 
+    /// Open a P2Pool (variable-rate marginfi-backed) loan for the
+    /// residual.
     P2PoolBorrow,
 }
 
+/// Per-order flag: when set on a borrower bid, the residual is dropped
+/// rather than spilling into a P2Pool loan.
 pub const FLAG_OB_ONLY: u8 = 0b0000_0010;
 
+/// Walks the ask bookside from best to worst rate, filling against
+/// risk-profile makers up to the taker's principal. Mutates seat counters
+/// and the profile's `encumbered_in_orders_atoms`, emits
+/// `MatchedLoanCreated` logs, and inserts a `MatchedLoan` node per fill.
+/// `vault_ai` is the resting-ask vault account; passing `None` skips
+/// every fill (used in tests).
 pub fn match_order(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -420,12 +498,16 @@ pub fn match_order(
                     0
                 } else {
                     let p = get_helper_risk_profile(vault_dyn, idx).get_value();
-                    profile_max_ltv_bps = p.max_ltv_bps;
-                    profile_max_term_seconds = p.max_term_seconds;
-                    p.total_principal_atoms
-                        .saturating_sub(p.deployed_principal_atoms)
-                        .saturating_sub(p.encumbered_in_orders_atoms)
-                        .saturating_sub(MARGINFI_ROUNDING_RESERVE_ATOMS)
+                    if p.is_sunset != 0 {
+                        0
+                    } else {
+                        profile_max_ltv_bps = p.max_ltv_bps;
+                        profile_max_term_seconds = p.max_term_seconds;
+                        p.total_principal_atoms
+                            .saturating_sub(p.deployed_principal_atoms)
+                            .saturating_sub(p.encumbered_in_orders_atoms)
+                            .saturating_sub(MARGINFI_ROUNDING_RESERVE_ATOMS)
+                    }
                 }
             };
             if profile_idle == 0 {
@@ -490,16 +572,23 @@ pub fn match_order(
                 required_collateral
             )?;
 
-            if profile_max_ltv_bps > 0 {
+            let effective_profile_max_ltv_bps =
+                crate::state::ltv::effective_max_ltv_bps_for_profile(
+                    profile_max_ltv_bps,
+                    args.collateral_asset_weight_init_fp48,
+                    args.debt_liability_weight_init_fp48,
+                )?;
+            if effective_profile_max_ltv_bps > 0 {
                 let collateral_asset_weight_fp48 =
-                    crate::math::to_scaled(profile_max_ltv_bps as u128)? / 10_000u128;
+                    crate::math::to_scaled(effective_profile_max_ltv_bps as u128)?
+                        / 10_000u128;
                 let required_at_profile_cap =
                     crate::state::ltv::get_required_quote_collateral_to_back_debt(
                         matched_principal,
                         args.debt_oracle_price_fp48,
                         args.collateral_oracle_price_fp48,
-                        crate::math::SCALE,
-                        collateral_asset_weight_fp48,
+                        crate::math::Fp48::ONE,
+                        crate::math::Fp48::from_raw(collateral_asset_weight_fp48),
                         0,
                         fixed.debt_mint_decimals,
                         fixed.collateral_mint_decimals,
@@ -507,10 +596,10 @@ pub fn match_order(
                 require!(
                     total_collateral_for_match >= required_at_profile_cap,
                     YdeltaError::CollateralBelowMatchLTV,
-                    "matched collateral {} < required {} at profile LTV cap {} bps",
+                    "matched collateral {} < required {} at profile LTV cap {} bps (effective)",
                     total_collateral_for_match,
                     required_at_profile_cap,
-                    profile_max_ltv_bps
+                    effective_profile_max_ltv_bps
                 )?;
             }
         }
@@ -634,6 +723,9 @@ fn next_maker_index(fixed: &MarketFixed, dynamic: &[u8], current: DataIndex) -> 
     tree.get_next_lower_index::<RestingOrder>(current)
 }
 
+/// Removes the ask at `order_index` from the bookside tree and returns
+/// its block to the free list. Caller is responsible for any seat-side
+/// unencumber that the order required.
 pub fn remove_order_from_tree_and_free(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -651,10 +743,15 @@ fn mul_div_u64(a: u64, b: u64, c: u64) -> Result<u64, ProgramError> {
 }
 
 impl<'a> MarketRefMut<'a> {
+    /// Convenience wrapper that claims a seat with `risk_profile_id = 0`
+    /// (the user-seat default).
     pub fn claim_seat(&mut self, owner: &Pubkey, owner_kind: u8) -> ProgramResult {
         self.claim_seat_with_profile(owner, owner_kind, 0)
     }
 
+    /// Inserts a fresh, zeroed `ClaimedSeat` into the market's seat tree.
+    /// Errors with `AlreadyClaimedSeat` when one already exists for the
+    /// `(owner, owner_kind, risk_profile_id)` triple.
     pub fn claim_seat_with_profile(
         &mut self,
         owner: &Pubkey,
@@ -689,6 +786,8 @@ impl<'a> MarketRefMut<'a> {
         Ok(())
     }
 
+    /// Adds `shares` to the seat's withdrawable bucket on the chosen
+    /// axis (`is_debt` selects debt vs collateral).
     pub fn deposit_to_seat(
         &mut self,
         seat_index: DataIndex,
@@ -711,6 +810,9 @@ impl<'a> MarketRefMut<'a> {
         )
     }
 
+    /// Removes `shares` from the seat's withdrawable bucket on the
+    /// chosen axis; errors with `InsufficientWithdrawableBalance` when
+    /// the bucket is too small.
     pub fn withdraw_from_seat(
         &mut self,
         seat_index: DataIndex,
@@ -733,6 +835,7 @@ impl<'a> MarketRefMut<'a> {
         )
     }
 
+    /// Reads the seat's withdrawable balance on the chosen axis.
     pub fn withdrawable_shares_for_seat(&self, seat_index: DataIndex, is_debt: bool) -> u128 {
         let MarketRefMut { dynamic, .. } = self;
         let seat = get_helper_seat(dynamic, seat_index).get_value();
@@ -743,6 +846,9 @@ impl<'a> MarketRefMut<'a> {
         }
     }
 
+    /// Inserts an ask `order` at `order_index` into the market's
+    /// bookside tree. Errors with `InvalidArgument` if a bid is supplied
+    /// (bids cannot rest in the quote-only model).
     pub fn rest_order(&mut self, order_index: DataIndex, order: RestingOrder) -> ProgramResult {
         let MarketRefMut { fixed, dynamic } = self;
         require!(
@@ -760,49 +866,80 @@ impl<'a> MarketRefMut<'a> {
     }
 }
 
+/// Inputs to [`match_borrower_bid`] — the borrower-side place_order
+/// driver that bundles encumbrance, match, and residual handling.
 #[derive(Clone, Copy)]
 pub struct PlaceOrderArgs {
+    /// Market the order is placed against.
     pub market_pubkey: Pubkey,
+    /// Taker's seat index in the market.
     pub taker_seat_index: DataIndex,
 
+    /// Side (always `Bid` for borrowers).
     pub side: Side,
 
+    /// Order type semantics.
     pub order_type: OrderType,
+    /// Quoted bid rate.
     pub rate_bps: u16,
+    /// Loan term in seconds.
     pub term_seconds: u32,
+    /// Principal to fill.
     pub principal_atoms: u64,
+    /// Collateral attached to the bid.
     pub collateral_atoms: u64,
+    /// Order flags (e.g. [`FLAG_OB_ONLY`]).
     pub flags: u8,
+    /// Now-timestamp.
     pub now_unix_ts: i64,
 
-    pub share_price_snapshot_fp48: u128,
+    /// Taker-side share-price snapshot.
+    pub share_price_snapshot_fp48: crate::math::Fp48,
 
-    pub debt_oracle_price_fp48: u128,
-    pub collateral_oracle_price_fp48: u128,
-    pub debt_liability_weight_init_fp48: u128,
-    pub collateral_asset_weight_init_fp48: u128,
+    /// Debt oracle price.
+    pub debt_oracle_price_fp48: crate::math::Fp48,
+    /// Collateral oracle price.
+    pub collateral_oracle_price_fp48: crate::math::Fp48,
+    /// Marginfi `liability_weight_init` for the debt bank.
+    pub debt_liability_weight_init_fp48: crate::math::Fp48,
+    /// Marginfi `asset_weight_init` for the collateral bank.
+    pub collateral_asset_weight_init_fp48: crate::math::Fp48,
 
+    /// Gate match fills on the LTV requirement.
     pub enforce_ltv: bool,
 }
 
+/// Inputs to [`rest_vault_ask`].
 #[derive(Clone, Copy)]
 pub struct RestVaultAskArgs {
+    /// Market the ask is placed against.
     pub market_pubkey: Pubkey,
 
+    /// Curator's risk-profile seat index in the market.
     pub maker_seat_index: DataIndex,
+    /// Quoted ask rate.
     pub rate_bps: u16,
+    /// Loan term in seconds.
     pub term_seconds: u32,
+    /// Order flags.
     pub flags: u8,
+    /// Now-timestamp.
     pub now_unix_ts: i64,
 }
 
+/// Output of [`match_borrower_bid`].
 #[derive(Clone)]
 pub struct PlaceOrderResult {
+    /// Per-market order sequence assigned to this placement.
     pub sequence: u64,
+    /// Underlying match outcome.
     pub match_result: MatchResult,
 
+    /// `MatchedLoan` index for the P2Pool residual, or `NIL` if none.
     pub p2pool_loan_index: DataIndex,
 
+    /// Sequence assigned to the P2Pool residual `MatchedLoan` (0 when
+    /// none).
     pub p2pool_loan_sequence: u64,
 }
 
@@ -817,6 +954,10 @@ impl Default for PlaceOrderResult {
     }
 }
 
+/// Borrower-side place_order driver. Encumbers the taker's collateral
+/// and principal-shadow on its seat, runs [`match_order`], then either
+/// opens a P2Pool `MatchedLoan` for the residual (when `OB_ONLY` is off)
+/// or unwinds the residual encumbrance.
 pub fn match_borrower_bid(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -1005,6 +1146,10 @@ pub fn match_borrower_bid(
     })
 }
 
+/// Rests a curator's risk-profile ask on the book. Vault asks are
+/// unbounded (`principal_atoms = u64::MAX`) and zero-collateral: the
+/// per-fill cap comes from the profile's idle balance at match time.
+/// Returns the assigned per-market order sequence.
 pub fn rest_vault_ask(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -1066,13 +1211,16 @@ pub fn rest_vault_ask(
         0,
         super::constants::NO_EXPIRATION_LAST_VALID_UNIX_TS,
         args.flags,
-        0,
+        crate::math::Fp48::ZERO,
     );
     let mut market = MarketRefMut { fixed, dynamic };
     market.rest_order(order_index, resting)?;
     Ok(seq)
 }
 
+/// Locates the ask owned by `trader_seat_index` with `sequence_number ==
+/// sequence`. Validates a client-supplied `hint` when present, then falls
+/// back to a tree scan; errors with `OrderNotFound` when missing.
 pub fn lookup_order_by_seq(
     fixed: &MarketFixed,
     dynamic: &[u8],
@@ -1103,6 +1251,11 @@ pub fn lookup_order_by_seq(
     Err(YdeltaError::OrderNotFound.into())
 }
 
+/// Cancels the ask at `order_index`. For risk-profile asks decrements
+/// `open_lend_count`; for user asks unencumbers the seat's debt /
+/// collateral shares using the order's stored share-price snapshot.
+/// Errors with `OrderNotOwnedBySigner` when the caller's seat doesn't
+/// own the order.
 pub fn cancel_order_by_index(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -1142,58 +1295,95 @@ pub fn cancel_order_by_index(
     Ok(())
 }
 
+/// Inputs to [`match_p2pool_residual_against_asks`] — the engine that
+/// converts an open P2Pool loan into one or more fixed-term loans by
+/// matching against resting risk-profile asks.
 pub struct MatchP2PoolRefinanceArgs {
+    /// Market the refinance runs against.
     pub market_pubkey: Pubkey,
 
+    /// Borrower's seat index in the market.
     pub borrower_seat_index: DataIndex,
 
+    /// Maximum principal to refinance.
     pub principal_cap_atoms: u64,
 
+    /// Collateral attached to the original P2Pool loan; sliced
+    /// proportionally to each fill.
     pub loan_collateral_atoms: u64,
 
-    pub borrower_collateral_share_price_snapshot_fp48: u128,
+    /// Borrower-side collateral share-price snapshot to stamp on each
+    /// minted `MatchedLoan`.
+    pub borrower_collateral_share_price_snapshot_fp48: crate::math::Fp48,
 
+    /// Remaining time on the borrower's intended fixed term.
     pub term_remaining_seconds: u32,
 
+    /// Highest rate the borrower will accept; asks above this break the
+    /// scan.
     pub max_acceptable_rate_bps: u16,
 
+    /// Market protocol-fee floor applied to the lender rate.
     pub fee_floor_bps: u16,
+    /// Now-timestamp.
     pub now_unix_ts: i64,
 
-    pub debt_oracle_price_fp48: u128,
+    /// Debt oracle price.
+    pub debt_oracle_price_fp48: crate::math::Fp48,
 
-    pub collateral_oracle_price_fp48: u128,
+    /// Collateral oracle price.
+    pub collateral_oracle_price_fp48: crate::math::Fp48,
 
-    pub debt_liability_weight_init_fp48: u128,
+    /// Marginfi `liability_weight_init` for the debt bank.
+    pub debt_liability_weight_init_fp48: crate::math::Fp48,
 
-    pub collateral_asset_weight_init_fp48: u128,
+    /// Marginfi `asset_weight_init` for the collateral bank.
+    pub collateral_asset_weight_init_fp48: crate::math::Fp48,
 
+    /// LTV top-up buffer in bps.
     pub ltv_buffer_bps: u16,
 
+    /// Debt mint decimals.
     pub debt_mint_decimals: u8,
 
+    /// Collateral mint decimals.
     pub collateral_mint_decimals: u8,
 }
 
+/// One fill produced by [`match_p2pool_residual_against_asks`]; the
+/// processor uses these to drive per-lender marginfi accounting.
 #[derive(Clone, Copy)]
 pub struct P2PoolRefinanceCross {
+    /// Lender risk-profile id that filled.
     pub lender_profile_id: u8,
 
+    /// Effective lender rate.
     pub lender_rate_bps: u16,
 
+    /// Principal filled by this cross.
     pub filled_principal_atoms: u64,
 }
 
+/// Output of [`match_p2pool_residual_against_asks`].
 #[derive(Default)]
 pub struct MatchP2PoolRefinanceResult {
+    /// Total principal that crossed.
     pub total_filled_principal_atoms: u64,
 
+    /// Total collateral that crossed.
     pub total_filled_collateral_atoms: u64,
+    /// Number of fills produced.
     pub num_fills: u32,
 
+    /// Per-cross detail, one entry per fill.
     pub crosses: Vec<P2PoolRefinanceCross>,
 }
 
+/// Variant of [`match_order`] that targets an existing P2Pool loan. Walks
+/// the ask book, mints one pre-settled `MatchedLoan` per fill (carrying
+/// the `VAULT_PRESETTLED | VAULT_LENDER` flags), and returns enough
+/// per-cross detail for `convert_p2pool_to_fixed` to do the marginfi
+/// share transfers itself.
 pub fn match_p2pool_residual_against_asks(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
@@ -1265,11 +1455,15 @@ pub fn match_p2pool_residual_against_asks(
                     0
                 } else {
                     let p = get_helper_risk_profile(vault_dyn, idx).get_value();
-                    profile_max_ltv_bps = p.max_ltv_bps;
-                    p.total_principal_atoms
-                        .saturating_sub(p.deployed_principal_atoms)
-                        .saturating_sub(p.encumbered_in_orders_atoms)
-                        .saturating_sub(MARGINFI_ROUNDING_RESERVE_ATOMS)
+                    if p.is_sunset != 0 {
+                        0
+                    } else {
+                        profile_max_ltv_bps = p.max_ltv_bps;
+                        p.total_principal_atoms
+                            .saturating_sub(p.deployed_principal_atoms)
+                            .saturating_sub(p.encumbered_in_orders_atoms)
+                            .saturating_sub(MARGINFI_ROUNDING_RESERVE_ATOMS)
+                    }
                 }
             };
             if profile_idle == 0 {
@@ -1305,16 +1499,23 @@ pub fn match_p2pool_residual_against_asks(
                     required_collateral
                 )?;
 
-                if profile_max_ltv_bps > 0 {
+                let effective_profile_max_ltv_bps =
+                    crate::state::ltv::effective_max_ltv_bps_for_profile(
+                        profile_max_ltv_bps,
+                        args.collateral_asset_weight_init_fp48,
+                        args.debt_liability_weight_init_fp48,
+                    )?;
+                if effective_profile_max_ltv_bps > 0 {
                     let collateral_asset_weight_fp48 =
-                        crate::math::to_scaled(profile_max_ltv_bps as u128)? / 10_000u128;
+                        crate::math::to_scaled(effective_profile_max_ltv_bps as u128)?
+                            / 10_000u128;
                     let required_at_profile_cap =
                         crate::state::ltv::get_required_quote_collateral_to_back_debt(
                             matched_principal,
                             args.debt_oracle_price_fp48,
                             args.collateral_oracle_price_fp48,
-                            crate::math::SCALE,
-                            collateral_asset_weight_fp48,
+                            crate::math::Fp48::ONE,
+                            crate::math::Fp48::from_raw(collateral_asset_weight_fp48),
                             0,
                             args.debt_mint_decimals,
                             args.collateral_mint_decimals,

@@ -1,3 +1,8 @@
+//! Per-trader seat that lives in a market's red-black tree. Holds the
+//! seat owner's withdrawable / encumbered balances on both axes (debt and
+//! collateral) plus counters for open lend and borrow positions. One seat
+//! per `(owner, owner_kind, risk_profile_id)` triple.
+
 use std::cmp::Ordering;
 use std::mem::size_of;
 
@@ -8,23 +13,40 @@ use static_assertions::const_assert_eq;
 
 use super::constants::CLAIMED_SEAT_SIZE;
 
+/// `owner_kind` tag for seats owned by an end-user wallet.
 pub const OWNER_KIND_USER: u8 = 0;
+/// `owner_kind` tag for seats owned by a risk profile inside a
+/// `GlobalVault`. The `owner` field then stores the vault PDA.
 pub const OWNER_KIND_RISK_PROFILE: u8 = 1;
 
+/// Per-trader seat held in a market's claimed-seat red-black tree.
+/// Balance fields are I80F48-scaled (`real_shares × 2^48`) so they match
+/// the share-price representation used elsewhere.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct ClaimedSeat {
+    /// For user seats, the wallet pubkey; for risk-profile seats, the
+    /// global-vault pubkey.
     pub owner: Pubkey,
 
+    /// Debt-axis balance available for withdraw or for posting new asks.
     pub debt_withdrawable_shares: u128,
+    /// Debt-axis balance locked behind a resting ask or active loan.
     pub debt_encumbered_shares: u128,
+    /// Collateral-axis balance available to back new bids.
     pub collateral_withdrawable_shares: u128,
+    /// Collateral-axis balance locked behind active loans.
     pub collateral_encumbered_shares: u128,
 
+    /// Number of loans this seat currently borrows on (one per loan,
+    /// independent of seat count).
     pub open_borrow_count: u32,
+    /// Number of resting asks plus active loans this seat lends on.
     pub open_lend_count: u32,
 
+    /// One of [`OWNER_KIND_USER`] or [`OWNER_KIND_RISK_PROFILE`].
     pub owner_kind: u8,
+    /// 0 for user seats; the profile id for risk-profile seats.
     pub risk_profile_id: u8,
 
     _padding: [u8; 6],
@@ -36,6 +58,9 @@ const_assert_eq!(size_of::<ClaimedSeat>(), CLAIMED_SEAT_SIZE);
 const_assert_eq!(size_of::<ClaimedSeat>() % 8, 0);
 
 impl ClaimedSeat {
+    /// Build a seat with all balance and counter fields zeroed. Used for
+    /// both insert and tree-lookup probes; equality only checks the
+    /// identity triple, not the balances.
     pub fn new_empty(owner: Pubkey, owner_kind: u8, risk_profile_id: u8) -> Self {
         ClaimedSeat {
             owner,

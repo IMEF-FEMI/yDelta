@@ -414,7 +414,7 @@ describe('instruction builders — discriminator tags + key positions', () => {
       curator: ADMIN,
       mint: DEBT_MINT,
       market: MARKET,
-      profileId: 0,
+      profileId: 1,
       rateBps: 750,
       termSeconds: 30 * 86_400,
     });

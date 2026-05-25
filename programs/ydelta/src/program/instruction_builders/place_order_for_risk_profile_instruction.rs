@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::PlaceOrderForRiskProfile` instruction:
+//! curator rests an unbounded vault ask on a market, auto-creating the
+//! per-(profile, market) seat and `RiskProfileOrderRef` on first call.
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -10,6 +14,10 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
+/// Builds the `PlaceOrderForRiskProfile` instruction. `curator` must sign;
+/// `fee_payer` covers tx fees. Posts an unbounded ask for `profile_id` on
+/// `market`, charging `rate_bps` (basis points) for a max term of
+/// `term_seconds` (seconds). `flags` carries the order option bitmask.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_for_risk_profile_instruction(
     mint: &Pubkey,

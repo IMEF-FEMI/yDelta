@@ -1,3 +1,8 @@
+//! `GlobalVaultDeposit` instruction. Lender deposits atoms into a risk
+//! profile, minting profile shares pro-rata against
+//! `profile.total_assets_atoms`. Atoms route through the vault staging
+//! account into marginfi. Rejects when `profile.is_sunset != 0`.
+
 use std::cell::RefMut;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -22,12 +27,19 @@ use crate::state::vault::{
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, USER_ACCOUNT_FIXED_SIZE, VAULT_NODE_BLOCK_SIZE};
 use crate::validation::loaders::GlobalVaultDepositContext;
 
+/// Parameters for [`process_global_vault_deposit`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct GlobalVaultDepositParams {
+    /// Atoms of the vault's mint to deposit. Must be `> 0`.
     pub amount_atoms: u64,
+    /// Identifies the destination risk profile.
     pub profile_id: u8,
 }
 
+/// Deposit atoms into a risk profile and mint pro-rata shares. Accrues
+/// the profile, computes shares against `total_assets_atoms`, updates
+/// the depositor seat + `UserAccountFixed` vault position, and emits
+/// `GlobalVaultDepositLog`. Errors with `VaultProfileSunset` when sunset.
 pub fn process_global_vault_deposit(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -154,6 +166,13 @@ pub fn process_global_vault_deposit(
 
         let (shares, total_shares_after, total_assets_after, snapshot_supply, snapshot_delta) = {
             let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+            require!(
+                profile.is_sunset == 0,
+                YdeltaError::VaultProfileSunset,
+                "global_vault_deposit: profile_id {} is sunset; new deposits are rejected \
+                 during wind-down (existing depositors may still withdraw)",
+                params.profile_id
+            )?;
             let share_value_fp48 =
                 crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info)?;
             accrue_risk_profile(profile, now, share_value_fp48)?;

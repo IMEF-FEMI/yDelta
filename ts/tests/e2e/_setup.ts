@@ -155,8 +155,9 @@ export async function setupVault(bk: BankrunHandle, admin: Keypair): Promise<voi
 /**
  * Insert a single risk profile with the given curator + policy. The
  * profile's `profile_id` is assigned by the program (monotonic
- * `next_profile_id` counter) — on a fresh vault the first create lands
- * at id 0, the second at id 1, and so on.
+ * `next_profile_id` counter, 1-based) — on a fresh vault the first
+ * create lands at id 1, the second at id 2, and so on. Id 0 is the
+ * sentinel/invalid value and is never assigned.
  *
  * The `opts.profileId` hint is accepted for callsite readability but is
  * no longer threaded into the ix; the on-chain assignment is what
@@ -273,7 +274,7 @@ export async function driveToMatchLanded(
         lendingPool: USDC_BANK,
         liquidityVault: USDC_LIQUIDITY_VAULT,
         marginfiProgram: MARGINFI_PROGRAM_ID,
-        profileId: 0,
+        profileId: 1,
         amountAtoms: vaultDepositAtoms,
       }),
     ],
@@ -288,7 +289,7 @@ export async function driveToMatchLanded(
         curator: curator.publicKey,
         mint: USDC_MINT,
         market: market.publicKey,
-        profileId: 0,
+        profileId: 1,
         rateBps: askRateBps,
         termSeconds,
       }),

@@ -1,3 +1,8 @@
+//! `CheckLtvLiquidatable` and `CheckMaturityLiquidatable` instructions.
+//! Permissionless read-only gates that mirror the trigger checks used
+//! by `liquidate_loan` / `settle_matured_loan`. They mutate nothing
+//! on-chain; `Ok(())` means the loan is liquidatable under that path.
+
 use solana_program::{
     account_info::AccountInfo, clock::Clock, entrypoint::ProgramResult, pubkey::Pubkey,
     sysvar::Sysvar,
@@ -8,6 +13,9 @@ use crate::require;
 use crate::state::loan::{accrue_loan, LoanFixed, LoanState, LOAN_FIXED_SIZE};
 use crate::validation::loaders::{CheckLtvLiquidatableContext, CheckMaturityLiquidatableContext};
 
+/// Asserts the loan breaches the maintenance LTV threshold at current
+/// marginfi maint weights + oracle prices. Returns `Ok(())` only when
+/// `liquidate_loan` would also accept the trigger; errors otherwise.
 pub fn process_check_ltv_liquidatable(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -69,6 +77,9 @@ pub fn process_check_ltv_liquidatable(
     )
 }
 
+/// Asserts the loan is past `matures_at + grace_period` with non-zero
+/// live outstanding debt. Returns `Ok(())` only when
+/// `settle_matured_loan` would also accept the trigger.
 pub fn process_check_maturity_liquidatable(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],

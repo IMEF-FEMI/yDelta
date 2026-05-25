@@ -1,6 +1,6 @@
 // Match-time LTV math. Port of
 // programs/ydelta/src/state/ltv.rs::get_required_quote_collateral_to_back_debt.
-import { FP48_SHIFT } from './constants.js';
+import { FP48_SHIFT, LTV_AUTO_BUFFER_BPS, LTV_AUTO_FROM_MARGINFI } from './constants.js';
 
 const FP48_ONE = 1n << FP48_SHIFT;
 const U64_MAX = (1n << 64n) - 1n;
@@ -104,6 +104,56 @@ export function maxBorrowAtoms(args: MaxBorrowInputs): bigint {
 
   const atoms = normalizedFp48 >> FP48_SHIFT;
   return atoms > U64_MAX ? U64_MAX : atoms;
+}
+
+/**
+ * Marginfi-derived max LTV in bps:
+ * `floor((coll_asset_weight / debt_liability_weight) × 10_000)`.
+ * Returns 0 on degenerate input (zero debt liability weight); the caller's
+ * `effective > 0` gate then skips the profile-cap check.
+ *
+ * Port of `state::ltv::marginfi_implied_max_ltv_bps`.
+ */
+export function marginfiImpliedMaxLtvBps(
+  collateralAssetWeightInitFp48: bigint,
+  debtLiabilityWeightInitFp48: bigint,
+): number {
+  if (debtLiabilityWeightInitFp48 === 0n) return 0;
+  const ratioFp48 = (collateralAssetWeightInitFp48 << FP48_SHIFT) / debtLiabilityWeightInitFp48;
+  const bpsFp48 = ratioFp48 * 10_000n;
+  const bps = bpsFp48 >> FP48_SHIFT;
+  return bps > 0xffffn ? 0xffff : Number(bps);
+}
+
+/**
+ * Resolve a profile's stored `max_ltv_bps` into the effective cap the
+ * match engine enforces:
+ *   - explicit cap → returned as-is.
+ *   - {@link LTV_AUTO_FROM_MARGINFI} sentinel → `marginfiImpliedMaxLtvBps(...)
+ *     - LTV_AUTO_BUFFER_BPS`, saturating at 0.
+ *
+ * Mirrors `state::ltv::effective_max_ltv_bps_for_profile`. Use the result
+ * with an `effective > 0` gate (matching the on-chain branch) before
+ * comparing collateral to the profile-cap required-collateral.
+ */
+export function effectiveMaxLtvBpsForProfile(
+  profileMaxLtvBps: number,
+  collateralAssetWeightInitFp48: bigint,
+  debtLiabilityWeightInitFp48: bigint,
+): number {
+  if (profileMaxLtvBps === LTV_AUTO_FROM_MARGINFI) {
+    const implied = marginfiImpliedMaxLtvBps(
+      collateralAssetWeightInitFp48,
+      debtLiabilityWeightInitFp48,
+    );
+    return Math.max(0, implied - LTV_AUTO_BUFFER_BPS);
+  }
+  return profileMaxLtvBps;
+}
+
+/** `true` when the profile was created with `max_ltv_bps = None` (sentinel stored). */
+export function isLtvAuto(profileMaxLtvBps: number): boolean {
+  return profileMaxLtvBps === LTV_AUTO_FROM_MARGINFI;
 }
 
 // Bps representation of the LTV a (principal, collateral) pair would record.

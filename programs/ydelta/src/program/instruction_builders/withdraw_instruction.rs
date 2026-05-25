@@ -1,3 +1,7 @@
+//! Builds the `YdeltaInstruction::Withdraw` instruction: burns the signer's
+//! market seat shares back to a wallet ATA. Either a fixed atom count or
+//! a "drain all on this side" sentinel via `withdraw_all`.
+
 use borsh::BorshSerialize;
 use hypertree::DataIndex;
 use solana_program::{
@@ -15,6 +19,11 @@ use crate::validation::{
     get_market_signer_address, get_vault_address,
 };
 
+/// Builds the `Withdraw` instruction for `market`. `payer` (signer) owns
+/// the seat. `mint` selects the side (debt vs collateral, picked against
+/// `debt_mint`); `liquidity_vault` + `bank_liquidity_vault_authority` drive
+/// the marginfi withdraw. `amount_atoms` is the withdraw in token atoms;
+/// `withdraw_all = true` drains the seat side regardless of `amount_atoms`.
 #[allow(clippy::too_many_arguments)]
 pub fn withdraw_instruction(
     market: &Pubkey,

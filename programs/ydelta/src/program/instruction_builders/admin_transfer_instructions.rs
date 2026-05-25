@@ -1,3 +1,8 @@
+//! Builds the two-step admin-handoff instructions for market, global-vault,
+//! and per-profile curator roles (`TransferMarketAdmin` / `AcceptMarketAdmin`
+//! / `TransferGlobalVaultAdmin` / `AcceptGlobalVaultAdmin` / `TransferCurator`
+//! / `AcceptCurator`).
+
 use borsh::BorshSerialize;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -12,6 +17,8 @@ use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
+/// Builds the `TransferMarketAdmin` instruction. `current_admin` (signer)
+/// stamps `new_admin` into `market.pending_admin`.
 pub fn transfer_market_admin_instruction(
     market: &Pubkey,
     current_admin: &Pubkey,
@@ -34,6 +41,8 @@ pub fn transfer_market_admin_instruction(
     }
 }
 
+/// Builds the `AcceptMarketAdmin` instruction. `pending_admin` (signer)
+/// finalizes the handoff and becomes the new market admin.
 pub fn accept_market_admin_instruction(market: &Pubkey, pending_admin: &Pubkey) -> Instruction {
     Instruction {
         program_id: crate::id(),
@@ -46,6 +55,9 @@ pub fn accept_market_admin_instruction(market: &Pubkey, pending_admin: &Pubkey) 
     }
 }
 
+/// Builds the `TransferGlobalVaultAdmin` instruction for the vault keyed by
+/// `mint`. `current_admin` (signer) stamps `new_admin` into the vault's
+/// `pending_admin`.
 pub fn transfer_global_vault_admin_instruction(
     mint: &Pubkey,
     current_admin: &Pubkey,
@@ -69,6 +81,8 @@ pub fn transfer_global_vault_admin_instruction(
     }
 }
 
+/// Builds the `AcceptGlobalVaultAdmin` instruction for the vault keyed by
+/// `mint`. `pending_admin` (signer) finalizes the handoff.
 pub fn accept_global_vault_admin_instruction(mint: &Pubkey, pending_admin: &Pubkey) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
     Instruction {
@@ -82,6 +96,9 @@ pub fn accept_global_vault_admin_instruction(mint: &Pubkey, pending_admin: &Pubk
     }
 }
 
+/// Builds the `TransferCurator` instruction for the `profile_id` curator
+/// role on the vault keyed by `mint`. `current_curator` (signer) stamps
+/// `new_curator` into the profile's `pending_curator`.
 pub fn transfer_curator_instruction(
     mint: &Pubkey,
     current_curator: &Pubkey,
@@ -107,6 +124,9 @@ pub fn transfer_curator_instruction(
     }
 }
 
+/// Builds the `AcceptCurator` instruction for the `profile_id` curator role
+/// on the vault keyed by `mint`. `pending_curator` (signer) finalizes the
+/// handoff.
 pub fn accept_curator_instruction(
     mint: &Pubkey,
     pending_curator: &Pubkey,
