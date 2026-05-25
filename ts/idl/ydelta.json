@@ -1,7 +1,7 @@
 {
   "version": "0.1.0",
   "name": "ydelta",
-  "programId": "A1fNwJV5C2BTKWcnHmaELNq2TLB11UP7mp9P7q4ahWnu",
+  "programId": "Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas",
   "description": "Quote-only fixed-rate lending on Solana. 41 instructions, tags 0..=40. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` and read raw byte offsets.",
   "conventions": {
     "instructionDataHeader": "1-byte u8 tag (see `tag` per instruction). Tail is borsh-encoded except for `SettleMaturedLoan` and `LiquidateLoan`, whose tail is a bare little-endian u64 (`repay_atoms_max`).",

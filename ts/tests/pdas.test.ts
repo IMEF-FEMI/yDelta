@@ -75,7 +75,7 @@ describe('PDA derivations', () => {
   it('all PDAs are owned by the yDelta program id', () => {
     // PDAs derive against YDELTA_PROGRAM_ID by construction — sanity-check
     // that the constant matches what we expect.
-    expect(YDELTA_PROGRAM_ID.toBase58()).toBe('A1fNwJV5C2BTKWcnHmaELNq2TLB11UP7mp9P7q4ahWnu');
+    expect(YDELTA_PROGRAM_ID.toBase58()).toBe('Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas');
   });
 
   it('bump values are in 0..=255', () => {

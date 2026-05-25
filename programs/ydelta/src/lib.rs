@@ -90,7 +90,7 @@ security_txt! {
     source_code: "https://github.com/imef-femi/yDelta"
 }
 
-declare_id!("A1fNwJV5C2BTKWcnHmaELNq2TLB11UP7mp9P7q4ahWnu");
+declare_id!("Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas");
 
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program::entrypoint!(process_instruction);
