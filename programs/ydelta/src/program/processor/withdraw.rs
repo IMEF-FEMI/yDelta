@@ -142,6 +142,18 @@ pub fn process_withdraw(
     let expected_atoms: u64 =
         MarginfiV18Adapter.shares_to_amount(&[bank.info.clone()], expected_shares)?;
 
+    // On drain-all, zero the seat by burning the FULL seat balance even
+    // when marginfi's actual is a few atoms lower. The leftover dust
+    // shares represent atoms that never backed in marginfi (deposit-time
+    // floor rounding); writing them off is what the user expects when
+    // they hit Max. For amount-driven, burn only what we actually pulled
+    // — leaving the user the option to clean up dust via a later drain.
+    let seat_burn_shares: u128 = if params.withdraw_all {
+        seat_withdrawable_shares
+    } else {
+        expected_shares
+    };
+
     {
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let mut da = get_mut_dynamic_account::<MarketFixed>(market_data);
@@ -152,7 +164,7 @@ pub fn process_withdraw(
             params.trader_index_hint,
         )?;
 
-        da.withdraw_from_seat(seat_index, expected_shares, is_debt)?;
+        da.withdraw_from_seat(seat_index, seat_burn_shares, is_debt)?;
     }
 
     let active_pairs = build_active_bank_oracle_pairs(
