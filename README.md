@@ -12,7 +12,7 @@ yarn add @ydelta/sdk
 npm install @ydelta/sdk
 ```
 
-Peers `@solana/web3.js ^1.95`.
+Works with `@solana/web3.js ^1.95`.
 
 ## Quickstart
 
@@ -105,6 +105,8 @@ Taken together: yDelta prices credit on the orderbook, backstops it with marginf
 Most lending protocols pool deposits and let the protocol set one risk model for everyone. yDelta prices credit on an orderbook instead — but only one side rests.
 
 **Only vault risk-profile curators quote.** The book holds nothing but lender asks, and every ask belongs to a `RiskProfile` inside a `GlobalVault`. Each profile carries a curator-set `max_ltv_bps` — the lender-side LTV ceiling — and a `max_term_seconds` cap. The matching engine reads `max_ltv_bps` **live** from the profile at match time, so a curator's policy change takes effect immediately with no per-seat re-sync.
+
+**Auto-LTV.** A profile can also opt out of an explicit cap (`max_ltv_bps = None` at creation, stored as the `LTV_AUTO_FROM_MARGINFI` sentinel). The matcher then derives the cap from the live marginfi bank weights at fill time as `floor(coll_asset_weight / debt_liability_weight × 10_000) − LTV_AUTO_BUFFER_BPS` (default 500 bps). A profile that follows marginfi's risk parameters never needs the curator to track bank-config changes manually.
 
 **Borrowers fill, they don't rest.** A borrow request is an immediate-or-cancel (IOC) bid. It crosses resting risk-profile asks in the same transaction; whatever it doesn't fill either routes to the P2Pool fallback or drops. There is no resting borrower order, no bids tree, and no off-chain matchmaker.
 
@@ -319,11 +321,11 @@ loan.last_accrued_unix            = now
 
 Spread between borrower rate and lender rate accrues to a market-level protocol-fee bucket, drained periodically by the market admin.
 
-**7. Borrower repays.** `repay(loan, atoms)`. Atoms route to the lender's `GlobalVault`; the loan's `outstanding_debt_atoms` decrements. On full repay the borrower's collateral is released back to their seat.
+**7. Borrower repays.** `repay(loan, atoms)`. Atoms route into the per-market lender marginfi account via `marginfi.deposit`; the loan's `outstanding_debt_atoms` decrements. On **full** repay the same instruction (a) credits the vault-owned seat's `debt_withdrawable_shares` with the repaid asset shares, (b) decrements the risk profile's `deployed_principal_atoms`, weighted-rate accumulators, and curator-fee accumulator, (c) bumps `profile.pending_claim_atoms` so a permissionless sweeper knows there's something to claim, (d) sweeps the per-loan protocol-fee bucket onto the market accumulator, and (e) closes the loan PDA — refunding rent to the keeper from step 5. The borrower's collateral encumbrance is released back to their seat.
 
-**8. The vault lender realises the repayment.** A permissionless cranker calls `claim_repayment_for_risk_profile(loan)`. It shifts the lender's seat shares from encumbered → withdrawable, sweeps the loan-body protocol fee onto the market accumulator, drains the realised atoms back into the vault's marginfi account, updates `idle_principal_atoms` / `deployed_principal_atoms`, and closes the loan PDA. Rent is returned to the keeper from step 5.
+**8. The vault sweeps the repaid atoms.** A permissionless cranker calls `claim_repayment_for_risk_profile(profile_id)` on the relevant `(market, vault, profile)` triple. This is a **stateless seat-to-vault sweeper** — it never reads the loan PDA, never re-accrues, and never touches profile-level accounting. It just `marginfi.withdraw`s the vault seat's `debt_withdrawable_shares` from the per-market lender marginfi account into the vault's own `global_vault_integration_account` (so the atoms can back new asks), and decrements `profile.pending_claim_atoms` by the swept amount.
 
-**9. Or, if the borrower stops responding…** A keeper invokes `settle_matured_loan` (after maturity + grace period) or `liquidate_loan` (if collateral falls below maintenance LTV at oracle prices). Both accept `repay_atoms_max` for partial settlements; both seize collateral, pay off the lender's vault, and return any surplus to the borrower's seat.
+**9. Or, if the borrower stops responding…** A keeper invokes `settle_matured_loan` (after maturity + grace period) or `liquidate_loan` (if collateral falls below maintenance LTV at oracle prices). Both accept `repay_atoms_max` for partial settlements; both seize collateral, pay off the lender's vault, and return any surplus to the borrower's seat. On full close they run the same per-loan close-out as step 7 — the cranker's sweeper in step 8 then realises the atoms.
 
 ---
 
@@ -449,15 +451,22 @@ Workspace layout:
 
 ```
 .
-├── yDelta/
-│   └── README.md
+├── README.md
 ├── programs/
 │   ├── ydelta/                       # The ydelta on-chain program
-│   ├── ydelta-test-harness/          # Test harness program (retiring)
+│   ├── ydelta-test-harness/          # SBF test harness program
 │   └── marginfi-mocks/               # marginfi v0.1.8 type mocks
 ├── lib/                              # Shared libs (hypertree)
+├── ts/
+│   ├── src/                          # `@ydelta/sdk` TypeScript source
+│   ├── idl/ydelta.json               # IDL shipped with the npm package
+│   ├── scripts/                      # Operator scripts (bootstrap, cranks, debug)
+│   └── tests/                        # SDK + integration tests
+├── dist/                             # Built SDK output (npm publish target)
 └── scripts/
     ├── build-program.sh
+    ├── deploy-program.sh
+    ├── upgrade-program.sh
     └── test.sh
 ```
 
