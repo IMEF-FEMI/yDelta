@@ -1,9 +1,27 @@
 {
   "name": "@ydelta/sdk",
   "version": "0.1.0",
-  "description": "TypeScript SDK for yDelta — quote-only fixed-rate lending on Solana",
+  "description": "TypeScript SDK for yDelta — fixed-term, quote-based lending on Solana, marginfi-backed",
   "license": "Apache-2.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IMEF-FEMI/yDelta.git",
+    "directory": "ts"
+  },
+  "homepage": "https://github.com/IMEF-FEMI/yDelta#readme",
+  "bugs": "https://github.com/IMEF-FEMI/yDelta/issues",
+  "keywords": [
+    "solana",
+    "ydelta",
+    "lending",
+    "fixed-rate",
+    "marginfi",
+    "defi"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "resolutions": {
     "@solana/web3.js@npm:1.77.4/rpc-websockets": "7.5.1"
   },
@@ -13,11 +31,11 @@
   "files": [
     "dist/",
     "ts/idl/",
-    "ts/src/",
-    "ts/README.md"
+    "README.md"
   ],
   "scripts": {
     "build": "rimraf dist && tsc -p tsconfig.json",
+    "prepublishOnly": "yarn build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "format": "prettier --write 'ts/**/*.ts' 'ts/**/*.json'",
     "lint": "eslint 'ts/**/*.ts'",

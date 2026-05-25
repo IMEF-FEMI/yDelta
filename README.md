@@ -2,6 +2,45 @@
 
 **Optimized fixed-rate lending on Solana.**
 
+> This README is published on npm as the docs for [`@ydelta/sdk`](https://www.npmjs.com/package/@ydelta/sdk). The protocol explainer is below; the install + SDK-usage quickstart is here.
+
+## `@ydelta/sdk` — install
+
+```bash
+yarn add @ydelta/sdk
+# or
+npm install @ydelta/sdk
+```
+
+Peers `@solana/web3.js ^1.95`.
+
+## Quickstart
+
+```ts
+import { Connection, PublicKey } from '@solana/web3.js';
+import {
+  YDELTA_PROGRAM_ID,
+  fetchMarket,
+  fetchVault,
+  placeOrderInstruction,
+} from '@ydelta/sdk';
+
+const conn = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
+const market = await fetchMarket(conn, new PublicKey('9mSq5qvdKPJdNE8T8UMALrkuLxisw9eed87z33sWCUcv'));
+const vault  = await fetchVault(conn, market.header.debtMint);
+```
+
+The SDK ships:
+
+- **Instruction builders** for every yDelta instruction (`placeOrderInstruction`, `repayInstruction`, `convertP2poolToFixedInstruction`, …).
+- **Account decoders** (`decodeMarket`, `decodeGlobalVault`, `decodeLoanFixed`, …) over the raw `getAccountInfo` bytes.
+- **Helpers** for LTV math, marginfi share/atom conversion, oracle price reads.
+- **The IDL** (`ts/idl/ydelta.json`) for off-chain tooling.
+
+See the on-chain program under `programs/ydelta/` and the source under `ts/src/` in the [GitHub repo](https://github.com/IMEF-FEMI/yDelta).
+
+---
+
 yDelta runs a **quote-only** orderbook: the book holds only lender
 quotes, and those quotes come only from vault risk-profile curators.
 Borrowers do not rest orders — a borrow request is immediate-fill (IOC)
