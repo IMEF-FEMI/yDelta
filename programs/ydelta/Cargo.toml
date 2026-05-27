@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "Fixed-rate / fixed-term lending protocol with risk-tiered orderbook on Solana"
 
+# Read by `solana-verify` so `scripts/build-verifiable.sh` and
+# `scripts/verify-program.sh` don't need the program id passed each call.
+# Update this in lockstep with `declare_id!` in src/lib.rs.
+[package.metadata.solana]
+program-id = "Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas"
+
 [lib]
 crate-type = ["cdylib", "lib"]
 name = "ydelta"

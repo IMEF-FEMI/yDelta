@@ -1,0 +1,3053 @@
+{
+  "address": "Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas",
+  "metadata": {
+    "name": "ydelta",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Quote-only fixed-rate lending on Solana. 41 instructions, tags 0..=40. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` and read raw byte offsets."
+  },
+  "instructions": [
+    {
+      "name": "createMarket",
+      "discriminator": [
+        0
+      ],
+      "accounts": [
+        {
+          "name": "marketCreator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram2022",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "lenderMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "borrowerMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "protocolFeeBpsFloor",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "originationBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "curatorSplitBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "curatorFeeBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "liquidationKeeperBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "liquidationProtocolBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "ltvBufferBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "gracePeriodSeconds",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "claimSeat",
+      "discriminator": [
+        1
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit",
+      "discriminator": [
+        2
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "traderToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "mint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "bank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "liquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amountAtoms",
+          "type": "u64"
+        },
+        {
+          "name": "traderIndexHint",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [
+        3
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "traderToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "mint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "liquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "bankLiquidityVaultAuthority",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amountAtoms",
+          "type": "u64"
+        },
+        {
+          "name": "traderIndexHint",
+          "type": {
+            "option": "u32"
+          }
+        },
+        {
+          "name": "withdrawAll",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "placeOrder",
+      "discriminator": [
+        4
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "borrowerMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBankLiquidityVaultAuthority",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "borrowerDebtToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram (2)",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "lenderMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketDebtVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "seatIndexHint",
+          "type": {
+            "option": "u32"
+          }
+        },
+        {
+          "name": "flags",
+          "type": "u8"
+        },
+        {
+          "name": "rateBps",
+          "type": "u16"
+        },
+        {
+          "name": "termSeconds",
+          "type": "u32"
+        },
+        {
+          "name": "principalAtoms",
+          "type": "u64"
+        },
+        {
+          "name": "collateralAtoms",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "processMatchedLoan",
+      "discriminator": [
+        5
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "loan",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVaultSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultStaging",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVaultIntegrationAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketDebtVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketLenderIntegrationAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBankLiquidityVaultAuthority",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram (2)",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "matchedLoanSequence",
+          "type": "u64"
+        },
+        {
+          "name": "matchedLoanIndexHint",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "repay",
+      "discriminator": [
+        6
+      ],
+      "accounts": [
+        {
+          "name": "borrower",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "loan",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "borrowerToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "lenderMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "borrowerMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "crankerRefund",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "repayAtoms",
+          "type": "u64"
+        },
+        {
+          "name": "fullRepay",
+          "type": "bool"
+        },
+        {
+          "name": "borrowerSeatIndexHint",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "syncMarketPosition",
+      "discriminator": [
+        7
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "createVault",
+      "discriminator": [
+        8
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "mint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "integrationAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVaultStaging",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram2022",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "lendingPool",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "createRiskProfile",
+      "discriminator": [
+        9
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "curator",
+          "type": "pubkey"
+        },
+        {
+          "name": "maxLtvBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "maxTermSeconds",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "globalVaultDeposit",
+      "discriminator": [
+        10
+      ],
+      "accounts": [
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "mint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultStaging",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "depositorToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "integrationAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "lendingPool",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "liquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amountAtoms",
+          "type": "u64"
+        },
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "globalVaultWithdraw",
+      "discriminator": [
+        11
+      ],
+      "accounts": [
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "mint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultStaging",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "depositorToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "integrationAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "lendingPool",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "lendingPoolOracle",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "liquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "bankLiquidityVaultAuthority",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "sharesToBurn",
+          "type": "u128"
+        },
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "placeOrderForRiskProfile",
+      "discriminator": [
+        12
+      ],
+      "accounts": [
+        {
+          "name": "feePayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "curator",
+          "writable": false,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        },
+        {
+          "name": "rateBps",
+          "type": "u16"
+        },
+        {
+          "name": "termSeconds",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "cancelOrderForRiskProfile",
+      "discriminator": [
+        13
+      ],
+      "accounts": [
+        {
+          "name": "feePayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "curator",
+          "writable": false,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "updateOrderForRiskProfile",
+      "discriminator": [
+        14
+      ],
+      "accounts": [
+        {
+          "name": "feePayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "curator",
+          "writable": false,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        },
+        {
+          "name": "newRateBps",
+          "type": "u16"
+        },
+        {
+          "name": "newTermSeconds",
+          "type": "u32"
+        },
+        {
+          "name": "newFlags",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "claimCuratorFee",
+      "discriminator": [
+        15
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVaultSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultStaging",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vaultIntegration",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "curatorToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "liquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "bankLiquidityVaultAuthority",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "bankOracle",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "mint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settleMaturedLoan",
+      "discriminator": [
+        16
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "loan",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "liquidatorDebtToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "liquidatorCollateralToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketDebtVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketCollateralVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "lenderMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "borrowerMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralBankLva",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "crankerRefund",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "repayAtomsMax",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "liquidateLoan",
+      "discriminator": [
+        17
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "loan",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "liquidatorDebtToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "liquidatorCollateralToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketDebtVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketCollateralVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "lenderMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "borrowerMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "collateralBankLva",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "crankerRefund",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "repayAtomsMax",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "setFeeConfig",
+      "discriminator": [
+        18
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "protocolFeeBpsFloor",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "originationBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "curatorSplitBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "curatorFeeBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "liquidationKeeperBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "liquidationProtocolBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "ltvBufferBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "gracePeriodSeconds",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "protocolFeeClaim",
+      "discriminator": [
+        19
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "adminDebtToken",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketDebtVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "lenderMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBankLva",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claimRepaymentForRiskProfile",
+      "discriminator": [
+        20
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "loan",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVaultSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultStaging",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVaultIntegrationAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketDebtVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "lenderMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBankLva",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "bankOracle",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "crankerRefund",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "transferMarketAdmin",
+      "discriminator": [
+        21
+      ],
+      "accounts": [
+        {
+          "name": "currentAdmin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "newAdmin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "acceptMarketAdmin",
+      "discriminator": [
+        22
+      ],
+      "accounts": [
+        {
+          "name": "pendingAdmin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "transferGlobalVaultAdmin",
+      "discriminator": [
+        23
+      ],
+      "accounts": [
+        {
+          "name": "currentAdmin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "newAdmin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "acceptGlobalVaultAdmin",
+      "discriminator": [
+        24
+      ],
+      "accounts": [
+        {
+          "name": "pendingAdmin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "transferCurator",
+      "discriminator": [
+        25
+      ],
+      "accounts": [
+        {
+          "name": "currentCurator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        },
+        {
+          "name": "newCurator",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "acceptCurator",
+      "discriminator": [
+        26
+      ],
+      "accounts": [
+        {
+          "name": "pendingCurator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "setMarketPause",
+      "discriminator": [
+        27
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "createGlobalConfig",
+      "discriminator": [
+        28
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "programData",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "transferProtocolAdmin",
+      "discriminator": [
+        29
+      ],
+      "accounts": [
+        {
+          "name": "currentAdmin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "newAdmin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "acceptProtocolAdmin",
+      "discriminator": [
+        30
+      ],
+      "accounts": [
+        {
+          "name": "pendingAdmin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "setGlobalPause",
+      "discriminator": [
+        31
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "updateRiskProfile",
+      "discriminator": [
+        32
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        },
+        {
+          "name": "newMaxLtvBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "newMaxTermSeconds",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "convertP2PoolToFixed",
+      "discriminator": [
+        33
+      ],
+      "accounts": [
+        {
+          "name": "borrower",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "loan",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "borrowerMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "lenderMarginfiAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtLiquidityVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBankLva",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marketDebtVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtMint",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marketSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "tokenProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "globalVaultSigner",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "globalVaultIntegrationAccount",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "crankerRefund",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "maxAcceptableRateBps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "checkLtvLiquidatable",
+      "discriminator": [
+        34
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "loan",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "borrowerMarginfi",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "checkMaturityLiquidatable",
+      "discriminator": [
+        35
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "loan",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "borrowerMarginfi",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "setVaultPause",
+      "discriminator": [
+        36
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "removeRiskProfile",
+      "discriminator": [
+        37
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "sunsetRiskProfile",
+      "discriminator": [
+        38
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "resumeRiskProfile",
+      "discriminator": [
+        39
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "adminCancelRiskProfileOrder",
+      "discriminator": [
+        40
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "profileId",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "MarketFixed",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "GlobalConfig",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "GlobalVaultFixed",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "RiskProfile",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "RiskProfileDepositorSeat",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "RiskProfileOrderRef",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "ClaimedSeat",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "RestingOrder",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "MatchedLoan",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "LoanFixed",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "UserAccount",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 0,
+      "name": "InvalidMarketParameters",
+      "msg": "InvalidMarketParameters"
+    },
+    {
+      "code": 1,
+      "name": "InvalidDepositAccounts",
+      "msg": "InvalidDepositAccounts"
+    },
+    {
+      "code": 2,
+      "name": "InvalidWithdrawAccounts",
+      "msg": "InvalidWithdrawAccounts"
+    },
+    {
+      "code": 3,
+      "name": "InvalidCancel",
+      "msg": "InvalidCancel"
+    },
+    {
+      "code": 4,
+      "name": "InvalidFreeList",
+      "msg": "InvalidFreeList"
+    },
+    {
+      "code": 5,
+      "name": "AlreadyClaimedSeat",
+      "msg": "AlreadyClaimedSeat"
+    },
+    {
+      "code": 6,
+      "name": "PostOnlyWouldCross",
+      "msg": "PostOnlyWouldCross"
+    },
+    {
+      "code": 7,
+      "name": "OrderAlreadyExpired",
+      "msg": "OrderAlreadyExpired"
+    },
+    {
+      "code": 8,
+      "name": "WrongIndexHintParams",
+      "msg": "WrongIndexHintParams"
+    },
+    {
+      "code": 9,
+      "name": "Overflow",
+      "msg": "Overflow"
+    },
+    {
+      "code": 10,
+      "name": "IncorrectAccount",
+      "msg": "IncorrectAccount"
+    },
+    {
+      "code": 11,
+      "name": "InvalidMint",
+      "msg": "InvalidMint"
+    },
+    {
+      "code": 12,
+      "name": "NoSeatClaimed",
+      "msg": "NoSeatClaimed"
+    },
+    {
+      "code": 13,
+      "name": "SeatHasOpenObligations",
+      "msg": "SeatHasOpenObligations"
+    },
+    {
+      "code": 14,
+      "name": "InsufficientWithdrawableBalance",
+      "msg": "InsufficientWithdrawableBalance"
+    },
+    {
+      "code": 15,
+      "name": "RateBelowFloor",
+      "msg": "RateBelowFloor"
+    },
+    {
+      "code": 16,
+      "name": "TermNotCompatible",
+      "msg": "TermNotCompatible"
+    },
+    {
+      "code": 17,
+      "name": "CollateralInsufficient",
+      "msg": "CollateralInsufficient"
+    },
+    {
+      "code": 18,
+      "name": "Token2022UnsupportedExtension",
+      "msg": "Token2022UnsupportedExtension"
+    },
+    {
+      "code": 19,
+      "name": "OrderNotFound",
+      "msg": "OrderNotFound"
+    },
+    {
+      "code": 20,
+      "name": "OrderNotOwnedBySigner",
+      "msg": "OrderNotOwnedBySigner"
+    },
+    {
+      "code": 21,
+      "name": "InvalidArgument",
+      "msg": "InvalidArgument"
+    },
+    {
+      "code": 22,
+      "name": "MatchedLoanNotFound",
+      "msg": "MatchedLoanNotFound"
+    },
+    {
+      "code": 23,
+      "name": "SelfMatchForbidden",
+      "msg": "SelfMatchForbidden"
+    },
+    {
+      "code": 24,
+      "name": "CollateralBelowMatchLTV",
+      "msg": "CollateralBelowMatchLTV"
+    },
+    {
+      "code": 25,
+      "name": "VaultWrongMint",
+      "msg": "VaultWrongMint"
+    },
+    {
+      "code": 26,
+      "name": "VaultProfileNotFound",
+      "msg": "VaultProfileNotFound"
+    },
+    {
+      "code": 28,
+      "name": "VaultOrderTermExceedsProfileMax",
+      "msg": "VaultOrderTermExceedsProfileMax"
+    },
+    {
+      "code": 29,
+      "name": "VaultCuratorRequired",
+      "msg": "VaultCuratorRequired"
+    },
+    {
+      "code": 30,
+      "name": "VaultAdminRequired",
+      "msg": "VaultAdminRequired"
+    },
+    {
+      "code": 32,
+      "name": "VaultProfileOrderExists",
+      "msg": "VaultProfileOrderExists"
+    },
+    {
+      "code": 33,
+      "name": "VaultInsufficientIdleAtoms",
+      "msg": "VaultInsufficientIdleAtoms"
+    },
+    {
+      "code": 34,
+      "name": "VaultProfileNotEmpty",
+      "msg": "VaultProfileNotEmpty"
+    },
+    {
+      "code": 36,
+      "name": "VaultProfileIdExists",
+      "msg": "VaultProfileIdExists"
+    },
+    {
+      "code": 37,
+      "name": "VaultProfileLtvOutOfRange",
+      "msg": "VaultProfileLtvOutOfRange"
+    },
+    {
+      "code": 38,
+      "name": "VaultProfileTermInvalid",
+      "msg": "VaultProfileTermInvalid"
+    },
+    {
+      "code": 39,
+      "name": "LoanNotMatured",
+      "msg": "LoanNotMatured"
+    },
+    {
+      "code": 40,
+      "name": "LoanStillSolvent",
+      "msg": "LoanStillSolvent"
+    },
+    {
+      "code": 41,
+      "name": "LiquidatorPaymentInsufficient",
+      "msg": "LiquidatorPaymentInsufficient"
+    },
+    {
+      "code": 42,
+      "name": "LiquidationCollateralUnderflow",
+      "msg": "LiquidationCollateralUnderflow"
+    },
+    {
+      "code": 43,
+      "name": "MarketAdminRequired",
+      "msg": "MarketAdminRequired"
+    },
+    {
+      "code": 44,
+      "name": "InvalidFeeConfig",
+      "msg": "InvalidFeeConfig"
+    },
+    {
+      "code": 45,
+      "name": "PendingAdminMismatch",
+      "msg": "PendingAdminMismatch"
+    },
+    {
+      "code": 46,
+      "name": "MarketPaused",
+      "msg": "MarketPaused"
+    },
+    {
+      "code": 47,
+      "name": "GlobalPaused",
+      "msg": "GlobalPaused"
+    },
+    {
+      "code": 48,
+      "name": "ProtocolAdminRequired",
+      "msg": "ProtocolAdminRequired"
+    },
+    {
+      "code": 49,
+      "name": "OracleDegenerate",
+      "msg": "OracleDegenerate"
+    },
+    {
+      "code": 50,
+      "name": "VaultPaused",
+      "msg": "VaultPaused"
+    },
+    {
+      "code": 51,
+      "name": "MathDivisionByZero",
+      "msg": "MathDivisionByZero"
+    },
+    {
+      "code": 52,
+      "name": "MathOverflow",
+      "msg": "MathOverflow"
+    },
+    {
+      "code": 53,
+      "name": "InsufficientEncumberedCollateral",
+      "msg": "InsufficientEncumberedCollateral"
+    },
+    {
+      "code": 54,
+      "name": "VaultProfileSunset",
+      "msg": "VaultProfileSunset"
+    },
+    {
+      "code": 55,
+      "name": "VaultProfileNotSunset",
+      "msg": "VaultProfileNotSunset"
+    }
+  ],
+  "types": []
+}

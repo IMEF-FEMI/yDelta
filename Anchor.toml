@@ -1,0 +1,27 @@
+# Anchor workspace stub.
+#
+# ydelta is NOT an Anchor program — it's a hand-written Solana program
+# built via `cargo build-sbf` (see `scripts/build-program.sh`). This file
+# exists so the `anchor` CLI's `idl` subcommands (which require the
+# caller to be inside an Anchor workspace) can run against our deployed
+# program, e.g.:
+#
+#   anchor idl init    --filepath ts/idl/ydelta-anchor.json <PROGRAM_ID>
+#   anchor idl upgrade --filepath ts/idl/ydelta-anchor.json <PROGRAM_ID>
+#
+# Do not run `anchor build` from here — it will try to build ydelta as
+# an Anchor program and fail. Use the existing scripts in `scripts/`.
+
+[features]
+seeds = false
+skip-lint = false
+
+[programs.mainnet]
+ydelta = "Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas"
+
+[provider]
+cluster = "Mainnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "echo 'no anchor tests; see scripts/test.sh'"
