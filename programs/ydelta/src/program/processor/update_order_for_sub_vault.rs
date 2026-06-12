@@ -248,6 +248,7 @@ pub fn process_update_order_for_sub_vault(
         new_rate_bps,
         new_term_seconds,
         sub_vault_curator_fee_bps,
+        *curator.info.key,
         sub_vault_max_ltv_bps,
         now,
         u32::MAX,

@@ -38,6 +38,7 @@ pub mod settle_matured_loan;
 pub mod shared;
 pub mod sunset_sub_vault;
 pub mod sync_market_position;
+pub mod update_order;
 pub mod update_order_for_sub_vault;
 pub mod update_sub_vault;
 pub mod withdraw;

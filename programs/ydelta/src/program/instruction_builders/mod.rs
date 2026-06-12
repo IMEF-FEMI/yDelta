@@ -36,6 +36,7 @@ pub mod settle_matured_loan_instruction;
 pub mod sunset_sub_vault_instruction;
 pub mod sync_market_position_instruction;
 pub mod update_order_for_sub_vault_instruction;
+pub mod update_order_instruction;
 pub mod update_sub_vault_instruction;
 pub mod withdraw_instruction;
 
@@ -69,5 +70,6 @@ pub use settle_matured_loan_instruction::*;
 pub use sunset_sub_vault_instruction::*;
 pub use sync_market_position_instruction::*;
 pub use update_order_for_sub_vault_instruction::*;
+pub use update_order_instruction::*;
 pub use update_sub_vault_instruction::*;
 pub use withdraw_instruction::*;

@@ -194,6 +194,11 @@ pub enum YdeltaInstruction {
     /// change without order flow (vault deposits, repayment claims,
     /// oracle moves).
     MatchCrank = 43,
+
+    /// Borrower cancel-and-replaces their resting bid (v1 D6): new
+    /// rate / term / expiry under a fresh sequence; principal,
+    /// collateral, and the encumbrance snapshot are untouched.
+    UpdateOrder = 44,
 }
 
 impl YdeltaInstruction {
@@ -210,7 +215,7 @@ mod tests {
 
     #[test]
     fn instruction_tags_are_contiguous() {
-        let last_tag: u8 = 43;
+        let last_tag: u8 = 44;
         for i in 0..=255u8 {
             match YdeltaInstruction::try_from(i) {
                 Ok(ix) => {

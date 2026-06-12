@@ -468,13 +468,14 @@ pub fn match_order(
             continue;
         }
 
-        require!(
-            maker.trader_seat_index != args.taker_seat_index,
-            YdeltaError::SelfMatchForbidden,
-            "taker seat {} matches its own maker order at index {}",
-            args.taker_seat_index,
-            current_maker_index
-        )?;
+        // v1 D9: self-cross is a SKIP, not an abort — the scan walks on
+        // to other makers. Seat-level check here; the owner-level check
+        // (wallet vs the maker sub-vault's curator) runs once the
+        // profile is read below.
+        if maker.trader_seat_index == args.taker_seat_index {
+            current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+            continue;
+        }
 
         let (bid_rate, ask_rate, bid_term, ask_term) = (
             args.rate_bps,
@@ -500,6 +501,7 @@ pub fn match_order(
         let mut profile_max_ltv_bps: u16 = 0;
         let mut profile_max_term_seconds: u32 = 0;
         let mut profile_curator_fee_bps: u16 = 0;
+        let mut profile_curator: Pubkey = Pubkey::default();
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             require!(
@@ -535,6 +537,7 @@ pub fn match_order(
                         profile_max_ltv_bps = p.max_ltv_bps;
                         profile_max_term_seconds = p.max_term_seconds;
                         profile_curator_fee_bps = p.curator_fee_bps;
+                        profile_curator = p.curator;
                         p.total_principal_atoms
                             .saturating_sub(p.deployed_principal_atoms)
                             .saturating_sub(p.encumbered_in_orders_atoms)
@@ -551,6 +554,17 @@ pub fn match_order(
                 continue;
             }
             matched_principal = remaining_principal.min(profile_idle);
+        }
+
+        // v1 D9 owner-level self-cross: a wallet may not borrow from a
+        // sub-vault it curates (wash-quoting guard). Skip, don't abort.
+        {
+            let taker_owner =
+                get_helper_seat(dynamic, args.taker_seat_index).get_value().owner;
+            if profile_curator == taker_owner {
+                current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+                continue;
+            }
         }
 
         let matched_collateral_taker = if matched_principal == remaining_principal {
@@ -1419,6 +1433,77 @@ pub fn cancel_order_by_index(
     Ok(())
 }
 
+/// v1 D6: cancel-and-replace for a user resting bid, in place. Removes
+/// the bid from the bids tree, rewrites rate / term / expiry under a
+/// fresh sequence (repricing forfeits time priority), and reinserts the
+/// SAME block — principal, collateral, and the encumbrance snapshot are
+/// untouched, so no unencumber/re-encumber round-trip is needed.
+/// Returns the new sequence.
+pub fn update_user_bid(
+    fixed: &mut MarketFixed,
+    dynamic: &mut [u8],
+    signer_seat_index: DataIndex,
+    order_index: DataIndex,
+    new_rate_bps: u16,
+    new_term_seconds: u32,
+    new_last_valid_unix_ts: i64,
+    now_unix_ts: i64,
+) -> Result<u64, ProgramError> {
+    let order: RestingOrder = *get_helper_order(dynamic, order_index).get_value();
+    require!(
+        order.trader_seat_index == signer_seat_index,
+        YdeltaError::OrderNotOwnedBySigner,
+        "Order owned by a different seat"
+    )?;
+    require!(
+        order.side == Side::Bid as u8,
+        YdeltaError::IncorrectAccount,
+        "update_user_bid: order {} is not a bid (side={})",
+        order.sequence_number,
+        order.side
+    )?;
+    require!(
+        new_term_seconds > 0,
+        YdeltaError::TermNotCompatible,
+        "term_seconds must be > 0"
+    )?;
+    require!(
+        new_last_valid_unix_ts == super::constants::NO_EXPIRATION_LAST_VALID_UNIX_TS
+            || new_last_valid_unix_ts > now_unix_ts,
+        YdeltaError::InvalidArgument,
+        "last_valid_unix_ts {} is already past",
+        new_last_valid_unix_ts
+    )?;
+
+    {
+        let mut tree: Bookside =
+            Bookside::new(dynamic, fixed.bids_root_index, fixed.bids_best_index);
+        tree.remove_by_index(order_index);
+        fixed.bids_root_index = tree.get_root_index();
+        fixed.bids_best_index = tree.get_max_index();
+    }
+
+    let seq = fixed.order_sequence_number;
+    fixed.order_sequence_number = seq.checked_add(1).ok_or(ProgramError::ArithmeticOverflow)?;
+
+    let updated = RestingOrder::new_primary(
+        order.trader_seat_index,
+        seq,
+        Side::Bid,
+        OrderType::Limit,
+        new_rate_bps,
+        new_term_seconds,
+        order.principal_atoms,
+        order.collateral_atoms,
+        new_last_valid_unix_ts,
+        order.flags,
+        order.share_price_snapshot(),
+    );
+    let mut market = MarketRefMut { fixed, dynamic };
+    market.rest_order(order_index, updated)?;
+    Ok(seq)
+}
+
 /// Inputs to [`match_p2pool_residual_against_asks`] — the engine that
 /// converts an open P2Pool loan into one or more fixed-term loans by
 /// matching against resting sub-vault asks.
@@ -1547,13 +1632,12 @@ pub fn match_p2pool_residual_against_asks(
             continue;
         }
 
-        require!(
-            maker.trader_seat_index != args.borrower_seat_index,
-            YdeltaError::SelfMatchForbidden,
-            "convert refinance: borrower seat {} matches their own resting ask at index {}",
-            args.borrower_seat_index,
-            current_maker_index
-        )?;
+        // v1 D9: self-cross skips (seat level here; owner level below
+        // once the profile is read).
+        if maker.trader_seat_index == args.borrower_seat_index {
+            current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+            continue;
+        }
 
         if maker.rate_bps > args.max_acceptable_rate_bps {
             break;
@@ -1569,6 +1653,7 @@ pub fn match_p2pool_residual_against_asks(
 
         let mut profile_max_ltv_bps: u16 = 0;
         let mut profile_curator_fee_bps: u16 = 0;
+        let mut profile_curator: Pubkey = Pubkey::default();
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             require!(
@@ -1603,6 +1688,7 @@ pub fn match_p2pool_residual_against_asks(
                     } else {
                         profile_max_ltv_bps = p.max_ltv_bps;
                         profile_curator_fee_bps = p.curator_fee_bps;
+                        profile_curator = p.curator;
                         p.total_principal_atoms
                             .saturating_sub(p.deployed_principal_atoms)
                             .saturating_sub(p.encumbered_in_orders_atoms)
@@ -1615,6 +1701,16 @@ pub fn match_p2pool_residual_against_asks(
                 continue;
             }
             matched_principal = remaining_principal.min(profile_idle);
+
+            // v1 D9 owner-level self-cross (skip).
+            {
+                let borrower_owner =
+                    get_helper_seat(dynamic, args.borrower_seat_index).get_value().owner;
+                if profile_curator == borrower_owner {
+                    current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+                    continue;
+                }
+            }
 
             let matched_collateral_for_gate: u64 = crate::math::mul_div_u64(
                 args.loan_collateral_atoms,
@@ -1821,6 +1917,9 @@ pub struct MatchRestingBidsArgs {
     pub ask_curator_fee_bps: u16,
     /// Sub-vault's origination LTV cap (v1 D17 single gate, phase 5).
     pub profile_max_ltv_bps: u16,
+    /// The taking sub-vault's curator — bids owned by the same wallet
+    /// are skipped (v1 D9 owner-level self-cross).
+    pub ask_curator: Pubkey,
     /// Market protocol-fee floor applied to the borrower rate.
     pub fee_floor_bps: u16,
     /// Market origination fee in bps.
@@ -1916,6 +2015,15 @@ pub fn match_resting_bids(
         if bid.trader_seat_index == args.ask_seat_index {
             current_bid_index = next_bid_index;
             continue;
+        }
+        // v1 D9 owner-level self-cross (skip): the bidder's wallet may
+        // not fill from a sub-vault it curates.
+        {
+            let bid_owner = get_helper_seat(dynamic, bid.trader_seat_index).get_value().owner;
+            if bid_owner == args.ask_curator {
+                current_bid_index = next_bid_index;
+                continue;
+            }
         }
 
         // Bids descend from the best (highest) rate: once one is below

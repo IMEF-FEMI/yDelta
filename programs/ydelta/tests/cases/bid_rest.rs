@@ -8,6 +8,7 @@ use hypertree::NIL;
 use solana_sdk::signer::Signer;
 
 use ydelta::program::instruction_builders::cancel_order_instruction::cancel_order_instruction;
+use ydelta::program::instruction_builders::update_order_instruction::update_order_instruction;
 use ydelta::state::market_helpers::RESIDUAL_MODE_REST;
 
 use crate::test_utils::MarketFixture;
@@ -102,6 +103,105 @@ async fn residual_rests_and_cancel_releases_collateral() {
     let ua_fixed: &ydelta::state::user_account::UserAccountFixed =
         bytemuck::from_bytes(&ua[..ydelta::state::USER_ACCOUNT_FIXED_SIZE]);
     assert_eq!(ua_fixed.user_order_count, 0, "UserOrderRef dropped");
+}
+
+/// v1 D6: `UpdateOrder` cancel-and-replaces in place — new rate / term /
+/// expiry under a fresh sequence; the encumbrance (and its snapshot) is
+/// untouched, and the `UserOrderRef` re-keys to the new sequence.
+#[tokio::test]
+async fn update_order_replaces_in_place() {
+    let fixture = MarketFixture::new().await;
+    let borrower = fixture.create_trader().await;
+
+    fixture.claim_seat(&borrower).await;
+    let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
+    fixture.put_wsol_token_account(borrower_wsol, borrower.pubkey(), 500_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&borrower, borrower_wsol, false, 50_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    let withdrawable_pre = fixture
+        .read_seat(&borrower.pubkey())
+        .await
+        .collateral_withdrawable_shares;
+
+    // Empty book: the whole bid rests as sequence 0.
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            2_000,
+            TERM,
+            1_000_000,
+            50_000_000,
+            RESIDUAL_MODE_REST,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    let encumbered_at_rest = fixture
+        .read_seat(&borrower.pubkey())
+        .await
+        .collateral_encumbered_shares;
+
+    // Replace rate/term/expiry. The bid takes the next sequence (1).
+    let update_ix = update_order_instruction(
+        &fixture.market.pubkey(),
+        &borrower.pubkey(),
+        /*order_sequence=*/ 0,
+        None,
+        /*new_rate_bps=*/ 2_500,
+        /*new_term_seconds=*/ TERM * 2,
+        /*new_last_valid_unix_ts=*/ 0,
+    );
+    fixture
+        .process_ixs(&[update_ix], &[&borrower.insecure_clone()])
+        .await
+        .expect("owner update must succeed");
+
+    let seat = fixture.read_seat(&borrower.pubkey()).await;
+    assert_eq!(
+        seat.collateral_encumbered_shares, encumbered_at_rest,
+        "update keeps the encumbrance untouched (no unencumber round-trip)"
+    );
+    let ua = fixture
+        .account_data(ydelta::state::user_account::user_account_pda(&borrower.pubkey()).0)
+        .await;
+    let ua_fixed: &ydelta::state::user_account::UserAccountFixed =
+        bytemuck::from_bytes(&ua[..ydelta::state::USER_ACCOUNT_FIXED_SIZE]);
+    assert_eq!(ua_fixed.user_order_count, 1, "still exactly one open order");
+
+    // The old sequence is dead…
+    fixture.refresh_blockhash().await;
+    let stale_cancel = cancel_order_instruction(&fixture.market.pubkey(), &borrower.pubkey(), 0, None);
+    assert!(
+        fixture
+            .process_ixs(&[stale_cancel], &[&borrower.insecure_clone()])
+            .await
+            .is_err(),
+        "cancel by the replaced sequence must fail"
+    );
+
+    // …and the fresh one cancels cleanly, releasing the full snapshot.
+    fixture.refresh_blockhash().await;
+    let cancel_ix = cancel_order_instruction(&fixture.market.pubkey(), &borrower.pubkey(), 1, None);
+    fixture
+        .process_ixs(&[cancel_ix], &[&borrower.insecure_clone()])
+        .await
+        .expect("cancel by the new sequence must succeed");
+
+    let seat_post = fixture.read_seat(&borrower.pubkey()).await;
+    assert_eq!(seat_post.collateral_encumbered_shares, 0);
+    assert_eq!(
+        seat_post.collateral_withdrawable_shares, withdrawable_pre,
+        "snapshot preserved across the update: cancel restores exactly the pre-bid balance"
+    );
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(market.bids_root_index, NIL);
 }
 
 #[tokio::test]
