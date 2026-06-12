@@ -1215,7 +1215,7 @@ impl<'a, 'info> ClaimRepaymentForSubVaultContext<'a, 'info> {
     /// by account address.
     pub fn load(
         accounts: &'a [AccountInfo<'info>],
-        _sub_vault_id: u8,
+        _sub_vault_id: u16,
     ) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 

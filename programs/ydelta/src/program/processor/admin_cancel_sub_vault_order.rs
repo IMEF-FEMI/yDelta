@@ -30,7 +30,7 @@ use super::shared::get_mut_dynamic_account;
 pub struct AdminCancelSubVaultOrderParams {
     /// Identifies the sunset sub-vault whose resting market ask
     /// should be force-cancelled.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Vault-admin force-cancel a sunset profile's resting ask. Removes
@@ -147,7 +147,7 @@ pub fn process_admin_cancel_sub_vault_order(
         market: market_key,
         sub_vault_id: params.sub_vault_id,
         is_replace: 0,
-        _pad0: [0; 6],
+        _pad0: [0; 5],
         order_sequence_in_market: order_sequence,
     })?;
 

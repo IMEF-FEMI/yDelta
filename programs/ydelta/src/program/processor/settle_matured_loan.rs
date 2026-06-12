@@ -479,7 +479,7 @@ pub fn process_settle_matured_loan(
             loan_accumulated_protocol_fee_atoms,
         ): (
             hypertree::DataIndex,
-            u8,
+            u16,
             u64,
             u16,
             u16,

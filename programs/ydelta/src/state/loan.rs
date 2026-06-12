@@ -103,8 +103,15 @@ pub struct LoanFixed {
     /// Borrower's recorded marginfi liability-share count; used for
     /// P2Pool live-outstanding lookups.
     pub borrower_marginfi_borrow_shares: u128,
-    /// Reserved snapshot of marginfi's debt index at last accrual.
-    pub debt_index_at_last_accrual: u128,
+
+    /// Origination LTV cap stamped from the sub-vault at match time
+    /// (v1 D17). Informational; the gate is `liquidation_ltv_bps`.
+    pub origination_ltv_bps: u16,
+    /// Liquidation trigger stamped from the sub-vault at match time;
+    /// the LTV liquidation gate compares live oracle LTV against this
+    /// (v1 D17). 0 until the stamping lands (phase 5).
+    pub liquidation_ltv_bps: u16,
+    _reserved_ltv: [u8; 12],
 
     /// Atoms borrowed at origination (the fixed principal).
     pub principal_debt_atoms: u64,
@@ -152,13 +159,12 @@ pub struct LoanFixed {
     /// Lender's `owner_kind` tag (user wallet vs sub-vault).
     pub lender_kind: u8,
 
-    /// Lender sub-vault id when `lender_kind == OWNER_KIND_SUB_VAULT`.
-    pub lender_sub_vault_id: u8,
-
-    _reserved_byte: u8,
+    /// Lender sub-vault id when `lender_kind == OWNER_KIND_SUB_VAULT`
+    /// (u16 — ids widened in v1, §3.4).
+    pub lender_sub_vault_id: u16,
 
     /// Curator fee in bps captured at match time; frozen for the life of
-    /// the loan even if the market's fee config changes.
+    /// the loan even if the sub-vault's fee ever changed.
     pub curator_fee_bps_snapshot: u16,
     _padding1: [u8; 2],
 
@@ -348,7 +354,7 @@ impl LoanFixed {
         loan_type: LoanType,
         borrower_marginfi_borrow_shares: u128,
         lender_kind: u8,
-        lender_sub_vault_id: u8,
+        lender_sub_vault_id: u16,
         lender_global_vault: Pubkey,
         curator_fee_bps_snapshot: u16,
         lender_debt_share_price_snapshot_fp48: crate::math::Fp48,
@@ -362,7 +368,9 @@ impl LoanFixed {
             created_by,
             matched_loan_sequence: sequence,
             borrower_marginfi_borrow_shares,
-            debt_index_at_last_accrual: 0,
+            origination_ltv_bps: 0,
+            liquidation_ltv_bps: 0,
+            _reserved_ltv: [0; 12],
             principal_debt_atoms: principal_atoms,
             outstanding_debt_atoms: net_principal,
             lender_claimable_atoms: net_principal,
@@ -383,7 +391,6 @@ impl LoanFixed {
             bump,
             lender_kind,
             lender_sub_vault_id,
-            _reserved_byte: 0,
             curator_fee_bps_snapshot,
             _padding1: [0; 2],
             lender_global_vault,

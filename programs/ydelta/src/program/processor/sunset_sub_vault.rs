@@ -23,7 +23,7 @@ use crate::validation::loaders::SunsetSubVaultContext;
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct SunsetSubVaultParams {
     /// Sub-vault ID to sunset (1-based; 0 is the sentinel).
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Set the profile's `is_sunset` flag, blocking deposits / new orders /

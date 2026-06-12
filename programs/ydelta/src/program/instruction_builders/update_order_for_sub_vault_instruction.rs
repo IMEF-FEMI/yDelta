@@ -24,7 +24,7 @@ pub fn update_order_for_sub_vault_instruction(
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
     new_rate_bps: u16,
     new_term_seconds: u32,
     new_flags: u8,

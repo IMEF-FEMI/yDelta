@@ -102,7 +102,7 @@ pub fn accept_global_vault_admin_instruction(mint: &Pubkey, pending_admin: &Pubk
 pub fn transfer_curator_instruction(
     mint: &Pubkey,
     current_curator: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
     new_curator: &Pubkey,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
@@ -130,7 +130,7 @@ pub fn transfer_curator_instruction(
 pub fn accept_curator_instruction(
     mint: &Pubkey,
     pending_curator: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
     let mut data = YdeltaInstruction::AcceptCurator.to_vec();

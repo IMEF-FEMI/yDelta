@@ -33,7 +33,7 @@ pub struct ClaimRepaymentForSubVaultParams {
     /// Identifies the sub-vault seat to sweep. Combined with the
     /// global_vault account, locates the seat at
     /// `(market, OWNER_KIND_SUB_VAULT, global_vault, sub_vault_id)`.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Stateless seat→vault sweeper. Per the repay/claim split, this ix
@@ -56,7 +56,7 @@ pub fn process_claim_repayment_for_sub_vault(
 ) -> ProgramResult {
     let params: ClaimRepaymentForSubVaultParams =
         ClaimRepaymentForSubVaultParams::try_from_slice(data)?;
-    let sub_vault_id: u8 = params.sub_vault_id;
+    let sub_vault_id: u16 = params.sub_vault_id;
 
     let ClaimRepaymentForSubVaultContext {
         payer: _,
@@ -118,7 +118,7 @@ pub fn process_claim_repayment_for_sub_vault(
             loan: Pubkey::default(),
             global_vault: global_vault_key,
             sub_vault_id,
-            _pad0: [0; 7],
+            _pad0: [0; 6],
             claimed_atoms: 0,
             principal_atoms: 0,
             _pad1: [0; 8],
@@ -291,7 +291,7 @@ pub fn process_claim_repayment_for_sub_vault(
         loan: Pubkey::default(),
         global_vault: global_vault_key,
         sub_vault_id,
-        _pad0: [0; 7],
+        _pad0: [0; 6],
         claimed_atoms: actual_atoms,
         principal_atoms: 0,
         _pad1: [0; 8],

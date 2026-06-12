@@ -22,7 +22,7 @@ use crate::validation::loaders::CreateSubVaultContext;
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct UpdateSubVaultParams {
     /// Sub-vault ID to update (1-based; 0 is the sentinel).
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
     /// New max LTV in bps; must be in `(0, 10_000)`.
     pub new_max_ltv_bps: Option<u16>,
     /// New max term in seconds; must be `> 0`.

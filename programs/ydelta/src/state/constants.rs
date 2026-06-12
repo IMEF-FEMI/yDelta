@@ -37,8 +37,10 @@ pub const NO_EXPIRATION_LAST_VALID_UNIX_TS: i64 = 0;
 pub const MARKET_FIXED_DISCRIMINANT: u64 = 0x79_64_65_6C_74_61_4D_4B;
 
 /// Layout version stamped onto every fixed account header; loaders reject
-/// any account whose `version` field does not match.
-pub const ACCOUNT_LAYOUT_VERSION: u8 = 1;
+/// any account whose `version` field does not match. v2 = the v1-spec
+/// redesign layout (sub-vault ids widened to u16, SubVault risk/fee
+/// fields, bid tree live, LTV stamps on MatchedLoan/LoanFixed).
+pub const ACCOUNT_LAYOUT_VERSION: u8 = 2;
 
 /// Smallest principal that a borrower bid will accept; defended by
 /// `match_borrower_bid` before any seat/order work.

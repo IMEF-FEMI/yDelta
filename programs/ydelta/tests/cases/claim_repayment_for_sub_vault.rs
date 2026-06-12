@@ -25,7 +25,7 @@ use ydelta::state::Side;
 
 use crate::test_utils::{mainnet, MarketFixture};
 
-const PROFILE_ID: u8 = 1;
+const PROFILE_ID: u16 = 1;
 const VAULT_DEPOSIT_ATOMS: u64 = 100_000_000;
 const PRINCIPAL_ATOMS: u64 = 1_000_000;
 // The match-time LTV gate normalizes for the USDC(6-dec) /

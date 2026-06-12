@@ -21,7 +21,7 @@ use crate::validation::loaders::ResumeSubVaultContext;
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct ResumeSubVaultParams {
     /// Sub-vault ID to un-sunset (1-based; 0 is the sentinel).
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Clear the profile's `is_sunset` flag, re-enabling deposits, new orders,

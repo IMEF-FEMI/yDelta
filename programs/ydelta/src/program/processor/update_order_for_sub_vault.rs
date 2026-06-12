@@ -35,7 +35,7 @@ use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct UpdateOrderForSubVaultParams {
     /// Sub-vault ID that owns the order (1-based; 0 is the sentinel).
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
     /// Replacement ask rate in bps.
     pub new_rate_bps: u16,
     /// Replacement term in seconds; must be `<= profile.max_term_seconds`.
@@ -225,7 +225,7 @@ pub fn process_update_order_for_sub_vault(
         market: market_key,
         sub_vault_id: params.sub_vault_id,
         is_replace: 1,
-        _pad0: [0; 6],
+        _pad0: [0; 5],
         order_sequence_in_market: old_order_sequence,
     })?;
     emit_stack(PlaceOrderForSubVaultLog {
@@ -233,7 +233,7 @@ pub fn process_update_order_for_sub_vault(
         market: market_key,
         sub_vault_id: params.sub_vault_id,
         side: Side::Ask as u8,
-        _pad0: [0; 6],
+        _pad0: [0; 5],
         rate_bps: params.new_rate_bps,
         _pad1: [0; 2],
         term_seconds: params.new_term_seconds,

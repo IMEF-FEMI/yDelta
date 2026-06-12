@@ -46,10 +46,12 @@ pub struct ClaimedSeat {
 
     /// One of [`OWNER_KIND_USER`] or [`OWNER_KIND_SUB_VAULT`].
     pub owner_kind: u8,
-    /// 0 for user seats; the profile id for sub-vault seats.
-    pub sub_vault_id: u8,
+    _pad0: [u8; 1],
+    /// 0 for user seats; the sub-vault id for sub-vault seats (u16 —
+    /// ids widened in v1, §3.4).
+    pub sub_vault_id: u16,
 
-    _padding: [u8; 6],
+    _padding: [u8; 4],
 
     _reserved: [u64; 4],
 }
@@ -61,7 +63,7 @@ impl ClaimedSeat {
     /// Build a seat with all balance and counter fields zeroed. Used for
     /// both insert and tree-lookup probes; equality only checks the
     /// identity triple, not the balances.
-    pub fn new_empty(owner: Pubkey, owner_kind: u8, sub_vault_id: u8) -> Self {
+    pub fn new_empty(owner: Pubkey, owner_kind: u8, sub_vault_id: u16) -> Self {
         ClaimedSeat {
             owner,
             owner_kind,

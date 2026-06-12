@@ -24,7 +24,7 @@ async fn setup_vault_with_profile(
     fixture.refresh_blockhash().await;
 }
 
-async fn sunset(fixture: &MarketFixture, admin: &solana_sdk::signature::Keypair, sub_vault_id: u8) {
+async fn sunset(fixture: &MarketFixture, admin: &solana_sdk::signature::Keypair, sub_vault_id: u16) {
     let ix = sunset_sub_vault_instruction(&mainnet::usdc_mint(), &admin.pubkey(), sub_vault_id);
     fixture.process(ix, &[admin]).await.unwrap();
     fixture.refresh_blockhash().await;

@@ -466,7 +466,7 @@ pub fn match_order(
         }
 
         let matched_principal: u64;
-        let sub_vault_id: u8;
+        let sub_vault_id: u16;
 
         let mut profile_max_ltv_bps: u16 = 0;
         let mut profile_max_term_seconds: u32 = 0;
@@ -763,7 +763,7 @@ impl<'a> MarketRefMut<'a> {
         &mut self,
         owner: &Pubkey,
         owner_kind: u8,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
     ) -> ProgramResult {
         let MarketRefMut { fixed, dynamic } = self;
 
@@ -1362,7 +1362,7 @@ pub struct MatchP2PoolRefinanceArgs {
 #[derive(Clone, Copy)]
 pub struct P2PoolRefinanceCross {
     /// Lender sub-vault id that filled.
-    pub lender_sub_vault_id: u8,
+    pub lender_sub_vault_id: u16,
 
     /// Effective lender rate.
     pub lender_rate_bps: u16,
@@ -1430,7 +1430,7 @@ pub fn match_p2pool_residual_against_asks(
         }
 
         let matched_principal: u64;
-        let lender_sub_vault_id: u8;
+        let lender_sub_vault_id: u16;
 
         let mut profile_max_ltv_bps: u16 = 0;
         {

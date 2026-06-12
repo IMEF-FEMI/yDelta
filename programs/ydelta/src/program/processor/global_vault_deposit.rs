@@ -33,7 +33,7 @@ pub struct GlobalVaultDepositParams {
     /// Atoms of the vault's mint to deposit. Must be `> 0`.
     pub amount_atoms: u64,
     /// Identifies the destination sub-vault.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Deposit atoms into a sub-vault and mint pro-rata shares. Accrues
@@ -268,7 +268,7 @@ pub fn process_global_vault_deposit(
         gain_atoms: 0,
         profile_total_assets_atoms: total_assets_after,
         sub_vault_id: params.sub_vault_id,
-        _padding: [0; 7],
+        _padding: [0; 6],
     })?;
 
     Ok(())

@@ -22,7 +22,7 @@ use crate::state::vault::global_vault_pda;
 pub fn update_sub_vault_instruction(
     mint: &Pubkey,
     payer: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
     new_max_ltv_bps: Option<u16>,
     new_max_term_seconds: Option<u32>,
 ) -> Instruction {

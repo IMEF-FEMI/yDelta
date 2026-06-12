@@ -155,8 +155,8 @@ pub struct VaultPosition {
     /// Global vault pubkey this position is inside.
     pub vault: Pubkey,
     /// Sub-vault id within the vault.
-    pub sub_vault_id: u8,
-    _pad0: [u8; 15],
+    pub sub_vault_id: u16,
+    _pad0: [u8; 14],
     /// User's share balance in the profile.
     pub shares: u128,
     /// Snapshot of the profile's `cumulative_supply_yield_index_scaled`
@@ -209,7 +209,7 @@ impl std::fmt::Display for VaultPosition {
 impl VaultPosition {
     /// Build a position with identity fields set and balance fields
     /// zeroed; equality only checks `(vault, sub_vault_id)`.
-    pub fn new_empty(vault: Pubkey, sub_vault_id: u8) -> Self {
+    pub fn new_empty(vault: Pubkey, sub_vault_id: u16) -> Self {
         Self {
             vault,
             sub_vault_id,
@@ -318,8 +318,8 @@ pub struct UserLoanRef {
     /// One of the [`CounterpartyKind`] variants.
     pub counterparty_kind: u8,
     /// Counterparty's sub-vault id when applicable.
-    pub counterparty_sub_vault_id: u8,
-    _padding: [u8; 19],
+    pub counterparty_sub_vault_id: u16,
+    _padding: [u8; 18],
 
     _reserved: [u64; 4],
 }
@@ -515,7 +515,7 @@ pub fn upsert_vault_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
     vault: Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Result<DataIndex, ProgramError> {
     let probe = VaultPosition::new_empty(vault, sub_vault_id);
     let existing_idx: DataIndex = {
@@ -551,7 +551,7 @@ pub fn remove_vault_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
     vault: Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Result<DataIndex, ProgramError> {
     let probe = VaultPosition::new_empty(vault, sub_vault_id);
     let idx: DataIndex = {
@@ -639,7 +639,7 @@ pub fn insert_open_loan(
     market: Pubkey,
     role: LoanRole,
     counterparty_kind: CounterpartyKind,
-    counterparty_sub_vault_id: u8,
+    counterparty_sub_vault_id: u16,
     principal_atoms: u64,
     rate_bps: u16,
     started_at_unix: i64,
@@ -673,7 +673,7 @@ pub fn insert_open_loan(
         role: role as u8,
         counterparty_kind: counterparty_kind as u8,
         counterparty_sub_vault_id,
-        _padding: [0; 19],
+        _padding: [0; 18],
         _reserved: [0; 4],
     };
     let mut tree = OpenLoanTree::new(dynamic, fixed.open_loans_root_index, NIL);
