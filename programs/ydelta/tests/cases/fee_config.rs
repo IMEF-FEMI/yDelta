@@ -120,7 +120,7 @@ async fn protocol_accumulates_origination_fee_on_fixed_match() {
             &bob,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal_atoms,
             collateral_atoms,

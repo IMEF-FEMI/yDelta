@@ -27,7 +27,7 @@ use crate::state::vault::{
 };
 use crate::state::ClaimedSeat;
 use crate::state::{MarketFixed, Side, GLOBAL_VAULT_FIXED_SIZE, VAULT_NODE_BLOCK_SIZE};
-use crate::validation::loaders::CancelOrderForSubVaultContext;
+use crate::validation::loaders::PlaceOrderForSubVaultContext;
 
 use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 
@@ -36,35 +36,36 @@ use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 pub struct UpdateOrderForSubVaultParams {
     /// Sub-vault ID that owns the order (1-based; 0 is the sentinel).
     pub sub_vault_id: u16,
-    /// Replacement ask rate in bps.
-    pub new_rate_bps: u16,
-    /// Replacement term in seconds; must be `<= profile.max_term_seconds`.
-    pub new_term_seconds: u32,
     /// Replacement order flag bits (see `state::market_helpers` flag constants).
     pub new_flags: u8,
 }
 
-/// Cancel the profile's existing ask for this market and rest a new one with
-/// the supplied parameters in a single instruction. Curator-signed; rejected
-/// when the profile is sunset.
+/// Parameterless re-sync (v1 D4): cancels the sub-vault's existing ask
+/// for this market and rests a fresh one at `live bank lending APR +
+/// sub_vault.spread_bps` / `sub_vault.max_term_seconds` in a single
+/// instruction. Curator-signed; rejected when the sub-vault is sunset.
 pub fn process_update_order_for_sub_vault(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
     let params = UpdateOrderForSubVaultParams::try_from_slice(data)?;
-    let CancelOrderForSubVaultContext {
+    let PlaceOrderForSubVaultContext {
         fee_payer,
         curator,
         vault,
         market,
+        debt_bank,
+        marginfi_group,
         _system_program,
-    } = CancelOrderForSubVaultContext::load(accounts)?;
+    } = PlaceOrderForSubVaultContext::load(accounts)?;
 
     let vault_key = *vault.info.key;
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
+    let mut sub_vault_spread_bps: u16 = 0;
+    let mut sub_vault_term_seconds: u32 = 0;
     let old_order_sequence: u64 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
@@ -95,13 +96,8 @@ pub fn process_update_order_for_sub_vault(
             YdeltaError::VaultCuratorRequired,
             "update_order_for_sub_vault: signer is not profile.curator"
         )?;
-        require!(
-            params.new_term_seconds <= profile.max_term_seconds,
-            YdeltaError::VaultOrderTermExceedsProfileMax,
-            "new_term_seconds {} > profile.max_term_seconds {}",
-            params.new_term_seconds,
-            { profile.max_term_seconds }
-        )?;
+        sub_vault_spread_bps = profile.spread_bps;
+        sub_vault_term_seconds = profile.max_term_seconds;
 
         let order_probe = SubVaultOrderRef::probe(market_key, params.sub_vault_id);
         let order_idx = {
@@ -119,6 +115,16 @@ pub fn process_update_order_for_sub_vault(
             .get_value()
             .order_sequence_in_market
     };
+
+    // v1 D4: stored rate = live bank lending APR (ceil) + spread.
+    let bank_apr_bps: u16 = crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
+        debt_bank.info,
+        marginfi_group.info,
+    )?;
+    let new_rate_bps: u16 = bank_apr_bps
+        .checked_add(sub_vault_spread_bps)
+        .ok_or(YdeltaError::MathOverflow)?;
+    let new_term_seconds: u32 = sub_vault_term_seconds;
 
     let taker_seat_index: hypertree::DataIndex = {
         let market_data: &std::cell::Ref<&mut [u8]> = &market.info.try_borrow_data()?;
@@ -163,8 +169,8 @@ pub fn process_update_order_for_sub_vault(
             RestVaultAskArgs {
                 market_pubkey: market_key,
                 maker_seat_index: taker_seat_index,
-                rate_bps: params.new_rate_bps,
-                term_seconds: params.new_term_seconds,
+                rate_bps: new_rate_bps,
+                term_seconds: new_term_seconds,
                 flags: params.new_flags,
                 now_unix_ts: now,
             },
@@ -213,8 +219,8 @@ pub fn process_update_order_for_sub_vault(
             market_key,
             params.sub_vault_id,
             Side::Ask as u8,
-            params.new_rate_bps,
-            params.new_term_seconds,
+            new_rate_bps,
+            new_term_seconds,
             new_order_sequence,
             now,
         )?;
@@ -234,9 +240,9 @@ pub fn process_update_order_for_sub_vault(
         sub_vault_id: params.sub_vault_id,
         side: Side::Ask as u8,
         _pad0: [0; 5],
-        rate_bps: params.new_rate_bps,
+        rate_bps: new_rate_bps,
         _pad1: [0; 2],
-        term_seconds: params.new_term_seconds,
+        term_seconds: new_term_seconds,
         order_sequence_in_market: new_order_sequence,
     })?;
 

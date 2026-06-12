@@ -74,7 +74,7 @@ async fn open_p2pool_loan(
             &bob,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal_atoms,
             collateral_atoms,
@@ -136,7 +136,7 @@ async fn full_conversion_closes_p2pool_pda() {
     // Convert: borrower accepts asks up to 1_000 bps. The 600 bps vault
     // ask crosses; the whole live liability is refinanced.
     fixture
-        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
+        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 3_000)
         .await
         .unwrap();
 
@@ -220,7 +220,7 @@ async fn partial_conversion_is_rejected() {
     // The must-full-fill gate must reject this convert with
     // InvalidArgument (total_filled < live_outstanding).
     let result = fixture
-        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
+        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 3_000)
         .await;
     crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
 
@@ -301,7 +301,7 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
     // errors. Exact reject path is the "no asks crossed" branch which
     // surfaces InvalidArgument from convert_p2pool_to_fixed.
     let result = fixture
-        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
+        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 3_000)
         .await;
     // The per-cross profile-LTV gate SKIPS the only ask, so the matcher
     // crosses nothing and the processor's "no asks crossed" guard fires
@@ -376,7 +376,7 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
     );
 
     fixture
-        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
+        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 3_000)
         .await
         .unwrap();
 
@@ -455,7 +455,7 @@ async fn convert_produces_fixed_loan_with_expected_fields() {
     // Convert. Cap the acceptable rate at 1000 bps (well above the 425
     // bps ask), so the cross goes through.
     fixture
-        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 1_000)
+        .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 3_000)
         .await
         .unwrap();
 
@@ -500,8 +500,10 @@ async fn convert_produces_fixed_loan_with_expected_fields() {
         "converted loan must be Active immediately post-crank"
     );
     assert_eq!(
-        new_loan.lender_rate_bps, ASK_RATE_BPS,
-        "converted Fixed loan adopts the crossed ask's rate"
+        new_loan.lender_rate_bps,
+        ASK_RATE_BPS + mainnet::USDC_LIVE_LENDING_APR_BPS,
+        "converted Fixed loan adopts the crossed ask's stored rate \
+         (spread + live bank APR, v1 D4)"
     );
     // Converted Fixed loan inherits the REMAINING term of the original
     // P2Pool loan (the borrower keeps their original loan-open clock),

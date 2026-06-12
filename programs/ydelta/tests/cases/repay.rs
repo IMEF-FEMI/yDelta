@@ -80,7 +80,7 @@ async fn match_one_loan(fixture: &MarketFixture) -> (solana_sdk::signature::Keyp
             &borrower,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             TERM_SECONDS,
             PRINCIPAL_ATOMS,
             COLLATERAL_ATOMS,
@@ -112,11 +112,14 @@ async fn full_repay_marks_loan_repaid_and_credits_collateral_back() {
     assert_eq!(loan_pre.principal_debt_atoms, PRINCIPAL_ATOMS);
     assert_eq!(loan_pre.outstanding_debt_atoms, PRINCIPAL_ATOMS);
     assert_eq!(loan_pre.collateral_atoms, COLLATERAL_ATOMS);
-    // Rate matching: lender_rate == ask_rate (600), borrower_rate ==
-    // max(bid_rate, ask_rate + protocol_fee_bps_floor). The floor
-    // defaults to 0 on a fresh market, so borrower_rate == 800.
-    assert_eq!(loan_pre.lender_rate_bps, 600);
-    assert_eq!(loan_pre.borrower_rate_bps, 800);
+    // Rate matching (v1 D4): lender_rate == stored ask rate (spread 600
+    // + live bank APR); borrower_rate == max(bid, ask + floor); the
+    // floor defaults to 0 → borrower_rate == 3_000 (the bid).
+    assert_eq!(
+        loan_pre.lender_rate_bps,
+        600 + mainnet::USDC_LIVE_LENDING_APR_BPS
+    );
+    assert_eq!(loan_pre.borrower_rate_bps, 3_000);
     // Conservation holds at promotion.
     fixture.assert_loan_conservation_holds(0).await;
 

@@ -88,7 +88,7 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
             &bob,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal_atoms,
             collateral_atoms,
@@ -138,11 +138,15 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
     assert_eq!(loan.principal_debt_atoms, principal_atoms);
     assert_eq!(loan.outstanding_debt_atoms, principal_atoms); // origination_bps = 0
     assert_eq!(loan.lender_claimable_atoms, principal_atoms);
-    // Rate-stamping invariants: lender_rate == ask_rate (600);
-    // borrower_rate == max(bid_rate, ask_rate + protocol_fee_bps_floor).
-    // protocol_fee_bps_floor defaults to 0 → borrower_rate == 800 (bid_rate).
-    assert_eq!(loan.borrower_rate_bps, 800);
-    assert_eq!(loan.lender_rate_bps, 600);
+    // Rate-stamping invariants (v1 D4): lender_rate == stored ask rate
+    // (spread 600 + live bank APR); borrower_rate ==
+    // max(bid_rate, ask_rate + protocol_fee_bps_floor); floor defaults
+    // to 0 → borrower_rate == 3_000 (bid_rate).
+    assert_eq!(loan.borrower_rate_bps, 3_000);
+    assert_eq!(
+        loan.lender_rate_bps,
+        600 + mainnet::USDC_LIVE_LENDING_APR_BPS
+    );
     assert!(loan.matures_at_unix > loan.started_at_unix);
     // Term must be exactly the placed term — the cranker's stamp.
     assert_eq!(
@@ -236,7 +240,7 @@ async fn promote_matched_loan_keeps_borrower_and_fee_claims_backed() {
             &bob,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal_atoms,
             100_000_000,
@@ -342,7 +346,7 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
             &bob,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal_atoms,
             100_000_000,

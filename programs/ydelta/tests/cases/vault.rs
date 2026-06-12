@@ -255,22 +255,23 @@ fn global_vault_withdraw_params_borsh_round_trip() {
 // ─────────────────── Group E — curator ixs ───────────────────
 
 #[test]
-fn place_order_for_sub_vault_ix_has_six_accounts() {
-    let mint = Pubkey::new_unique();
+fn place_order_for_sub_vault_ix_has_eight_accounts() {
+    let bank = Pubkey::new_unique();
     let market = Pubkey::new_unique();
     let fee_payer = Keypair::new();
     let curator = Keypair::new();
+    // v1 D4: + debt_bank + marginfi_group for the live-APR computation.
     let ix = place_order_for_sub_vault_instruction(
-        &mint,
+        &bank,
         &market,
         &fee_payer.pubkey(),
         &curator.pubkey(),
+        &Pubkey::new_unique(), // debt_bank
+        &Pubkey::new_unique(), // marginfi_group
         1,
-        500,
-        30 * 86_400,
         0,
     );
-    assert_eq!(ix.accounts.len(), 6);
+    assert_eq!(ix.accounts.len(), 8);
 }
 
 #[test]
@@ -290,38 +291,35 @@ fn cancel_order_for_sub_vault_ix_has_six_accounts() {
 }
 
 #[test]
-fn update_order_for_sub_vault_ix_has_six_accounts() {
-    let mint = Pubkey::new_unique();
+fn update_order_for_sub_vault_ix_has_eight_accounts() {
+    let bank = Pubkey::new_unique();
     let market = Pubkey::new_unique();
     let fee_payer = Keypair::new();
     let curator = Keypair::new();
     let ix = update_order_for_sub_vault_instruction(
-        &mint,
+        &bank,
         &market,
         &fee_payer.pubkey(),
         &curator.pubkey(),
+        &Pubkey::new_unique(), // debt_bank
+        &Pubkey::new_unique(), // marginfi_group
         0,
-        600,
-        45 * 86_400,
         0,
     );
-    assert_eq!(ix.accounts.len(), 6);
+    assert_eq!(ix.accounts.len(), 8);
 }
 
 #[test]
 fn place_order_for_sub_vault_params_borsh_round_trip() {
     let original = PlaceOrderForSubVaultParams {
         sub_vault_id: 5,
-        rate_bps: 800,
-        term_seconds: 30 * 86_400,
-        flags: 0,
+        flags: 3,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
     let decoded = PlaceOrderForSubVaultParams::try_from_slice(&data).unwrap();
     assert_eq!(decoded.sub_vault_id, 5);
-    assert_eq!(decoded.rate_bps, 800);
-    assert_eq!(decoded.term_seconds, 30 * 86_400);
+    assert_eq!(decoded.flags, 3);
 }
 
 #[test]
@@ -337,16 +335,13 @@ fn cancel_order_for_sub_vault_params_borsh_round_trip() {
 fn update_order_for_sub_vault_params_borsh_round_trip() {
     let original = UpdateOrderForSubVaultParams {
         sub_vault_id: 5,
-        new_rate_bps: 900,
-        new_term_seconds: 45 * 86_400,
-        new_flags: 0,
+        new_flags: 1,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
     let decoded = UpdateOrderForSubVaultParams::try_from_slice(&data).unwrap();
     assert_eq!(decoded.sub_vault_id, 5);
-    assert_eq!(decoded.new_rate_bps, 900);
-    assert_eq!(decoded.new_term_seconds, 45 * 86_400);
+    assert_eq!(decoded.new_flags, 1);
 }
 
 #[test]

@@ -41,7 +41,7 @@ async fn ob_only_flag_accepted_by_place_order() {
             &bob,
             Side::Bid,
             OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal,
             collateral,

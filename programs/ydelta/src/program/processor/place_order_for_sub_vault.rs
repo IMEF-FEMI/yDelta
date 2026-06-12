@@ -1,8 +1,12 @@
-//! `PlaceOrderForSubVault` — curator rests a vault-owned ask on a market for
-//! one of their sub-vaults. Signer is the profile's `curator`. Rejected if
-//! the profile is sunset; clamps `term_seconds` to `profile.max_term_seconds`.
-//! Claims a vault-owned `ClaimedSeat` on first use, rests an ask via
-//! `rest_vault_ask`, and inserts a `SubVaultOrderRef` on the global vault.
+//! `PlaceOrderForSubVault` — curator rests a vault-owned ask on a market
+//! for one of their sub-vaults. Signer is the sub-vault's `curator`.
+//! v1 D4: the ix takes NO rate or term — the stored rate is computed as
+//! `live marginfi lending APR (ceil bps) + sub_vault.spread_bps` and the
+//! term is `sub_vault.max_term_seconds`, so repricing every market is a
+//! parameterless re-sync. Rejected if the sub-vault is sunset. Claims a
+//! vault-owned `ClaimedSeat` on first use, rests an ask via
+//! `rest_vault_ask`, and inserts a `SubVaultOrderRef` on the global
+//! vault.
 
 use std::cell::RefMut;
 
@@ -25,7 +29,7 @@ use crate::state::vault::{
 };
 use crate::state::ClaimedSeat;
 use crate::state::{MarketFixed, Side, GLOBAL_VAULT_FIXED_SIZE, VAULT_NODE_BLOCK_SIZE};
-use crate::validation::loaders::CancelOrderForSubVaultContext;
+use crate::validation::loaders::PlaceOrderForSubVaultContext;
 
 use super::shared::{expand_market_to_free_blocks, get_mut_dynamic_account};
 
@@ -34,10 +38,6 @@ use super::shared::{expand_market_to_free_blocks, get_mut_dynamic_account};
 pub struct PlaceOrderForSubVaultParams {
     /// Sub-vault ID on the global vault (1-based; 0 is the sentinel).
     pub sub_vault_id: u16,
-    /// Ask rate in bps that the profile is willing to lend at.
-    pub rate_bps: u16,
-    /// Loan term in seconds; must be `<= profile.max_term_seconds`.
-    pub term_seconds: u32,
     /// Order flag bits (see `state::market_helpers` flag constants).
     pub flags: u8,
 }
@@ -50,19 +50,21 @@ pub fn process_place_order_for_sub_vault(
     data: &[u8],
 ) -> ProgramResult {
     let params = PlaceOrderForSubVaultParams::try_from_slice(data)?;
-    let CancelOrderForSubVaultContext {
+    let PlaceOrderForSubVaultContext {
         fee_payer,
         curator,
         vault,
         market,
+        debt_bank,
+        marginfi_group,
         _system_program,
-    } = CancelOrderForSubVaultContext::load(accounts)?;
+    } = PlaceOrderForSubVaultContext::load(accounts)?;
 
     let vault_key = *vault.info.key;
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    {
+    let (spread_bps, term_seconds): (u16, u32) = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
@@ -92,14 +94,23 @@ pub fn process_place_order_for_sub_vault(
             YdeltaError::VaultCuratorRequired,
             "place_order_for_sub_vault: signer is not profile.curator"
         )?;
-        require!(
-            params.term_seconds <= profile.max_term_seconds,
-            YdeltaError::VaultOrderTermExceedsProfileMax,
-            "term_seconds {} > profile.max_term_seconds {}",
-            params.term_seconds,
-            { profile.max_term_seconds }
-        )?;
-    }
+        (profile.spread_bps, profile.max_term_seconds)
+    };
+
+    // v1 D4: stored rate = live bank lending APR (ceil) + sub-vault
+    // spread. Overflow-checked: a stored rate must fit u16.
+    let bank_apr_bps: u16 = crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
+        debt_bank.info,
+        marginfi_group.info,
+    )?;
+    let rate_bps: u16 = bank_apr_bps.checked_add(spread_bps).ok_or_else(|| {
+        solana_program::msg!(
+            "place_order_for_sub_vault: bank APR {} + spread {} overflows u16",
+            bank_apr_bps,
+            spread_bps
+        );
+        solana_program::program_error::ProgramError::from(YdeltaError::MathOverflow)
+    })?;
 
     let seat_exists: bool = {
         let market_data: &std::cell::Ref<&mut [u8]> = &market.info.try_borrow_data()?;
@@ -160,8 +171,8 @@ pub fn process_place_order_for_sub_vault(
             RestVaultAskArgs {
                 market_pubkey: market_key,
                 maker_seat_index: taker_seat_index,
-                rate_bps: params.rate_bps,
-                term_seconds: params.term_seconds,
+                rate_bps,
+                term_seconds,
                 flags: params.flags,
                 now_unix_ts: now,
             },
@@ -204,8 +215,8 @@ pub fn process_place_order_for_sub_vault(
             market_key,
             params.sub_vault_id,
             Side::Ask as u8,
-            params.rate_bps,
-            params.term_seconds,
+            rate_bps,
+            term_seconds,
             order_sequence,
             now,
         )?;
@@ -217,9 +228,9 @@ pub fn process_place_order_for_sub_vault(
         sub_vault_id: params.sub_vault_id,
         side: Side::Ask as u8,
         _pad0: [0; 5],
-        rate_bps: params.rate_bps,
+        rate_bps,
         _pad1: [0; 2],
-        term_seconds: params.term_seconds,
+        term_seconds,
         order_sequence_in_market: order_sequence,
     })?;
 

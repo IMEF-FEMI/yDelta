@@ -41,12 +41,17 @@ async fn vault_with_asks(
         let sub_vault_id = (i as u16) + 1;
         let curator = fixture.create_trader().await;
         fixture.refresh_blockhash().await;
+        // v1 D4: the per-ask rate/term live on the SUB-VAULT (spread +
+        // max term) — set them at creation; placement is parameterless.
+        let _ = &admin;
         fixture
-            .create_sub_vault(
-                &admin,
+            .create_pool_sub_vault_full(
                 curator.pubkey(),
-                /*max_ltv_bps=*/ Some(8_000),
-                /*max_term_seconds=*/ 90 * 86_400,
+                /*spread_bps=*/ *rate_bps,
+                /*max_ltv_bps=*/ 8_000,
+                /*liquidation_ltv_bps=*/ 9_000,
+                /*max_term_seconds=*/ *term_seconds,
+                /*curator_fee_bps=*/ 0,
             )
             .await
             .unwrap();
@@ -103,7 +108,7 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
             &borrower,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            /*rate_bps=*/ 800,
+            /*rate_bps=*/ 3_000,
             30 * 86_400,
             principal_atoms,
             /*collateral_atoms=*/ 50_000_000,
@@ -170,7 +175,7 @@ async fn match_picks_best_ask_first() {
             &borrower,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             1_000_000,
             50_000_000,
@@ -228,7 +233,7 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
             &borrower,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             1_000_000,
             50_000_000,
@@ -281,7 +286,7 @@ async fn match_sweeps_multiple_vault_asks() {
             &borrower,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             70_000_000,
             // 70_000_000 USDC atoms ($70) of debt; post ~3 SOL of wSOL
@@ -364,7 +369,7 @@ async fn match_multi_cross_full_fill_freezes_no_collateral_dust() {
             &borrower,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            /*rate_bps=*/ 800,
+            /*rate_bps=*/ 3_000,
             30 * 86_400,
             bid_principal,
             bid_collateral,

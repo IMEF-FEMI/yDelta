@@ -360,6 +360,21 @@ pub struct PlaceOrderForSubVaultLog {
 }
 impl_discriminant!(PlaceOrderForSubVaultLog);
 
+/// Emitted when the matching engine skips an ask whose stored rate has
+/// fallen below the live marginfi lending APR (v1 D5 fill-time floor).
+/// The curator re-syncs with a parameterless `update_order_for_sub_vault`.
+#[repr(C)]
+#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
+pub struct AskSkippedBelowFloorLog {
+    pub market: Pubkey,
+    pub sub_vault_id: u16,
+    pub ask_rate_bps: u16,
+    pub floor_bps: u16,
+    pub _pad0: [u8; 2],
+    pub order_sequence: u64,
+}
+impl_discriminant!(AskSkippedBelowFloorLog);
+
 /// Emitted from `process_cancel_order_for_sub_vault` and from the
 /// admin-cancel + update-order paths. `is_replace = 1` indicates the
 /// cancel half of a cancel-and-replace.
