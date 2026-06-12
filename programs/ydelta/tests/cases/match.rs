@@ -38,7 +38,7 @@ async fn vault_with_asks(
     fixture.create_vault(&admin).await.unwrap();
 
     for (i, (rate_bps, term_seconds, idle_atoms)) in profile_specs.iter().enumerate() {
-        let sub_vault_id = (i as u8) + 1;
+        let sub_vault_id = (i as u16) + 1;
         let curator = fixture.create_trader().await;
         fixture.refresh_blockhash().await;
         fixture

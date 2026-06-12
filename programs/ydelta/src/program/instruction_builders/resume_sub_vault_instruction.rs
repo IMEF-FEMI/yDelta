@@ -18,7 +18,7 @@ use crate::state::vault::global_vault_pda;
 pub fn resume_sub_vault_instruction(
     mint: &Pubkey,
     payer: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
     let mut data = YdeltaInstruction::ResumeSubVault.to_vec();

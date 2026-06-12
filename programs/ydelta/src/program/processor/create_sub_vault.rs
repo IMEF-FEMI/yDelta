@@ -108,7 +108,7 @@ pub fn process_create_sub_vault(
         vault_expand_profile_block(header, dynamic)?;
     }
 
-    let assigned_profile_id: u8;
+    let assigned_profile_id: u16;
     {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
@@ -151,7 +151,7 @@ pub fn process_create_sub_vault(
         curator: params.curator,
         sub_vault_id: assigned_profile_id,
         _reserved0: 0,
-        _pad0: [0; 2],
+        _pad0: [0; 1],
         max_ltv_bps: stored_max_ltv_bps,
         _pad1: [0; 2],
         max_term_seconds: params.max_term_seconds,

@@ -97,14 +97,14 @@ pub struct GlobalVaultFixed {
     /// Total bytes currently allocated across both dynamic regions.
     pub num_bytes_allocated: u32,
 
-    /// Number of live `SubVault` nodes.
-    pub sub_vault_count: u8,
+    /// Number of live `SubVault` nodes (u16: Private sub-vault creation
+    /// is permissionless, so the old u8 ceiling was griefable).
+    pub sub_vault_count: u16,
     /// Bump for `global_vault_signer`.
     pub global_vault_signer_bump: u8,
 
     /// Account layout version; checked by loaders.
     pub version: u8,
-    _pad0: [u8; 1],
     /// Number of live `SubVaultDepositorSeat` nodes.
     pub claimed_seat_count: u32,
     /// Number of live `SubVaultOrderRef` nodes.
@@ -118,11 +118,12 @@ pub struct GlobalVaultFixed {
 
     /// Per-vault pause switch.
     pub is_paused: u8,
+    _pad2a: [u8; 1],
 
-    /// Next sub-vault id to assign. Starts at 1; 0 is the
-    /// invalid/sentinel id.
-    pub next_sub_vault_id: u8,
-    _pad2: [u8; 6],
+    /// Next sub-vault id to assign (monotonic, never reused). Starts at
+    /// 1; 0 is the invalid/sentinel id.
+    pub next_sub_vault_id: u16,
+    _pad2: [u8; 4],
 
     _reserved: [u64; 1],
 }
@@ -160,15 +161,15 @@ impl GlobalVaultFixed {
             sub_vault_count: 0,
             global_vault_signer_bump,
             version: crate::state::constants::ACCOUNT_LAYOUT_VERSION,
-            _pad0: [0; 1],
             claimed_seat_count: 0,
             open_order_count: 0,
             _pad1: [0; 4],
             pending_global_vault_admin: Pubkey::default(),
             _reserved_aggregates: [0; 4],
             is_paused: 0,
+            _pad2a: [0; 1],
             next_sub_vault_id: 1,
-            _pad2: [0; 6],
+            _pad2: [0; 4],
             _reserved: [0; 1],
         }
     }
@@ -248,26 +249,48 @@ const_assert_eq!(
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct SubVault {
-    /// 1-based profile id within the vault.
-    pub sub_vault_id: u8,
-    /// When non-zero, profile is sunset: deposits, new orders, updates,
+    /// 1-based sub-vault id within the vault (monotonic, never reused).
+    pub sub_vault_id: u16,
+    /// When non-zero, sub-vault is sunset: deposits, new orders, updates,
     /// and matches reject; withdraw / cancel / fee-claim / repay /
     /// liquidate still operate.
     pub is_sunset: u8,
-    _pad0: [u8; 6],
+    /// `SubVaultKind` discriminant: 0 = Pool (curator-run, pooled
+    /// deposits), 1 = Private (single-owner). Semantics enforced by the
+    /// deposit/withdraw/create processors (v1 D2).
+    pub kind: u8,
+    /// Quoted spread over the market's live marginfi lending APR, in bps.
+    /// Placement computes `bank_apr_bps + spread_bps` and stores the
+    /// result in the order (v1 D4).
+    pub spread_bps: u16,
+    _pad0: [u8; 2],
 
-    /// Curator pubkey; signs curator-only instructions on this profile.
+    /// Curator pubkey; signs curator-only instructions on this sub-vault.
+    /// For Private sub-vaults this is the owner.
     pub curator: Pubkey,
 
-    /// LTV cap for this profile in bps (lender-side policy, read live at
-    /// match time). Required at creation; the marginfi-auto sentinel was
-    /// removed (v1 D17).
+    /// Origination LTV cap in bps (lender-side policy, read live at
+    /// match time). Required at creation; not bounded by marginfi
+    /// (v1 D17).
     pub max_ltv_bps: u16,
-    _pad1: [u8; 2],
-    /// Maximum loan term in seconds this profile will fill.
+    /// Liquidation trigger in bps; enforced ≥ `max_ltv_bps +
+    /// MIN_LIQ_GAP_BPS` at create/update, stamped onto loans at match
+    /// (v1 D17).
+    pub liquidation_ltv_bps: u16,
+    /// Maximum loan term in seconds this sub-vault will fill.
     pub max_term_seconds: u32,
 
-    _pad2: [u8; 16],
+    /// Curator management fee in bps, set by the protocol admin at Pool
+    /// creation (≤ MAX_CURATOR_FEE_BPS); 0 for Private. Snapshotted at
+    /// match (v1 D3b).
+    pub curator_fee_bps: u16,
+    /// Resting asks across all markets; inc on place, dec on
+    /// cancel/admin-cancel (v1 D16).
+    pub open_orders_count: u16,
+    /// Open loans (queued matches + promoted, all markets); inc at fill,
+    /// dec at full close (v1 D16).
+    pub open_loans_count: u32,
+    _pad2: [u8; 8],
 
     /// Total depositor shares outstanding in this profile.
     pub total_shares: u128,
@@ -331,12 +354,14 @@ const_assert_eq!(size_of::<SubVault>() % 16, 0);
 
 impl SubVault {
     /// Returns the tree key (the 1-based profile id).
-    pub fn key(&self) -> u8 {
+    pub fn key(&self) -> u16 {
         self.sub_vault_id
     }
 
-    /// `true` when every accounting field is zero — the gate
+    /// `true` when every accounting field and counter is zero — the gate
     /// `remove_sub_vault` uses to decide whether deletion is safe.
+    /// Includes the order/loan counters (v1 D16) so a sub-vault with
+    /// resting asks or open loans can never be removed.
     pub fn is_empty(&self) -> bool {
         self.total_shares == 0
             && self.total_assets_atoms == 0
@@ -345,12 +370,16 @@ impl SubVault {
             && self.encumbered_in_orders_atoms == 0
             && self.accumulated_curator_fee_atoms == 0
             && self.pending_claim_atoms == 0
+            && self.open_orders_count == 0
+            && self.open_loans_count == 0
     }
 
-    /// Build a fresh profile with the supplied identity / cap fields
-    /// and all accounting fields zeroed.
+    /// Build a fresh sub-vault with the supplied identity / cap fields
+    /// and all accounting fields zeroed. The v1 fields (`kind`,
+    /// `spread_bps`, `liquidation_ltv_bps`, `curator_fee_bps`) start
+    /// zeroed; the creation processors stamp them (phase 2).
     pub fn new_empty(
-        sub_vault_id: u8,
+        sub_vault_id: u16,
         curator: Pubkey,
         max_ltv_bps: u16,
         max_term_seconds: u32,
@@ -358,12 +387,17 @@ impl SubVault {
         Self {
             sub_vault_id,
             is_sunset: 0,
-            _pad0: [0; 6],
+            kind: 0,
+            spread_bps: 0,
+            _pad0: [0; 2],
             curator,
             max_ltv_bps,
-            _pad1: [0; 2],
+            liquidation_ltv_bps: 0,
             max_term_seconds,
-            _pad2: [0; 16],
+            curator_fee_bps: 0,
+            open_orders_count: 0,
+            open_loans_count: 0,
+            _pad2: [0; 8],
             total_shares: 0,
             total_assets_atoms: 0,
             total_principal_atoms: 0,
@@ -421,8 +455,8 @@ pub struct SubVaultDepositorSeat {
     /// Depositor wallet.
     pub owner: Pubkey,
     /// Sub-vault id.
-    pub sub_vault_id: u8,
-    _pad0: [u8; 15],
+    pub sub_vault_id: u16,
+    _pad0: [u8; 14],
     /// Depositor's share balance.
     pub shares: u128,
     /// Snapshot of the profile's supply-yield index at last touch.
@@ -444,7 +478,7 @@ const_assert_eq!(size_of::<SubVaultDepositorSeat>() % 8, 0);
 impl SubVaultDepositorSeat {
     /// Builds a probe value with identity fields set and all balance
     /// fields zeroed; used for tree lookups.
-    pub fn probe(owner: Pubkey, sub_vault_id: u8) -> Self {
+    pub fn probe(owner: Pubkey, sub_vault_id: u16) -> Self {
         Self {
             owner,
             sub_vault_id,
@@ -491,11 +525,11 @@ pub struct SubVaultOrderRef {
     /// Market the ask rests on.
     pub market: Pubkey,
     /// Sub-vault id.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 
     /// Side (always `Side::Ask` for sub-vault orders).
     pub side: u8,
-    _pad0: [u8; 2],
+    _pad0: [u8; 1],
     /// Quoted rate.
     pub rate_bps: u16,
     _pad1: [u8; 2],
@@ -516,12 +550,12 @@ const_assert_eq!(size_of::<SubVaultOrderRef>() % 8, 0);
 impl SubVaultOrderRef {
     /// Builds a probe value with identity fields set and order detail
     /// fields zeroed; used for tree lookups.
-    pub fn probe(market: Pubkey, sub_vault_id: u8) -> Self {
+    pub fn probe(market: Pubkey, sub_vault_id: u16) -> Self {
         Self {
             market,
             sub_vault_id,
             side: 0,
-            _pad0: [0; 2],
+            _pad0: [0; 1],
             rate_bps: 0,
             _pad1: [0; 2],
             term_seconds: 0,
@@ -886,7 +920,7 @@ pub fn upsert_sub_vault_depositor_seat(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     owner: Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Result<DataIndex, ProgramError> {
     let probe = SubVaultDepositorSeat::probe(owner, sub_vault_id);
     let existing_idx = {
@@ -921,7 +955,7 @@ pub fn remove_sub_vault_depositor_seat(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     owner: Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Result<DataIndex, ProgramError> {
     let probe = SubVaultDepositorSeat::probe(owner, sub_vault_id);
     let existing_idx = {
@@ -952,7 +986,7 @@ pub fn insert_sub_vault_order_ref(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     market: Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
     side: u8,
     rate_bps: u16,
     term_seconds: u32,
@@ -988,7 +1022,7 @@ pub fn insert_sub_vault_order_ref(
         market,
         sub_vault_id,
         side,
-        _pad0: [0; 2],
+        _pad0: [0; 1],
         rate_bps,
         _pad1: [0; 2],
         term_seconds,
@@ -1015,7 +1049,7 @@ pub fn insert_sub_vault_order_ref(
 pub fn remove_sub_vault(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Result<DataIndex, ProgramError> {
     let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
     let idx = {
@@ -1055,7 +1089,7 @@ pub fn remove_sub_vault_order_ref(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     market: Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Result<DataIndex, ProgramError> {
     let probe = SubVaultOrderRef {
         market,

@@ -270,8 +270,8 @@ pub struct RepaymentClaimedForSubVaultLog {
     pub market: Pubkey,
     pub loan: Pubkey,
     pub global_vault: Pubkey,
-    pub sub_vault_id: u8,
-    pub _pad0: [u8; 7],
+    pub sub_vault_id: u16,
+    pub _pad0: [u8; 6],
     pub claimed_atoms: u64,
     pub principal_atoms: u64,
     pub _pad1: [u8; 8],
@@ -293,18 +293,17 @@ pub struct VaultCreatedLog {
 }
 impl_discriminant!(VaultCreatedLog);
 
-/// Emitted from `process_create_sub_vault` after the profile is
-/// appended to the vault's `sub_vaults` tree. `max_ltv_bps == 0`
-/// means the vault inherited the marginfi-derived cap.
+/// Emitted from `process_create_sub_vault` after the sub-vault is
+/// appended to the vault's `sub_vaults` tree.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct SubVaultCreatedLog {
     pub global_vault: Pubkey,
     pub curator: Pubkey,
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 
     pub _reserved0: u8,
-    pub _pad0: [u8; 2],
+    pub _pad0: [u8; 1],
     pub max_ltv_bps: u16,
     pub _pad1: [u8; 2],
     pub max_term_seconds: u32,
@@ -319,8 +318,8 @@ impl_discriminant!(SubVaultCreatedLog);
 pub struct SubVaultRemovedLog {
     pub global_vault: Pubkey,
     pub curator: Pubkey,
-    pub sub_vault_id: u8,
-    pub _pad0: [u8; 7],
+    pub sub_vault_id: u16,
+    pub _pad0: [u8; 6],
 }
 impl_discriminant!(SubVaultRemovedLog);
 
@@ -337,8 +336,8 @@ pub struct GlobalVaultDepositLog {
     pub atoms_in: u64,
     pub gain_atoms: u64,
     pub profile_total_assets_atoms: u64,
-    pub sub_vault_id: u8,
-    pub _padding: [u8; 7],
+    pub sub_vault_id: u16,
+    pub _padding: [u8; 6],
 }
 impl_discriminant!(GlobalVaultDepositLog);
 
@@ -349,9 +348,9 @@ impl_discriminant!(GlobalVaultDepositLog);
 pub struct PlaceOrderForSubVaultLog {
     pub global_vault: Pubkey,
     pub market: Pubkey,
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
     pub side: u8,
-    pub _pad0: [u8; 6],
+    pub _pad0: [u8; 5],
     pub rate_bps: u16,
     pub _pad1: [u8; 2],
     pub term_seconds: u32,
@@ -367,9 +366,9 @@ impl_discriminant!(PlaceOrderForSubVaultLog);
 pub struct CancelOrderForSubVaultLog {
     pub global_vault: Pubkey,
     pub market: Pubkey,
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
     pub is_replace: u8,
-    pub _pad0: [u8; 6],
+    pub _pad0: [u8; 5],
     pub order_sequence_in_market: u64,
 }
 impl_discriminant!(CancelOrderForSubVaultLog);
@@ -385,8 +384,8 @@ pub struct GlobalVaultWithdrawLog {
     pub profile_total_shares: u128,
     pub atoms_out: u64,
     pub profile_total_assets_atoms: u64,
-    pub sub_vault_id: u8,
-    pub _padding: [u8; 15],
+    pub sub_vault_id: u16,
+    pub _padding: [u8; 14],
 }
 impl_discriminant!(GlobalVaultWithdrawLog);
 

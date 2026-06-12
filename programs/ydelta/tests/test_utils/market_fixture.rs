@@ -855,13 +855,13 @@ impl MarketFixture {
     /// PDA. Caller is the signer; pass any keypair.
     ///
     /// Note: signature changed from `sequence: u64, cranker_refund` to
-    /// `sub_vault_id: u8`. The loan PDA is closed by repay/liquidate/
+    /// `sub_vault_id: u16`. The loan PDA is closed by repay/liquidate/
     /// settle now, so the per-loan address is irrelevant — claim keys
     /// on the seat lookup by `(market, vault, sub_vault_id)`.
     pub async fn claim_repayment_for_sub_vault(
         &self,
         cranker: &Keypair,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
         let market_pk = self.market.pubkey();
@@ -945,7 +945,7 @@ impl MarketFixture {
         &self,
         cranker: &Keypair,
         market_pk: Pubkey,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
         let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
@@ -1471,7 +1471,7 @@ impl MarketFixture {
         &self,
         depositor: &Keypair,
         depositor_token: Pubkey,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
         amount_atoms: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = global_vault_deposit_instruction(
@@ -1495,7 +1495,7 @@ impl MarketFixture {
         &self,
         depositor: &Keypair,
         depositor_token: Pubkey,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
         shares_to_burn: u128,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
@@ -1521,7 +1521,7 @@ impl MarketFixture {
     pub async fn update_sub_vault(
         &self,
         admin: &Keypair,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
         new_max_ltv_bps: Option<u16>,
         new_max_term_seconds: Option<u32>,
     ) -> Result<(), solana_program_test::BanksClientError> {
@@ -1541,7 +1541,7 @@ impl MarketFixture {
     pub async fn place_order_for_sub_vault_in_market(
         &self,
         curator: &Keypair,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
         market_pk: Pubkey,
         rate_bps: u16,
         term_seconds: u32,
@@ -1568,7 +1568,7 @@ impl MarketFixture {
     pub async fn place_order_for_sub_vault(
         &self,
         curator: &Keypair,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
         rate_bps: u16,
         term_seconds: u32,
         flags: u8,
@@ -1603,7 +1603,7 @@ impl MarketFixture {
         admin: &Keypair,
         depositor: &Keypair,
         curator: &Keypair,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
         max_ltv_bps: Option<u16>,
         rate_bps: u16,
         term_seconds: u32,
@@ -1649,7 +1649,7 @@ impl MarketFixture {
         &self,
         curator: &Keypair,
         curator_token: Pubkey,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
         let ix = claim_curator_fee_instruction(
@@ -1678,7 +1678,7 @@ impl MarketFixture {
     }
 
     /// Read the vault's `SubVault` for the given sub_vault_id.
-    pub async fn read_sub_vault(&self, sub_vault_id: u8) -> ydelta::state::vault::SubVault {
+    pub async fn read_sub_vault(&self, sub_vault_id: u16) -> ydelta::state::vault::SubVault {
         let (global_vault_pda, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
         let data = self.account_data(global_vault_pda).await;
         let size = std::mem::size_of::<ydelta::state::vault::GlobalVaultFixed>();
@@ -1714,7 +1714,7 @@ impl MarketFixture {
     pub async fn read_vault_seat(
         &self,
         vault: &Pubkey,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
     ) -> ydelta::state::ClaimedSeat {
         let data = self.account_data(self.market.pubkey()).await;
         let fixed_size = std::mem::size_of::<MarketFixed>();
@@ -1790,7 +1790,7 @@ impl MarketFixture {
     ///    encumbered_in_orders_atoms`.
     /// This is what guarantees a depositor's withdrawable atoms are
     /// physically backed.
-    pub async fn assert_vault_idle_invariant(&self, sub_vault_id: u8) {
+    pub async fn assert_vault_idle_invariant(&self, sub_vault_id: u16) {
         let p = self.read_sub_vault(sub_vault_id).await;
         let deployed_plus_encumbered: u128 =
             (p.deployed_principal_atoms as u128) + (p.encumbered_in_orders_atoms as u128);

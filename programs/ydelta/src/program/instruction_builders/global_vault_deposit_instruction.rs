@@ -33,7 +33,7 @@ pub fn global_vault_deposit_instruction(
     lending_pool: &Pubkey,
     liquidity_vault: &Pubkey,
     marginfi_program: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
     amount_atoms: u64,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);

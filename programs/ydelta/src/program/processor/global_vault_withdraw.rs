@@ -34,7 +34,7 @@ pub struct GlobalVaultWithdrawParams {
     /// Profile shares to redeem. Must be `> 0` and `<= seat.shares`.
     pub shares_to_burn: u128,
     /// Identifies the sub-vault to withdraw from.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Burn `shares_to_burn` from the signer's depositor seat and
@@ -367,7 +367,7 @@ pub fn process_global_vault_withdraw(
         atoms_out: payout_atoms,
         profile_total_assets_atoms: profile_total_assets_after,
         sub_vault_id: params.sub_vault_id,
-        _padding: [0; 15],
+        _padding: [0; 14],
     })?;
 
     Ok(())

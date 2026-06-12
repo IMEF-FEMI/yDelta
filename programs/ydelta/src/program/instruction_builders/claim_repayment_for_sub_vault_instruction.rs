@@ -27,7 +27,7 @@ use crate::validation::token_checkers::get_vault_address;
 pub fn claim_repayment_for_sub_vault_instruction(
     payer: &Pubkey,
     market: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
     global_vault: &Pubkey,
     debt_mint: &Pubkey,
     debt_bank: &Pubkey,

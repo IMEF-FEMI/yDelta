@@ -29,7 +29,7 @@ use super::shared::get_mut_dynamic_account;
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct CancelOrderForSubVaultParams {
     /// Identifies the sub-vault whose resting ask to cancel.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Cancel a sub-vault's resting market ask. Signer must equal the
@@ -143,7 +143,7 @@ pub fn process_cancel_order_for_sub_vault(
         market: market_key,
         sub_vault_id: params.sub_vault_id,
         is_replace: 0,
-        _pad0: [0; 6],
+        _pad0: [0; 5],
         order_sequence_in_market: order_sequence,
     })?;
 

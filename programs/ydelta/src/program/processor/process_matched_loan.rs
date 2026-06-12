@@ -108,7 +108,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
     let node_says_vault_lender: bool =
         node.flags & crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER != 0;
 
-    let (lender_kind, lender_sub_vault_id, lender_global_vault): (u8, u8, Pubkey) = {
+    let (lender_kind, lender_sub_vault_id, lender_global_vault): (u8, u16, Pubkey) = {
         let market_data = market.info.try_borrow_data()?;
         let claimed_seats_root = {
             let fixed: &MarketFixed =
@@ -130,7 +130,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
                 YdeltaError::IncorrectAccount,
                 "MatchedLoan has NIL lender seat but VAULT_LENDER flag set"
             )?;
-            (0u8, 0u8, Pubkey::default())
+            (0u8, 0u16, Pubkey::default())
         } else {
             require!(
                 node_says_vault_lender,
@@ -305,7 +305,7 @@ fn do_vault_settle<'a, 'info>(
     settle: &'a crate::validation::loaders::VaultSettleAccounts<'a, 'info>,
     lender_rate_bps: u16,
     curator_fee_bps: u16,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
     market_key: Pubkey,
     now_unix_ts: i64,
 ) -> ProgramResult {

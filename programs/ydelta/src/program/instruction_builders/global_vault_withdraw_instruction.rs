@@ -35,7 +35,7 @@ pub fn global_vault_withdraw_instruction(
     liquidity_vault: &Pubkey,
     bank_liquidity_vault_authority: &Pubkey,
     marginfi_program: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
     shares_to_burn: u128,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);

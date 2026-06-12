@@ -33,7 +33,7 @@ use super::shared::{expand_market_to_free_blocks, get_mut_dynamic_account};
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct PlaceOrderForSubVaultParams {
     /// Sub-vault ID on the global vault (1-based; 0 is the sentinel).
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
     /// Ask rate in bps that the profile is willing to lend at.
     pub rate_bps: u16,
     /// Loan term in seconds; must be `<= profile.max_term_seconds`.
@@ -216,7 +216,7 @@ pub fn process_place_order_for_sub_vault(
         market: market_key,
         sub_vault_id: params.sub_vault_id,
         side: Side::Ask as u8,
-        _pad0: [0; 6],
+        _pad0: [0; 5],
         rate_bps: params.rate_bps,
         _pad1: [0; 2],
         term_seconds: params.term_seconds,

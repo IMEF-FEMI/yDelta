@@ -21,7 +21,7 @@ pub fn cancel_order_for_sub_vault_instruction(
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
     let mut data = YdeltaInstruction::CancelOrderForSubVault.to_vec();

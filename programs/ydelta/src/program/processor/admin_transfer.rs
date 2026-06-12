@@ -148,7 +148,7 @@ pub fn process_accept_global_vault_admin(
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct TransferCuratorParams {
     /// Identifies the sub-vault whose curator is being transferred.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
     /// Pubkey to set as `SubVault.pending_curator`.
     pub new_curator: Pubkey,
 }
@@ -196,7 +196,7 @@ pub fn process_transfer_curator(
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct AcceptCuratorParams {
     /// Identifies the sub-vault to take curator control of.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Completes a curator transfer. Signer must equal the profile's

@@ -25,7 +25,7 @@ use crate::validation::loaders::RemoveSubVaultContext;
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct RemoveSubVaultParams {
     /// Sub-vault ID to remove (1-based; 0 is the sentinel).
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Remove a sunset sub-vault from the global vault. Errors with
@@ -82,7 +82,7 @@ pub fn process_remove_sub_vault(
         global_vault: vault_key,
         curator,
         sub_vault_id: params.sub_vault_id,
-        _pad0: [0; 7],
+        _pad0: [0; 6],
     })?;
 
     Ok(())

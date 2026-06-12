@@ -32,7 +32,7 @@ pub fn claim_curator_fee_instruction(
     token_program: &Pubkey,
     marginfi_program: &Pubkey,
     marginfi_group: &Pubkey,
-    sub_vault_id: u8,
+    sub_vault_id: u16,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
     let (global_vault_signer, _) = global_vault_signer_pda(&vault);

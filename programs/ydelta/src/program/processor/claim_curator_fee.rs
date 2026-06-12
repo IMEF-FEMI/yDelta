@@ -25,7 +25,7 @@ use crate::validation::loaders::ClaimCuratorFeeContext;
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct ClaimCuratorFeeParams {
     /// Identifies the sub-vault whose curator fee is being claimed.
-    pub sub_vault_id: u8,
+    pub sub_vault_id: u16,
 }
 
 /// Withdraw a profile's `accumulated_curator_fee_atoms` to the

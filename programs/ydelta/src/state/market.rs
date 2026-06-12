@@ -132,7 +132,12 @@ pub struct MatchedLoan {
 
     /// Curator-fee bps captured at match time; carried to `LoanFixed`.
     pub curator_fee_bps_snapshot: u16,
-    _reserved: [u8; 22],
+    /// Origination LTV cap stamped from the sub-vault at match (v1 D17).
+    pub origination_ltv_bps: u16,
+    /// Liquidation trigger stamped from the sub-vault at match (v1 D17);
+    /// carried to `LoanFixed` at promotion.
+    pub liquidation_ltv_bps: u16,
+    _reserved: [u8; 18],
 
     /// Lender-side share price snapshot used at loan PDA creation.
     pub lender_debt_share_price_snapshot_fp48: crate::math::Fp48,
@@ -229,12 +234,13 @@ pub struct MarketFixed {
     /// Total bytes currently allocated in the dynamic region.
     pub num_bytes_allocated: u32,
 
-    /// Reserved field from the legacy bid-tree layout (bids no longer
-    /// rest).
-    pub _reserved_bids_root: DataIndex,
+    /// Root of the bid `Bookside` red-black tree (restored in v1, D6 —
+    /// borrower residuals may rest; engine wiring lands in phase 4).
+    pub bids_root_index: DataIndex,
 
-    /// Reserved field from the legacy bid-tree layout.
-    pub _reserved_bids_best: DataIndex,
+    /// Max-index of the bid tree (points at the best — highest-rate —
+    /// bid).
+    pub bids_best_index: DataIndex,
     /// Root of the ask `Bookside` red-black tree.
     pub asks_root_index: DataIndex,
     /// Max-index of the ask tree (points at the best ask).
@@ -330,8 +336,8 @@ impl MarketFixed {
             order_sequence_number: 0,
             matched_loan_sequence: 0,
             num_bytes_allocated: 0,
-            _reserved_bids_root: NIL,
-            _reserved_bids_best: NIL,
+            bids_root_index: NIL,
+            bids_best_index: NIL,
             asks_root_index: NIL,
             asks_best_index: NIL,
             claimed_seats_root_index: NIL,
@@ -526,7 +532,7 @@ impl<Fixed: DerefOrBorrow<MarketFixed>, Dynamic: DerefOrBorrow<[u8]>>
     pub fn lookup_sub_vault_seat_index(
         &self,
         global_vault: &Pubkey,
-        sub_vault_id: u8,
+        sub_vault_id: u16,
     ) -> DataIndex {
         let MarketRef { fixed, dynamic } = self.borrow_market();
         let tree: ClaimedSeatTreeReadOnly =
