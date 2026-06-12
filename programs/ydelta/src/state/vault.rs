@@ -26,6 +26,12 @@ use super::constants::{
     VAULT_NODE_BLOCK_SIZE, VAULT_ORDER_REF_SIZE,
 };
 
+/// `SubVault.kind` tag: curator-run pool, multiple depositors (v1 D2).
+pub const SUB_VAULT_KIND_POOL: u8 = 0;
+/// `SubVault.kind` tag: single-owner sub-vault — the owner is the
+/// curator and the only allowed depositor; fee forced to 0 (v1 D2).
+pub const SUB_VAULT_KIND_PRIVATE: u8 = 1;
+
 /// PDA seed prefix for the per-bank `GlobalVault` account (v1 D1:
 /// vaults are keyed by marginfi bank, not mint — the idle MTM and all
 /// share accounting are only meaningful against one bank).

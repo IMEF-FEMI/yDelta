@@ -166,6 +166,16 @@ pub fn process_global_vault_deposit(
 
         let (shares, total_shares_after, total_assets_after, snapshot_supply, snapshot_delta) = {
             let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
+            // v1 D2: Private sub-vaults accept deposits only from their
+            // owner (the curator).
+            require!(
+                profile.kind != crate::state::vault::SUB_VAULT_KIND_PRIVATE
+                    || profile.curator == *payer.info.key,
+                YdeltaError::VaultCuratorRequired,
+                "global_vault_deposit: sub_vault_id {} is Private; only its \
+                 owner may deposit",
+                params.sub_vault_id
+            )?;
             require!(
                 profile.is_sunset == 0,
                 YdeltaError::SubVaultSunset,

@@ -16,7 +16,9 @@ use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use ydelta::program::instruction_builders::{
     cancel_order_for_sub_vault_instruction::cancel_order_for_sub_vault_instruction,
     claim_curator_fee_instruction::claim_curator_fee_instruction,
-    create_sub_vault_instruction::create_sub_vault_instruction,
+    create_sub_vault_instruction::{
+        create_pool_sub_vault_instruction, create_private_sub_vault_instruction,
+    },
     create_vault_instruction::create_vault_instruction,
     global_vault_deposit_instruction::global_vault_deposit_instruction,
     global_vault_withdraw_instruction::global_vault_withdraw_instruction,
@@ -26,7 +28,7 @@ use ydelta::program::instruction_builders::{
 };
 use ydelta::program::processor::cancel_order_for_sub_vault::CancelOrderForSubVaultParams;
 use ydelta::program::processor::claim_curator_fee::ClaimCuratorFeeParams;
-use ydelta::program::processor::create_sub_vault::CreateSubVaultParams;
+use ydelta::program::processor::create_sub_vault::CreatePoolSubVaultParams;
 use ydelta::program::processor::global_vault_deposit::GlobalVaultDepositParams;
 use ydelta::program::processor::global_vault_withdraw::GlobalVaultWithdrawParams;
 use ydelta::program::processor::place_order_for_sub_vault::PlaceOrderForSubVaultParams;
@@ -70,31 +72,59 @@ fn create_vault_ix_has_thirteen_accounts() {
 
 #[test]
 fn create_sub_vault_ix_has_four_accounts() {
-    let mint = Pubkey::new_unique();
+    let bank = Pubkey::new_unique();
     let payer = Keypair::new();
     let curator = Pubkey::new_unique();
-    let ix = create_sub_vault_instruction(&mint, &payer.pubkey(), &curator, Some(5_000), 30 * 86_400);
+    let pool_ix = create_pool_sub_vault_instruction(
+        &bank,
+        &payer.pubkey(),
+        &curator,
+        /*spread_bps=*/ 150,
+        /*max_ltv_bps=*/ 5_000,
+        /*liquidation_ltv_bps=*/ 6_000,
+        30 * 86_400,
+        /*curator_fee_bps=*/ 1_000,
+    );
     // payer (signer) + global_config + vault PDA + system_program.
     assert_eq!(
-        ix.accounts.len(),
+        pool_ix.accounts.len(),
         4,
-        "create_sub_vault account list includes global_config gate"
+        "create_pool_sub_vault account list includes global_config gate"
+    );
+    let private_ix = create_private_sub_vault_instruction(
+        &bank,
+        &payer.pubkey(),
+        150,
+        5_000,
+        6_000,
+        30 * 86_400,
+    );
+    assert_eq!(private_ix.accounts.len(), 4);
+    assert_eq!(
+        pool_ix.accounts[2].pubkey, private_ix.accounts[2].pubkey,
+        "both creators target the same bank-keyed vault PDA"
     );
 }
 
 #[test]
 fn create_sub_vault_params_borsh_round_trip() {
-    let original = CreateSubVaultParams {
+    let original = CreatePoolSubVaultParams {
         curator: Pubkey::new_unique(),
-        max_ltv_bps: Some(5_000),
+        spread_bps: 150,
+        max_ltv_bps: 5_000,
+        liquidation_ltv_bps: 6_000,
         max_term_seconds: 30 * 86_400,
+        curator_fee_bps: 1_000,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
-    let decoded = CreateSubVaultParams::try_from_slice(&data).unwrap();
+    let decoded = CreatePoolSubVaultParams::try_from_slice(&data).unwrap();
     assert_eq!(decoded.curator, original.curator);
-    assert_eq!(decoded.max_ltv_bps, Some(5_000));
+    assert_eq!(decoded.spread_bps, 150);
+    assert_eq!(decoded.max_ltv_bps, 5_000);
+    assert_eq!(decoded.liquidation_ltv_bps, 6_000);
     assert_eq!(decoded.max_term_seconds, 30 * 86_400);
+    assert_eq!(decoded.curator_fee_bps, 1_000);
 }
 
 #[test]

@@ -1,7 +1,8 @@
-//! `UpdateSubVault` — curator update of a sub-vault's mutable
-//! parameters. Signer/payer flow is loaded via `CreateSubVaultContext`.
-//! Each `Option<>` field is an override; `None` leaves the field unchanged.
-//! Rejected when the profile is sunset.
+//! `UpdateSubVault` — curator-gated update of a sub-vault's mutable
+//! parameters (v1 D15: the curator — the owner, for Private — manages
+//! their own spread / LTV pair / term; `curator_fee_bps` is immutable).
+//! Each `Option<>` field is an override; `None` leaves the field
+//! unchanged. Rejected when the sub-vault is sunset.
 
 use std::cell::RefMut;
 
@@ -15,7 +16,7 @@ use crate::state::vault::{
     get_mut_helper_sub_vault, GlobalVaultFixed, SubVault, SubVaultTreeReadOnly,
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
-use crate::validation::loaders::CreateSubVaultContext;
+use crate::validation::loaders::SubVaultMutationContext;
 
 /// Per-field overrides for a `SubVault`. `None` leaves the field
 /// unchanged; `Some(v)` is validated and written.
@@ -25,8 +26,13 @@ pub struct UpdateSubVaultParams {
     pub sub_vault_id: u16,
     /// New max LTV in bps; must be in `(0, 10_000)`.
     pub new_max_ltv_bps: Option<u16>,
+    /// New liquidation trigger in bps; the resulting pair must satisfy
+    /// `liquidation >= max_ltv + MIN_LIQ_GAP_BPS` (v1 D17).
+    pub new_liquidation_ltv_bps: Option<u16>,
     /// New max term in seconds; must be `> 0`.
     pub new_max_term_seconds: Option<u32>,
+    /// New spread over the live bank rate, in bps (v1 D4).
+    pub new_spread_bps: Option<u16>,
 }
 
 /// Update mutable parameters on a sub-vault. Rejected when the profile is
@@ -38,27 +44,11 @@ pub fn process_update_sub_vault(
 ) -> ProgramResult {
     let params = UpdateSubVaultParams::try_from_slice(data)?;
 
-    let CreateSubVaultContext {
-        payer: _,
+    let SubVaultMutationContext {
+        payer,
         vault,
         _system_program: _,
-    } = CreateSubVaultContext::load(accounts)?;
-
-    if let Some(v) = params.new_max_ltv_bps {
-        require!(
-            v > 0 && v < 10_000,
-            YdeltaError::SubVaultLtvOutOfRange,
-            "new_max_ltv_bps {} must be in (0, 10_000)",
-            v
-        )?;
-    }
-    if let Some(v) = params.new_max_term_seconds {
-        require!(
-            v > 0,
-            YdeltaError::SubVaultTermInvalid,
-            "new_max_term_seconds must be > 0"
-        )?;
-    }
+    } = SubVaultMutationContext::load(accounts)?;
 
     let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
     let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
@@ -77,6 +67,14 @@ pub fn process_update_sub_vault(
     )?;
 
     let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
+    // v1 D15: curator-gated (the owner, for Private sub-vaults).
+    require!(
+        profile.curator == *payer.info.key,
+        YdeltaError::VaultCuratorRequired,
+        "update_sub_vault: signer ({}) is not the sub-vault curator ({})",
+        payer.info.key,
+        profile.curator
+    )?;
     require!(
         profile.is_sunset == 0,
         YdeltaError::SubVaultSunset,
@@ -85,11 +83,26 @@ pub fn process_update_sub_vault(
         params.sub_vault_id
     )?;
 
-    if let Some(v) = params.new_max_ltv_bps {
-        profile.max_ltv_bps = v;
-    }
-    if let Some(v) = params.new_max_term_seconds {
-        profile.max_term_seconds = v;
+    // Validate the RESULTING pair/term so partial overrides cannot break
+    // the liq-gap invariant (v1 D17).
+    let next_max_ltv = params.new_max_ltv_bps.unwrap_or(profile.max_ltv_bps);
+    let next_liq_ltv = params
+        .new_liquidation_ltv_bps
+        .unwrap_or(profile.liquidation_ltv_bps);
+    let next_term = params
+        .new_max_term_seconds
+        .unwrap_or(profile.max_term_seconds);
+    crate::program::processor::create_sub_vault::validate_sub_vault_risk_params(
+        next_max_ltv,
+        next_liq_ltv,
+        next_term,
+    )?;
+
+    profile.max_ltv_bps = next_max_ltv;
+    profile.liquidation_ltv_bps = next_liq_ltv;
+    profile.max_term_seconds = next_term;
+    if let Some(v) = params.new_spread_bps {
+        profile.spread_bps = v;
     }
 
     Ok(())

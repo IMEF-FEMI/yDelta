@@ -2104,9 +2104,10 @@ impl<'a, 'info> ProtocolFeeClaimContext<'a, 'info> {
     }
 }
 
-/// Account context for `CreateVault` (tag 8). One-shot per mint:
-/// initializes `GlobalVaultFixed` + its marginfi integration account
-/// + the vault signer PDA. First caller becomes `global_vault_admin`.
+/// Account context for `CreateVault` (tag 8). One-shot per BANK
+/// (v1 D1) and permissionless (v1 D3): initializes `GlobalVaultFixed`
+/// + its marginfi integration account + the vault signer PDA. First
+/// caller becomes `global_vault_admin`.
 pub(crate) struct CreateVaultContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
 
@@ -2136,12 +2137,10 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        let global_config = load_global_config(account_iter)?;
-        require!(
-            *payer.info.key == global_config.get_fixed()?.protocol_admin,
-            YdeltaError::ProtocolAdminRequired,
-            "create_vault: signer must equal GlobalConfig.protocol_admin"
-        )?;
+        // v1 D3: vault creation is permissionless (one vault per bank,
+        // PDA-enforced); the global config is loaded only for the pause
+        // gate. The creator becomes the initial global_vault_admin.
+        let _ = load_global_config(account_iter)?;
         let vault_ai = next_account_info(account_iter)?;
         let mint = MintAccountInfo::new(next_account_info(account_iter)?)?;
         let vault_signer_ai = next_account_info(account_iter)?;
@@ -2754,15 +2753,18 @@ impl<'a, 'info> CancelOrderForSubVaultContext<'a, 'info> {
     }
 }
 
-/// Account context for `CreateSubVault` (tag 9). Vault-admin gated;
-/// appends a `SubVault` to the vault tree with a monotonic sub_vault_id.
-pub(crate) struct CreateSubVaultContext<'a, 'info> {
+/// Permissionless sub-vault mutation context: payer + global-config
+/// pause gate + vault (pause-gated) + system program. Used by
+/// `CreatePrivateSubVault` (anyone may open a Private sub-vault, v1 D2)
+/// and `UpdateSubVault` (the curator gate lives in the processor, which
+/// must look the sub-vault up anyway, v1 D15).
+pub(crate) struct SubVaultMutationContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
     pub _system_program: Program<'a, 'info>,
 }
 
-impl<'a, 'info> CreateSubVaultContext<'a, 'info> {
+impl<'a, 'info> SubVaultMutationContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
@@ -2776,13 +2778,44 @@ impl<'a, 'info> CreateSubVaultContext<'a, 'info> {
         let _system_program =
             Program::new(next_account_info(account_iter)?, &system_program::id())?;
 
-        let global_vault_admin: Pubkey = vault.get_fixed()?.global_vault_admin;
+        Ok(Self {
+            payer,
+            vault,
+            _system_program,
+        })
+    }
+}
+
+/// Account context for `CreatePoolSubVault` (tag 9). Protocol-admin
+/// gated (v1 D3: the admin creates the Pool and assigns its curator);
+/// appends a `SubVault` to the vault tree with a monotonic sub_vault_id.
+pub(crate) struct CreatePoolSubVaultContext<'a, 'info> {
+    pub payer: Signer<'a, 'info>,
+    pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
+    pub _system_program: Program<'a, 'info>,
+}
+
+impl<'a, 'info> CreatePoolSubVaultContext<'a, 'info> {
+    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
+        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
+
+        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let global_config = load_global_config(account_iter)?;
+        let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
+            next_account_info(account_iter)?,
+        )?;
+
+        require_vault_not_paused(&vault)?;
+        let _system_program =
+            Program::new(next_account_info(account_iter)?, &system_program::id())?;
+
+        let protocol_admin: Pubkey = global_config.get_fixed()?.protocol_admin;
         require!(
-            *payer.info.key == global_vault_admin,
-            YdeltaError::VaultAdminRequired,
-            "create_sub_vault: signer ({}) is not global_vault_admin ({})",
+            *payer.info.key == protocol_admin,
+            YdeltaError::ProtocolAdminRequired,
+            "create_pool_sub_vault: signer ({}) is not GlobalConfig.protocol_admin ({})",
             payer.info.key,
-            global_vault_admin
+            protocol_admin
         )?;
 
         Ok(Self {

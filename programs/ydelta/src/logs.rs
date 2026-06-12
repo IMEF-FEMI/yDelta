@@ -302,12 +302,14 @@ pub struct SubVaultCreatedLog {
     pub curator: Pubkey,
     pub sub_vault_id: u16,
 
-    pub _reserved0: u8,
+    /// `SUB_VAULT_KIND_POOL` or `SUB_VAULT_KIND_PRIVATE` (v1 D2).
+    pub kind: u8,
     pub _pad0: [u8; 1],
     pub max_ltv_bps: u16,
-    pub _pad1: [u8; 2],
+    pub liquidation_ltv_bps: u16,
     pub max_term_seconds: u32,
-    pub _pad2: [u8; 4],
+    pub spread_bps: u16,
+    pub curator_fee_bps: u16,
 }
 impl_discriminant!(SubVaultCreatedLog);
 

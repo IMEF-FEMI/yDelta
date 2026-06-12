@@ -46,6 +46,15 @@ pub const ACCOUNT_LAYOUT_VERSION: u8 = 2;
 /// `match_borrower_bid` before any seat/order work.
 pub const MIN_PRINCIPAL_ATOMS: u64 = 1;
 
+/// Protocol cap on a Pool sub-vault's `curator_fee_bps`, enforced at
+/// `CreatePoolSubVault` (v1 D3b). Private sub-vaults are always 0.
+pub const MAX_CURATOR_FEE_BPS: u16 = 2_000;
+
+/// Minimum gap between a sub-vault's origination `max_ltv_bps` and its
+/// `liquidation_ltv_bps`, enforced at create/update (v1 D17) so no loan
+/// can be born liquidatable.
+pub const MIN_LIQ_GAP_BPS: u16 = 200;
+
 /// Byte size of [`super::user_account::UserAccountFixed`].
 pub const USER_ACCOUNT_FIXED_SIZE: usize = 128;
 

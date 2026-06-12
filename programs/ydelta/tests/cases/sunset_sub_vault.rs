@@ -74,10 +74,20 @@ async fn sunset_blocks_param_update() {
     setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
     sunset(&fixture, &admin, 1).await;
 
+    // v1 D15: update is curator-gated, so even the CURATOR's update must
+    // reject on a sunset sub-vault…
+    let result = fixture
+        .update_sub_vault(&curator, 1, Some(7_500), None)
+        .await;
+    crate::assert_custom_error!(result, YdeltaError::SubVaultSunset);
+
+    // …and a non-curator (the vault admin) is rejected at the curator
+    // gate before the sunset check is even reached.
+    fixture.refresh_blockhash().await;
     let result = fixture
         .update_sub_vault(&admin, 1, Some(7_500), None)
         .await;
-    crate::assert_custom_error!(result, YdeltaError::SubVaultSunset);
+    crate::assert_custom_error!(result, YdeltaError::VaultCuratorRequired);
 }
 
 #[tokio::test]
