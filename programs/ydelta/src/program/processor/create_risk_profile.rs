@@ -28,8 +28,8 @@ pub struct CreateRiskProfileParams {
     /// Initial curator. Must be non-default; can be rotated later via
     /// `TransferCurator` / `AcceptCurator`.
     pub curator: Pubkey,
-    /// Per-profile LTV cap in bps. `Some(v)` requires `0 < v < 10_000`.
-    /// `None` stores `LTV_AUTO_FROM_MARGINFI` (marginfi-derived at match time).
+    /// Per-profile LTV cap in bps; required, `0 < v < 10_000`. The
+    /// marginfi-auto sentinel was removed (v1 D17) — `None` rejects.
     pub max_ltv_bps: Option<u16>,
     /// Maximum term any of this profile's asks will accept, in seconds.
     /// Must be `> 0`.
@@ -61,7 +61,9 @@ pub fn process_create_risk_profile(
             )?;
             v
         }
-        None => crate::state::constants::LTV_AUTO_FROM_MARGINFI,
+        None => {
+            return Err(YdeltaError::VaultProfileLtvOutOfRange.into());
+        }
     };
     require!(
         params.max_term_seconds > 0,

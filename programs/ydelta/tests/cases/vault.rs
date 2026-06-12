@@ -497,21 +497,13 @@ fn loan_fixed_with_vault_lender_fields_stamped() {
     assert_eq!(loan.lender_global_vault, vault_pk);
 }
 
-/// Vault-funded loans must not be sellable on the secondary book.
-/// The constraint is enforced by `PlaceOrderContext::load` — it
-/// requires `loan.lender_kind == OWNER_KIND_USER` for any
-/// `OrderKind::SecondaryLoanSale` placement. Vault loans run their
-/// full tenure; their only exit paths are: borrower repay,
-/// `settle_matured_loan` (post-maturity), or `liquidate_loan`
-/// (LTV-breach).
-///
-/// This test verifies the constant relationships that the loader
-/// gates on (the loader requires marginfi accounts so we can't
-/// reach the actual `process_place_order` execution path in a pure
-/// native test). The companion SBPF test for the runtime reject
-/// lives in `vault_e2e.rs` once a fixture method is in place.
+/// Pin the seat owner-kind discriminants: user seats and vault
+/// (risk-profile) seats must stay distinct, and the literal values are
+/// load-bearing for tree-key ordering and loader gates.
+/// (Secondary loan sale is out of scope for v1 — see docs/v1-spec.md §9;
+/// this test used to carry that framing but only ever pinned constants.)
 #[test]
-fn vault_loan_secondary_sale_constants_align() {
+fn owner_kind_discriminants_are_pinned() {
     // Sanity: vault-lender loans (`lender_kind = OWNER_KIND_RISK_PROFILE`)
     // must be a different value than the wallet path the loader
     // gates on.

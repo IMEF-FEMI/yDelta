@@ -44,16 +44,6 @@ pub const ACCOUNT_LAYOUT_VERSION: u8 = 1;
 /// `match_borrower_bid` before any seat/order work.
 pub const MIN_PRINCIPAL_ATOMS: u64 = 1;
 
-/// Sentinel value for `RiskProfile.max_ltv_bps` meaning "derive the cap
-/// from marginfi's `asset_weight_init` / `liability_weight_init` at match
-/// time". Resolved by `state::ltv::effective_max_ltv_bps_for_profile`.
-pub const LTV_AUTO_FROM_MARGINFI: u16 = u16::MAX;
-
-/// Safety buffer subtracted from the marginfi-derived LTV when the profile
-/// is configured with [`LTV_AUTO_FROM_MARGINFI`]. Holds the profile cap
-/// strictly inside the bank's init LTV.
-pub const LTV_AUTO_BUFFER_BPS: u16 = 500;
-
 /// Byte size of [`super::user_account::UserAccountFixed`].
 pub const USER_ACCOUNT_FIXED_SIZE: usize = 128;
 

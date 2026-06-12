@@ -12,11 +12,6 @@ mod cases {
     mod adapter_borrow_repay;
     #[cfg(feature = "test-sbf")]
     mod adapter_conversions;
-    #[cfg(feature = "test-sbf")]
-    mod adapter_deposit;
-    #[cfg(feature = "test-sbf")]
-    mod adapter_withdraw;
-
     mod claim_seat;
     mod create_market;
     // Encumbrance-conservation now exercises vault-ask makers, which

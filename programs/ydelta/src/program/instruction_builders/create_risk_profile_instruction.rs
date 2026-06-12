@@ -17,8 +17,8 @@ use crate::state::vault::global_vault_pda;
 /// Builds the `CreateRiskProfile` instruction for the vault keyed by `mint`.
 /// `payer` (signer) must be the vault admin. `curator` is stamped as the
 /// profile's curator. `max_ltv_bps = Some(n)` sets and enforces an explicit
-/// cap (basis points); `None` stores the `LTV_AUTO_FROM_MARGINFI` sentinel
-/// for marginfi-derived resolution at match time. `max_term_seconds` caps
+/// cap (basis points); `None` is rejected by the processor (the
+/// marginfi-auto sentinel was removed, v1 D17). `max_term_seconds` caps
 /// loan term in seconds.
 pub fn create_risk_profile_instruction(
     mint: &Pubkey,

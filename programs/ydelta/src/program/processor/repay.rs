@@ -440,21 +440,18 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
                 .ok_or(ProgramError::ArithmeticOverflow)?;
         }
 
-        // Full-repay close-out: decrement lender seat encumbrance + lend
-        // count, release borrower collateral, decrement borrower's
+        // Full-repay close-out: retire the lender's open-lend counter,
+        // release borrower collateral, decrement borrower's
         // open_borrow_count.
         if did_full_repay {
-            // Lender seat: undo the encumbrance that was created at
-            // promotion (process_matched_loan stamped debt_encumbered_shares
-            // and open_lend_count). The original encumbrance was sized at
-            // promotion-time `amount_to_asset_shares(principal)`.
-            let principal_shares: u128 = MarginfiV18Adapter
-                .amount_to_asset_shares(&[debt_bank.info.clone()], loan_principal)?;
-            lender_seat.debt_encumbered_shares = lender_seat
-                .debt_encumbered_shares
-                .saturating_sub(principal_shares);
-            lender_seat.open_lend_count =
-                lender_seat.open_lend_count.saturating_sub(1);
+            // Vault asks take no seat-level debt encumbrance — the profile's
+            // idle/deployed atom counters are the lender-side ledger — so the
+            // only seat-side close-out is retiring the open-lend counter the
+            // matching engine stamped at fill time.
+            lender_seat.open_lend_count = lender_seat
+                .open_lend_count
+                .checked_sub(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
 
             // Borrower seat: release collateral encumbrance + decrement
             // open_borrow_count.

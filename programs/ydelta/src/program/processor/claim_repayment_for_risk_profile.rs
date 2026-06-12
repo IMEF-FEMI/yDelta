@@ -156,14 +156,26 @@ pub fn process_claim_repayment_for_risk_profile(
     if actual_atoms == 0 {
         // Marginfi withdraw rounded to 0 atoms. This can only happen for
         // dust-sized share balances. Decrement the seat by what was
-        // actually burned (≤ pending_shares) so we don't loop forever
-        // and don't drift the seat tracking.
+        // actually burned (≤ pending_shares) so we don't drift the seat
+        // tracking.
+        //
+        // If marginfi burned ZERO shares (the dust rounds to 0 atoms AND
+        // 0 shares), `saturating_sub(0)` would leave the seat unchanged —
+        // and any keeper that triggers on `debt_withdrawable_shares > 0`
+        // would re-submit this exact no-op every interval, forever, paying
+        // a tx + priority fee each time. The dust is unrecoverable (it can
+        // never withdraw a whole atom), so forfeit it: zero the seat to
+        // clear the trigger permanently. Future repayments accumulate a
+        // fresh balance that sweeps normally.
         let market_data: &mut RefMut<&mut [u8]> = &mut market.info.try_borrow_mut_data()?;
         let da = get_mut_dynamic_account::<MarketFixed>(market_data);
         let seat = get_mut_helper_seat(da.dynamic, lender_seat_index).get_mut_value();
-        seat.debt_withdrawable_shares = seat
-            .debt_withdrawable_shares
-            .saturating_sub(actual_shares_burned);
+        seat.debt_withdrawable_shares = if actual_shares_burned == 0 {
+            0
+        } else {
+            seat.debt_withdrawable_shares
+                .saturating_sub(actual_shares_burned)
+        };
         return Ok(());
     }
 
