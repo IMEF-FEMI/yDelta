@@ -6,9 +6,12 @@
 //! owner_kind = `USER`). A maker seat and a taker seat can therefore
 //! never be the same `ClaimedSeat` via the public API.
 //!
-//! The `SelfMatchForbidden` guard in `match_order` is defense-in-depth
-//! against future state corruption. This module pins THE STRUCTURAL
-//! invariant that makes the guard unreachable from instructions:
+//! The seat-equality skip in `match_order` (v1 D9: skip, don't abort)
+//! is defense-in-depth against future state corruption; the live D9
+//! gate compares OWNERS (bid wallet vs ask sub-vault curator) and is
+//! covered behaviorally in `self_cross.rs`. This module pins THE
+//! STRUCTURAL invariant that makes the seat-level case unreachable
+//! from instructions:
 //!   - The `ClaimedSeat::Ord` keys on `(owner_kind, owner, sub_vault_id)`
 //!     so user seats and sub-vault seats are distinct tree entries.
 //!   - The matching engine resolves taker_seat from a USER lookup and
