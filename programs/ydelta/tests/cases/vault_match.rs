@@ -161,7 +161,7 @@ async fn vault_match_capped_at_idle_pool() {
             30 * 86_400,
             100,
             5_000,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await;
     result.expect("match-time idle cap (50 idle < 100 bid) must partial-fill, not fail the tx");
@@ -327,7 +327,7 @@ async fn sub_vault_match_skips_at_idle_exhaustion() {
             30 * 86_400,
             100,
             5_000,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await
         .unwrap();
@@ -355,7 +355,7 @@ async fn sub_vault_match_skips_at_idle_exhaustion() {
             30 * 86_400,
             50,
             2_500,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await;
     result.expect("exhausted idle pool must skip the maker, not error");

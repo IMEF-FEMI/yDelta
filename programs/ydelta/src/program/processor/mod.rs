@@ -7,6 +7,7 @@
 
 pub mod admin_cancel_sub_vault_order;
 pub mod admin_transfer;
+pub mod cancel_order;
 pub mod cancel_order_for_sub_vault;
 pub mod check_liquidatable;
 pub mod claim_curator_fee;

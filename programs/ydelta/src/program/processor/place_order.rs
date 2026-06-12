@@ -35,8 +35,12 @@ use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 pub struct PlaceOrderParams {
     /// Optional hint pointing at the borrower's `ClaimedSeat`; falls back to lookup if `None` or stale.
     pub seat_index_hint: Option<DataIndex>,
-    /// Order flag bits (see `state::market_helpers` flag constants).
-    pub flags: u8,
+    /// One of the `RESIDUAL_MODE_*` constants (v1 D6): P2Pool fallback
+    /// (0, default), rest the residual as a bid (1), or drop it (2).
+    pub residual_mode: u8,
+    /// Expiry for a rested residual; `0` = never. Only meaningful with
+    /// `RESIDUAL_MODE_REST`.
+    pub last_valid_unix_ts: i64,
     /// Maximum borrower-paid rate in bps; asks at higher rates are skipped.
     pub rate_bps: u16,
     /// Loan term in seconds for any new fixed-rate match.
@@ -150,7 +154,8 @@ pub fn process_place_order(
                 term_seconds: params.term_seconds,
                 principal_atoms: params.principal_atoms,
                 collateral_atoms: params.collateral_atoms,
-                flags: params.flags,
+                residual_mode: params.residual_mode,
+                last_valid_unix_ts: params.last_valid_unix_ts,
                 now_unix_ts: now,
                 share_price_snapshot_fp48: snapshot_fp48,
                 debt_oracle_price_fp48,
@@ -280,7 +285,40 @@ pub fn process_place_order(
         rb_node.get_mut_value().borrower_marginfi_borrow_shares = liability_shares_opened;
     }
 
-    if !is_not_nil!(result.p2pool_loan_index) && result.match_result.remaining_principal > 0 {
+    if result.rested {
+        // v1 D6: track the resting bid on the borrower's UserAccount so
+        // UIs can enumerate open orders without scanning every market.
+        let needs_block: bool = {
+            let data = user_account_ai.try_borrow_data()?;
+            let fixed: &crate::state::user_account::UserAccountFixed =
+                bytemuck::from_bytes(&data[..crate::state::USER_ACCOUNT_FIXED_SIZE]);
+            !fixed.has_free_block()
+        };
+        if needs_block {
+            crate::validation::expand_user_account(&payer, user_account_ai)?;
+        }
+        let data = &mut user_account_ai.try_borrow_mut_data()?;
+        let (fixed_bytes, dynamic) =
+            data.split_at_mut(crate::state::USER_ACCOUNT_FIXED_SIZE);
+        let fixed: &mut crate::state::user_account::UserAccountFixed =
+            bytemuck::from_bytes_mut(fixed_bytes);
+        crate::state::user_account::insert_user_order(
+            fixed,
+            dynamic,
+            market_key,
+            result.sequence,
+            crate::state::Side::Bid as u8,
+            params.rate_bps,
+            params.term_seconds,
+            result.match_result.remaining_principal,
+            now,
+        )?;
+    }
+
+    if !result.rested
+        && !is_not_nil!(result.p2pool_loan_index)
+        && result.match_result.remaining_principal > 0
+    {
         emit_stack(OrderFilledIocLog {
             market: market_key,
             trader: *payer.info.key,

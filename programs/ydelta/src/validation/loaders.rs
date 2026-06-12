@@ -2753,6 +2753,46 @@ impl<'a, 'info> CancelOrderForSubVaultContext<'a, 'info> {
     }
 }
 
+/// Account context for `CancelOrder` (tag 42, v1 D6): borrower cancels
+/// their own resting bid. `[payer (signer/owner), global_config, market,
+/// user_account]`.
+pub(crate) struct CancelOrderContext<'a, 'info> {
+    pub payer: Signer<'a, 'info>,
+    pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
+    pub user_account_ai: &'a AccountInfo<'info>,
+}
+
+impl<'a, 'info> CancelOrderContext<'a, 'info> {
+    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
+        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
+
+        let payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let _ = load_global_config(account_iter)?;
+        let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
+        require_market_not_paused(&market)?;
+
+        let user_account_ai = next_account_info(account_iter)?;
+        let (expected_user_account, _) =
+            crate::state::user_account::user_account_pda(payer.info.key);
+        require!(
+            *user_account_ai.key == expected_user_account,
+            YdeltaError::IncorrectAccount,
+            "user_account does not match [b\"user\", payer]"
+        )?;
+        // Cancel never lazy-creates: a bid can only exist if placement
+        // already initialized the user account.
+        let _typed = YdeltaAccountInfo::<crate::state::user_account::UserAccountFixed>::new(
+            user_account_ai,
+        )?;
+
+        Ok(Self {
+            payer,
+            market,
+            user_account_ai,
+        })
+    }
+}
+
 /// Account context for `PlaceOrderForSubVault` / `UpdateOrderForSubVault`
 /// (v1 D4): the curator context plus the market's DEBT BANK + marginfi
 /// group, needed to compute the stored ask rate as

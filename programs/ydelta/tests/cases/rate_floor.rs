@@ -93,7 +93,7 @@ async fn floor_skips_stale_ask_until_resync() {
             TERM,
             1_000_000,
             50_000_000,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await
         .expect("floor skip must drop the bid, not fail the tx");
@@ -129,7 +129,7 @@ async fn floor_skips_stale_ask_until_resync() {
             TERM,
             1_000_000,
             50_000_000,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await
         .unwrap();

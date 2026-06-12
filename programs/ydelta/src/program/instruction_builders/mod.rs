@@ -6,6 +6,7 @@
 
 pub mod admin_cancel_sub_vault_order_instruction;
 pub mod admin_transfer_instructions;
+pub mod cancel_order_instruction;
 pub mod cancel_order_for_sub_vault_instruction;
 pub mod check_liquidatable_instruction;
 pub mod claim_curator_fee_instruction;

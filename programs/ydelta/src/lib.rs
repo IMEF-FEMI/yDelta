@@ -44,6 +44,7 @@ use program::{
     claim_seat::process_claim_seat,
     convert_p2pool_to_fixed::process_convert_p2pool_to_fixed,
     create_market::process_create_market,
+    cancel_order::process_cancel_order,
     create_sub_vault::{process_create_pool_sub_vault, process_create_private_sub_vault},
     create_vault::process_create_vault,
     deposit::process_deposit,
@@ -135,6 +136,7 @@ pub fn process_instruction(
         YdeltaInstruction::CreatePrivateSubVault => {
             process_create_private_sub_vault(program_id, accounts, data)?
         }
+        YdeltaInstruction::CancelOrder => process_cancel_order(program_id, accounts, data)?,
         YdeltaInstruction::GlobalVaultDeposit => {
             process_global_vault_deposit(program_id, accounts, data)?
         }

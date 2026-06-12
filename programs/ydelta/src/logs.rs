@@ -360,6 +360,18 @@ pub struct PlaceOrderForSubVaultLog {
 }
 impl_discriminant!(PlaceOrderForSubVaultLog);
 
+/// Emitted when a borrower cancels their resting bid (v1 D6).
+#[repr(C)]
+#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
+pub struct OrderCanceledLog {
+    pub market: Pubkey,
+    pub trader: Pubkey,
+    pub sequence: u64,
+    pub side: u8,
+    pub _pad0: [u8; 7],
+}
+impl_discriminant!(OrderCanceledLog);
+
 /// Emitted when the matching engine skips an ask whose stored rate has
 /// fallen below the live marginfi lending APR (v1 D5 fill-time floor).
 /// The curator re-syncs with a parameterless `update_order_for_sub_vault`.

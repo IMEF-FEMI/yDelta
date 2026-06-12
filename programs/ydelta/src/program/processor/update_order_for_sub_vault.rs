@@ -64,8 +64,8 @@ pub fn process_update_order_for_sub_vault(
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    let mut sub_vault_spread_bps: u16 = 0;
-    let mut sub_vault_term_seconds: u32 = 0;
+    let sub_vault_spread_bps: u16;
+    let sub_vault_term_seconds: u32;
     let old_order_sequence: u64 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);

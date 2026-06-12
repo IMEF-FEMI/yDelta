@@ -411,11 +411,19 @@ pub enum ResidualAction {
     /// Open a P2Pool (variable-rate marginfi-backed) loan for the
     /// residual.
     P2PoolBorrow,
+
+    /// Rest the residual in the bids tree (v1 D6).
+    Rest,
 }
 
-/// Per-order flag: when set on a borrower bid, the residual is dropped
-/// rather than spilling into a P2Pool loan.
-pub const FLAG_OB_ONLY: u8 = 0b0000_0010;
+/// Borrower's choice for an unfilled residual (v1 D6, replaces the old
+/// `FLAG_OB_ONLY`): fall through to a marginfi P2Pool borrow (default),
+/// rest the remainder in the bids tree, or drop it.
+pub const RESIDUAL_MODE_P2POOL_FALLBACK: u8 = 0;
+/// Rest the unfilled residual as a bid (v1 D6).
+pub const RESIDUAL_MODE_REST: u8 = 1;
+/// Drop the unfilled residual (the old OB_ONLY behavior).
+pub const RESIDUAL_MODE_DROP: u8 = 2;
 
 /// Walks the ask bookside from best to worst rate, filling against
 /// sub-vault makers up to the taker's principal. Mutates seat counters
@@ -761,18 +769,28 @@ fn next_maker_index(fixed: &MarketFixed, dynamic: &[u8], current: DataIndex) -> 
     tree.get_next_lower_index::<RestingOrder>(current)
 }
 
-/// Removes the ask at `order_index` from the bookside tree and returns
-/// its block to the free list. Caller is responsible for any seat-side
-/// unencumber that the order required.
+/// Removes the order at `order_index` from its side's bookside tree and
+/// returns its block to the free list. Caller is responsible for any
+/// seat-side unencumber that the order required.
 pub fn remove_order_from_tree_and_free(
     fixed: &mut MarketFixed,
     dynamic: &mut [u8],
     order_index: DataIndex,
 ) {
-    let mut tree: Bookside = Bookside::new(dynamic, fixed.asks_root_index, fixed.asks_best_index);
-    tree.remove_by_index(order_index);
-    fixed.asks_root_index = tree.get_root_index();
-    fixed.asks_best_index = tree.get_max_index();
+    let side: u8 = get_helper_order(dynamic, order_index).get_value().side;
+    if side == Side::Ask as u8 {
+        let mut tree: Bookside =
+            Bookside::new(dynamic, fixed.asks_root_index, fixed.asks_best_index);
+        tree.remove_by_index(order_index);
+        fixed.asks_root_index = tree.get_root_index();
+        fixed.asks_best_index = tree.get_max_index();
+    } else {
+        let mut tree: Bookside =
+            Bookside::new(dynamic, fixed.bids_root_index, fixed.bids_best_index);
+        tree.remove_by_index(order_index);
+        fixed.bids_root_index = tree.get_root_index();
+        fixed.bids_best_index = tree.get_max_index();
+    }
     release_address_on_market_fixed(fixed, dynamic, order_index);
 }
 
@@ -884,22 +902,24 @@ impl<'a> MarketRefMut<'a> {
         }
     }
 
-    /// Inserts an ask `order` at `order_index` into the market's
-    /// bookside tree. Errors with `InvalidArgument` if a bid is supplied
-    /// (bids cannot rest in the quote-only model).
+    /// Inserts `order` at `order_index` into the market's bookside tree
+    /// for its side (v1 D6: bids rest in their own tree; tree-max is the
+    /// best order on both sides).
     pub fn rest_order(&mut self, order_index: DataIndex, order: RestingOrder) -> ProgramResult {
         let MarketRefMut { fixed, dynamic } = self;
-        require!(
-            order.side == Side::Ask as u8,
-            YdeltaError::InvalidArgument,
-            "rest_order: bids cannot rest in the quote-only model (got side={})",
-            order.side,
-        )?;
-        let mut tree: Bookside =
-            Bookside::new(dynamic, fixed.asks_root_index, fixed.asks_best_index);
-        tree.insert(order_index, order);
-        fixed.asks_root_index = tree.get_root_index();
-        fixed.asks_best_index = tree.get_max_index();
+        if order.side == Side::Ask as u8 {
+            let mut tree: Bookside =
+                Bookside::new(dynamic, fixed.asks_root_index, fixed.asks_best_index);
+            tree.insert(order_index, order);
+            fixed.asks_root_index = tree.get_root_index();
+            fixed.asks_best_index = tree.get_max_index();
+        } else {
+            let mut tree: Bookside =
+                Bookside::new(dynamic, fixed.bids_root_index, fixed.bids_best_index);
+            tree.insert(order_index, order);
+            fixed.bids_root_index = tree.get_root_index();
+            fixed.bids_best_index = tree.get_max_index();
+        }
         Ok(())
     }
 }
@@ -926,8 +946,11 @@ pub struct PlaceOrderArgs {
     pub principal_atoms: u64,
     /// Collateral attached to the bid.
     pub collateral_atoms: u64,
-    /// Order flags (e.g. [`FLAG_OB_ONLY`]).
-    pub flags: u8,
+    /// One of the `RESIDUAL_MODE_*` constants (v1 D6).
+    pub residual_mode: u8,
+    /// Expiry for a rested residual; `0` = never (only meaningful for
+    /// `RESIDUAL_MODE_REST`).
+    pub last_valid_unix_ts: i64,
     /// Now-timestamp.
     pub now_unix_ts: i64,
 
@@ -982,6 +1005,10 @@ pub struct PlaceOrderResult {
     /// Sequence assigned to the P2Pool residual `MatchedLoan` (0 when
     /// none).
     pub p2pool_loan_sequence: u64,
+
+    /// `true` when the unfilled residual was rested in the bids tree
+    /// (v1 D6); the rested bid carries `sequence`.
+    pub rested: bool,
 }
 
 impl Default for PlaceOrderResult {
@@ -991,6 +1018,7 @@ impl Default for PlaceOrderResult {
             match_result: MatchResult::default(),
             p2pool_loan_index: NIL,
             p2pool_loan_sequence: 0,
+            rested: false,
         }
     }
 }
@@ -1044,7 +1072,11 @@ pub fn match_borrower_bid(
         trader_seat_index: args.taker_seat_index,
         side: Side::Bid as u8,
         _reserved_kind: 0,
-        order_type: OrderType::ImmediateOrCancel as u8,
+        order_type: if args.residual_mode == RESIDUAL_MODE_REST {
+            OrderType::Limit as u8
+        } else {
+            OrderType::ImmediateOrCancel as u8
+        },
         _padding1: 0,
         rate_bps: args.rate_bps,
         _padding2: 0,
@@ -1052,7 +1084,7 @@ pub fn match_borrower_bid(
         principal_atoms: args.principal_atoms,
         collateral_atoms: args.collateral_atoms,
         sequence: seq,
-        last_valid_unix_ts: super::constants::NO_EXPIRATION_LAST_VALID_UNIX_TS,
+        last_valid_unix_ts: args.last_valid_unix_ts,
     })?;
 
     let mut match_result = match_order(
@@ -1080,15 +1112,21 @@ pub fn match_borrower_bid(
         vault_ai,
     )?;
 
-    let ob_only = (args.flags & FLAG_OB_ONLY) != 0;
-    match_result.residual_action = if !ob_only && match_result.remaining_principal > 0 {
-        ResidualAction::P2PoolBorrow
-    } else {
+    match_result.residual_action = if match_result.remaining_principal == 0 {
         ResidualAction::Drop
+    } else {
+        match args.residual_mode {
+            RESIDUAL_MODE_REST => ResidualAction::Rest,
+            RESIDUAL_MODE_DROP => ResidualAction::Drop,
+            // Default (and any unknown byte) falls through to the
+            // marginfi backstop — the historical behavior.
+            _ => ResidualAction::P2PoolBorrow,
+        }
     };
 
     let mut p2pool_loan_index: DataIndex = NIL;
     let mut p2pool_loan_sequence: u64 = 0;
+    let mut rested = false;
 
     match (
         match_result.residual_action,
@@ -1167,6 +1205,35 @@ pub fn match_borrower_bid(
             p2pool_loan_index = node_index;
             p2pool_loan_sequence = sequence;
         }
+        (ResidualAction::Rest, true) => {
+            // v1 D6: the residual rests in the bids tree. Its collateral
+            // stays encumbered on the seat (taken at placement above) and
+            // keeps earning marginfi supply yield while it waits; the
+            // stored snapshot lets cancel/expiry release exactly what was
+            // locked.
+            let order_index = get_free_address_on_market_fixed_for_ask_order(fixed, dynamic);
+            require!(
+                is_not_nil!(order_index),
+                ProgramError::AccountDataTooSmall,
+                "No free block for resting bid — expand market"
+            )?;
+            let resting = RestingOrder::new_primary(
+                args.taker_seat_index,
+                seq,
+                Side::Bid,
+                OrderType::Limit,
+                args.rate_bps,
+                args.term_seconds,
+                match_result.remaining_principal,
+                match_result.remaining_collateral,
+                args.last_valid_unix_ts,
+                0,
+                snapshot,
+            );
+            let mut market = MarketRefMut { fixed, dynamic };
+            market.rest_order(order_index, resting)?;
+            rested = true;
+        }
         (ResidualAction::Drop, true) => {
             unencumber_for_order(
                 dynamic,
@@ -1184,6 +1251,7 @@ pub fn match_borrower_bid(
         match_result,
         p2pool_loan_index,
         p2pool_loan_sequence,
+        rested,
     })
 }
 
@@ -1279,12 +1347,22 @@ pub fn lookup_order_by_seq(
         }
     }
 
-    let tree = RedBlackTreeReadOnly::<RestingOrder>::new(
+    let asks = RedBlackTreeReadOnly::<RestingOrder>::new(
         dynamic,
         fixed.asks_root_index,
         fixed.asks_best_index,
     );
-    for (idx, order) in tree.iter::<RestingOrder>() {
+    for (idx, order) in asks.iter::<RestingOrder>() {
+        if order.trader_seat_index == trader_seat_index && order.sequence_number == sequence {
+            return Ok(idx);
+        }
+    }
+    let bids = RedBlackTreeReadOnly::<RestingOrder>::new(
+        dynamic,
+        fixed.bids_root_index,
+        fixed.bids_best_index,
+    );
+    for (idx, order) in bids.iter::<RestingOrder>() {
         if order.trader_seat_index == trader_seat_index && order.sequence_number == sequence {
             return Ok(idx);
         }
@@ -1325,10 +1403,15 @@ pub fn cancel_order_by_index(
     }
 
     let snapshot = order.share_price_snapshot();
+    let side = if order.side == Side::Bid as u8 {
+        Side::Bid
+    } else {
+        Side::Ask
+    };
     unencumber_for_order(
         dynamic,
         order.trader_seat_index,
-        Side::Ask,
+        side,
         atoms_to_shares_at_snapshot(order.principal_atoms, snapshot)?,
         atoms_to_shares_at_snapshot(order.collateral_atoms, snapshot)?,
     )?;

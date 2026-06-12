@@ -181,7 +181,7 @@ async fn dropped_residual_releases_all_borrower_encumbrance() {
             30 * 86_400,
             /*principal_atoms=*/ 1_000_000,
             /*collateral_atoms=*/ 100_000_000,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await
         .unwrap();

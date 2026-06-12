@@ -9,7 +9,7 @@
 use hypertree::NIL;
 use solana_sdk::signer::Signer;
 
-use ydelta::state::market_helpers::FLAG_OB_ONLY;
+use ydelta::state::market_helpers::RESIDUAL_MODE_DROP;
 use ydelta::state::{OrderType, Side};
 
 use crate::test_utils::market_fixture::MarketFixture;
@@ -45,7 +45,7 @@ async fn ob_only_flag_accepted_by_place_order() {
             30 * 86_400,
             principal,
             collateral,
-            FLAG_OB_ONLY,
+            RESIDUAL_MODE_DROP,
         )
         .await;
     assert!(

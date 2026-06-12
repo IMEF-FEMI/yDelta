@@ -613,7 +613,7 @@ impl MarketFixture {
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await
     }
@@ -657,7 +657,8 @@ impl MarketFixture {
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            flags,
+            flags, // residual_mode (v1 D6)
+            0,     // last_valid_unix_ts: rested bids never expire by default
             None,
         );
         let _ = (side, order_type);
@@ -700,7 +701,8 @@ impl MarketFixture {
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            flags,
+            flags, // residual_mode (v1 D6)
+            0,     // last_valid_unix_ts: rested bids never expire by default
             None,
         );
         let _ = (side, order_type);
