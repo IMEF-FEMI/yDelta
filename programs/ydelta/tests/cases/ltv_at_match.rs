@@ -1,7 +1,7 @@
 //! Per-match LTV check fires at the matching engine using real
 //! oracle prices + bank weights from the loaded mainnet fixtures.
 //!
-//! In the quote-only model the lender is a vault risk profile resting
+//! In the quote-only model the lender is a vault sub-vault resting
 //! an unbounded ask; the borrower crosses it with an IOC bid carrying
 //! `collateral_atoms`. The match-time gate checks
 //! `actual_ltv <= profile.max_ltv_bps`. Tests vary the borrower's
@@ -115,7 +115,7 @@ async fn match_passes_with_overcollateralized_bid() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -161,7 +161,7 @@ async fn match_passes_with_overcollateralized_bid() {
     assert_eq!(market.matched_loan_sequence, 1);
     // Vault profile encumbered for exactly the matched principal —
     // the cross fully filled.
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
     fixture.assert_vault_idle_invariant(1).await;
 }
@@ -183,7 +183,7 @@ async fn match_rejected_with_undercollateralized_bid() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,

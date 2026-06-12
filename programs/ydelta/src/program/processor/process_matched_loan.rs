@@ -3,7 +3,7 @@
 //! loan's `created_by` (refunded on repay/settle/liquidate). Allocates the
 //! loan PDA, credits borrower's seat with marginfi shares for the net
 //! principal (Fixed), accrues protocol origination fee shares, and — for
-//! risk-profile-lender Fixed matches — funds the lender integration account
+//! sub-vault-lender Fixed matches — funds the lender integration account
 //! by withdrawing principal from the global vault and depositing it into
 //! the per-market marginfi account.
 
@@ -24,7 +24,7 @@ use crate::state::loan::{LoanFixed, LoanType, LOAN_FIXED_SIZE, LOAN_SEED};
 use crate::state::market::{get_helper_matched_loan, MarketFixed, MatchedLoan};
 use crate::state::market_helpers::release_address_on_market_fixed;
 use crate::state::vault::{
-    get_mut_helper_risk_profile, GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
+    get_mut_helper_sub_vault, GlobalVaultFixed, SubVault, SubVaultTreeReadOnly,
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::utils::create_account;
@@ -108,7 +108,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
     let node_says_vault_lender: bool =
         node.flags & crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER != 0;
 
-    let (lender_kind, lender_profile_id, lender_global_vault): (u8, u8, Pubkey) = {
+    let (lender_kind, lender_sub_vault_id, lender_global_vault): (u8, u8, Pubkey) = {
         let market_data = market.info.try_borrow_data()?;
         let claimed_seats_root = {
             let fixed: &MarketFixed =
@@ -141,17 +141,17 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
                 dynamic,
                 claimed_seats_root,
                 node.lender_seat_index,
-                crate::state::OWNER_KIND_RISK_PROFILE,
+                crate::state::OWNER_KIND_SUB_VAULT,
             )?;
             (
-                crate::state::OWNER_KIND_RISK_PROFILE,
-                seat.risk_profile_id,
+                crate::state::OWNER_KIND_SUB_VAULT,
+                seat.sub_vault_id,
                 seat.owner,
             )
         }
     };
 
-    let curator_fee_bps_snapshot: u16 = if lender_kind == crate::state::OWNER_KIND_RISK_PROFILE {
+    let curator_fee_bps_snapshot: u16 = if lender_kind == crate::state::OWNER_KIND_SUB_VAULT {
         node.curator_fee_bps_snapshot
     } else {
         0
@@ -180,7 +180,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
         loan_type,
         node.borrower_marginfi_borrow_shares,
         lender_kind,
-        lender_profile_id,
+        lender_sub_vault_id,
         lender_global_vault,
         curator_fee_bps_snapshot,
         node.lender_debt_share_price_snapshot_fp48,
@@ -209,7 +209,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
         0
     };
 
-    if lender_kind == crate::state::OWNER_KIND_RISK_PROFILE
+    if lender_kind == crate::state::OWNER_KIND_SUB_VAULT
         && loan_type == LoanType::Fixed
         && !presettled
     {
@@ -217,7 +217,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
             .as_ref()
             .ok_or_else(|| {
                 solana_program::msg!(
-                    "process_matched_loan: risk-profile lender match requires vault settlement accounts"
+                    "process_matched_loan: sub-vault lender match requires vault settlement accounts"
                 );
                 YdeltaError::IncorrectAccount
             })?;
@@ -227,7 +227,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
             vault_settle,
             node.lender_rate_bps,
             curator_fee_bps_snapshot,
-            lender_profile_id,
+            lender_sub_vault_id,
             market_key,
             now_unix_ts,
         )?;
@@ -305,7 +305,7 @@ fn do_vault_settle<'a, 'info>(
     settle: &'a crate::validation::loaders::VaultSettleAccounts<'a, 'info>,
     lender_rate_bps: u16,
     curator_fee_bps: u16,
-    profile_id: u8,
+    sub_vault_id: u8,
     market_key: Pubkey,
     now_unix_ts: i64,
 ) -> ProgramResult {
@@ -446,23 +446,23 @@ fn do_vault_settle<'a, 'info>(
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
-        let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+        let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
             profile_idx != NIL,
-            YdeltaError::VaultProfileNotFound,
-            "profile_id {} not found during vault settlement",
-            profile_id
+            YdeltaError::SubVaultNotFound,
+            "sub_vault_id {} not found during vault settlement",
+            sub_vault_id
         )?;
-        let profile_node = get_mut_helper_risk_profile(dynamic, profile_idx);
+        let profile_node = get_mut_helper_sub_vault(dynamic, profile_idx);
         let profile = profile_node.get_mut_value();
 
         let share_value_fp48 =
             crate::state::vault::read_bank_asset_share_value_fp48(debt_bank.info)?;
-        crate::state::vault::accrue_risk_profile(profile, now_unix_ts, share_value_fp48)?;
+        crate::state::vault::accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
 
         profile.deployed_principal_atoms = profile
             .deployed_principal_atoms

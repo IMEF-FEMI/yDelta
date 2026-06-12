@@ -1,6 +1,6 @@
 //! `place_order` is borrower-IOC-only: the taker is always a
 //! `Side::Bid` borrower and the order type is always
-//! `ImmediateOrCancel`. The bid crosses resting vault risk-profile asks
+//! `ImmediateOrCancel`. The bid crosses resting vault sub-vault asks
 //! and any residual either fires the P2Pool fallback or drops — it
 //! never rests on the book.
 

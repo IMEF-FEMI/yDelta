@@ -1,5 +1,5 @@
 //! Two-step admin / curator role transfers for markets, global vaults,
-//! and risk profiles. Each role exposes a `Transfer*` initiator (signer
+//! and sub-vaults. Each role exposes a `Transfer*` initiator (signer
 //! must be the current role-holder; sets `pending_*`) and an `Accept*`
 //! confirm (signer must match `pending_*`; promotes pending to live).
 
@@ -13,7 +13,7 @@ use crate::program::YdeltaError;
 use crate::require;
 use crate::state::market::MarketFixed;
 use crate::state::vault::{
-    get_mut_helper_risk_profile, GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
+    get_mut_helper_sub_vault, GlobalVaultFixed, SubVault, SubVaultTreeReadOnly,
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::{
@@ -147,13 +147,13 @@ pub fn process_accept_global_vault_admin(
 /// Parameters for [`process_transfer_curator`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct TransferCuratorParams {
-    /// Identifies the risk profile whose curator is being transferred.
-    pub profile_id: u8,
-    /// Pubkey to set as `RiskProfile.pending_curator`.
+    /// Identifies the sub-vault whose curator is being transferred.
+    pub sub_vault_id: u8,
+    /// Pubkey to set as `SubVault.pending_curator`.
     pub new_curator: Pubkey,
 }
 
-/// Initiates a risk-profile curator transfer. Signer must equal the
+/// Initiates a sub-vault curator transfer. Signer must equal the
 /// profile's current `curator`; writes `params.new_curator` into
 /// `pending_curator`.
 pub fn process_transfer_curator(
@@ -166,27 +166,27 @@ pub fn process_transfer_curator(
     let data_ref: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
     let (fixed_bytes, dynamic) = data_ref.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
     let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-    let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+    let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
     let profile_idx = {
-        let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+        let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
         tree.lookup_index(&probe)
     };
     require!(
         profile_idx != NIL,
-        YdeltaError::VaultProfileNotFound,
-        "profile_id {} not found",
-        params.profile_id
+        YdeltaError::SubVaultNotFound,
+        "sub_vault_id {} not found",
+        params.sub_vault_id
     )?;
-    let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+    let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
     require!(
         profile.curator == *payer.info.key,
         YdeltaError::VaultCuratorRequired,
-        "transfer_curator: signer != RiskProfile.curator"
+        "transfer_curator: signer != SubVault.curator"
     )?;
     profile.pending_curator = params.new_curator;
     msg!(
         "ydelta: curator transfer initiated for profile {}, pending -> {}",
-        params.profile_id,
+        params.sub_vault_id,
         params.new_curator
     );
     Ok(())
@@ -195,8 +195,8 @@ pub fn process_transfer_curator(
 /// Parameters for [`process_accept_curator`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct AcceptCuratorParams {
-    /// Identifies the risk profile to take curator control of.
-    pub profile_id: u8,
+    /// Identifies the sub-vault to take curator control of.
+    pub sub_vault_id: u8,
 }
 
 /// Completes a curator transfer. Signer must equal the profile's
@@ -212,22 +212,22 @@ pub fn process_accept_curator(
     let data_ref: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
     let (fixed_bytes, dynamic) = data_ref.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
     let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-    let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+    let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
     let profile_idx = {
-        let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+        let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
         tree.lookup_index(&probe)
     };
     require!(
         profile_idx != NIL,
-        YdeltaError::VaultProfileNotFound,
-        "profile_id {} not found",
-        params.profile_id
+        YdeltaError::SubVaultNotFound,
+        "sub_vault_id {} not found",
+        params.sub_vault_id
     )?;
-    let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+    let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
     require!(
         profile.pending_curator == *payer.info.key,
         YdeltaError::PendingAdminMismatch,
-        "accept_curator: signer != RiskProfile.pending_curator"
+        "accept_curator: signer != SubVault.pending_curator"
     )?;
     require!(
         profile.pending_curator != Pubkey::default(),
@@ -238,7 +238,7 @@ pub fn process_accept_curator(
     profile.pending_curator = Pubkey::default();
     msg!(
         "ydelta: curator accepted for profile {} by {}",
-        params.profile_id,
+        params.sub_vault_id,
         payer.info.key
     );
     Ok(())

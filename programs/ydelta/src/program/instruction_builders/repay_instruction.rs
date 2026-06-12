@@ -42,7 +42,7 @@ pub fn repay_instruction(
     borrower_seat_index_hint: Option<DataIndex>,
     cranker_refund: &Pubkey,
     // REQUIRED for Fixed loans (the processor uses it on full repay to
-    // apply per-loan risk-profile decrements + bump pending_claim atoms).
+    // apply per-loan sub-vault decrements + bump pending_claim atoms).
     // MUST be `None` for P2Pool repays — the loader only consumes this
     // slot when the loan PDA reads as LoanType::Fixed.
     global_vault: Option<&Pubkey>,

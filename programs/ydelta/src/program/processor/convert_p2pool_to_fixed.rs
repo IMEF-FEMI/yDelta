@@ -21,8 +21,8 @@ use crate::state::ltv::get_required_quote_collateral_to_back_debt;
 use crate::state::market::{get_helper_seat, get_mut_helper_seat, MarketFixed};
 use crate::state::market_helpers::{match_p2pool_residual_against_asks, MatchP2PoolRefinanceArgs};
 use crate::state::vault::{
-    accrue_risk_profile, get_mut_helper_risk_profile, read_bank_asset_share_value_fp48,
-    GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
+    accrue_sub_vault, get_mut_helper_sub_vault, read_bank_asset_share_value_fp48,
+    GlobalVaultFixed, SubVault, SubVaultTreeReadOnly,
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::ConvertP2PoolToFixedContext;
@@ -474,25 +474,25 @@ pub fn process_convert_p2pool_to_fixed(
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let root = {
             let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-            header.risk_profiles_root_index
+            header.sub_vaults_root_index
         };
 
         for cross in &match_result.crosses {
-            let probe = RiskProfile::new_empty(cross.lender_profile_id, Pubkey::default(), 1, 1);
+            let probe = SubVault::new_empty(cross.lender_sub_vault_id, Pubkey::default(), 1, 1);
             let profile_idx = {
-                let tree = RiskProfileTreeReadOnly::new(dynamic, root, NIL);
+                let tree = SubVaultTreeReadOnly::new(dynamic, root, NIL);
                 tree.lookup_index(&probe)
             };
             require!(
                 profile_idx != NIL,
-                YdeltaError::VaultProfileNotFound,
+                YdeltaError::SubVaultNotFound,
                 "convert_p2pool_to_fixed: crossed profile {} not found on global_vault",
-                cross.lender_profile_id
+                cross.lender_sub_vault_id
             )?;
-            let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+            let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
             // Crystallise yield at the OLD weighted rate before folding
             // in the new loan's contribution.
-            accrue_risk_profile(profile, now_unix_ts, share_value_fp48)?;
+            accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
             let principal = cross.filled_principal_atoms;
             profile.deployed_principal_atoms = profile
                 .deployed_principal_atoms

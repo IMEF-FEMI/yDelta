@@ -1,8 +1,8 @@
-//! Multi-risk-profile vault tests.
+//! Multi-sub-vault vault tests.
 //!
 //! The enforcement mechanism is the market-side `ClaimedSeat` keyed
-//! by `(vault, owner_kind=Vault, profile_id)` plus
-//! `RiskProfileOrderRef` keyed by `(market, profile_id)` on the
+//! by `(vault, owner_kind=Vault, sub_vault_id)` plus
+//! `SubVaultOrderRef` keyed by `(market, sub_vault_id)` on the
 //! vault side. These cases exercise that surface with N>1 profiles.
 
 use solana_sdk::signer::Signer;
@@ -42,7 +42,7 @@ async fn two_profiles_independent_deposit_state() {
     // Profile 0 — curator_a, 50% LTV cap, 30-day max term.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator_a.pubkey(), Some(5_000), 30 * 86_400)
+        .create_sub_vault(&admin, curator_a.pubkey(), Some(5_000), 30 * 86_400)
         .await
         .unwrap();
 
@@ -50,15 +50,15 @@ async fn two_profiles_independent_deposit_state() {
     // policy, different curator.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator_b.pubkey(), Some(8_000), 90 * 86_400)
+        .create_sub_vault(&admin, curator_b.pubkey(), Some(8_000), 90 * 86_400)
         .await
         .unwrap();
 
     // Verify both profiles exist with distinct curators + policies.
-    let profile_a = fixture.read_risk_profile(1).await;
-    let profile_b = fixture.read_risk_profile(2).await;
-    assert_eq!(profile_a.profile_id, 1);
-    assert_eq!(profile_b.profile_id, 2);
+    let profile_a = fixture.read_sub_vault(1).await;
+    let profile_b = fixture.read_sub_vault(2).await;
+    assert_eq!(profile_a.sub_vault_id, 1);
+    assert_eq!(profile_b.sub_vault_id, 2);
     assert_eq!(profile_a.curator, curator_a.pubkey());
     assert_eq!(profile_b.curator, curator_b.pubkey());
     assert_eq!(profile_a.max_ltv_bps, 5_000);
@@ -81,8 +81,8 @@ async fn two_profiles_independent_deposit_state() {
         .unwrap();
 
     // Verify each profile's state is independent.
-    let profile_a = fixture.read_risk_profile(1).await;
-    let profile_b = fixture.read_risk_profile(2).await;
+    let profile_a = fixture.read_sub_vault(1).await;
+    let profile_b = fixture.read_sub_vault(2).await;
     let total_shares_a = profile_a.total_shares;
     let total_principal_a = profile_a.total_principal_atoms;
     let total_shares_b = profile_b.total_shares;
@@ -94,7 +94,7 @@ async fn two_profiles_independent_deposit_state() {
 
     // Vault-level counter reflects both profiles.
     let vault_fixed = fixture.read_vault_fixed().await;
-    assert_eq!(vault_fixed.risk_profile_count, 2);
+    assert_eq!(vault_fixed.sub_vault_count, 2);
 
     // Depositor A withdraws 40 USDC from profile 0.
     // Profile 1's state must NOT be affected.
@@ -104,8 +104,8 @@ async fn two_profiles_independent_deposit_state() {
         .await
         .unwrap();
 
-    let profile_a = fixture.read_risk_profile(1).await;
-    let profile_b = fixture.read_risk_profile(2).await;
+    let profile_a = fixture.read_sub_vault(1).await;
+    let profile_b = fixture.read_sub_vault(2).await;
     let shares_a_after = profile_a.total_shares;
     let principal_a_after = profile_a.total_principal_atoms;
     let shares_b_after = profile_b.total_shares;
@@ -118,9 +118,9 @@ async fn two_profiles_independent_deposit_state() {
 }
 
 /// Same vault, two profiles both resting asks in the same market.
-/// Each `place_order_for_risk_profile` auto-creates a vault-owned
-/// `ClaimedSeat` with a distinct (vault, OWNER_KIND_RISK_PROFILE,
-/// profile_id) key.
+/// Each `place_order_for_sub_vault` auto-creates a vault-owned
+/// `ClaimedSeat` with a distinct (vault, OWNER_KIND_SUB_VAULT,
+/// sub_vault_id) key.
 #[tokio::test]
 async fn two_profiles_rest_asks_in_same_market() {
     let fixture = MarketFixture::new().await;
@@ -157,20 +157,20 @@ async fn two_profiles_rest_asks_in_same_market() {
         )
         .await;
 
-    // Both vault seats exist with distinct (vault, profile_id) keys —
+    // Both vault seats exist with distinct (vault, sub_vault_id) keys —
     // read_vault_seat panics if either is missing.
     let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
     let seat0 = fixture.read_vault_seat(&gv, 1).await;
     let seat1 = fixture.read_vault_seat(&gv, 2).await;
-    assert_eq!(seat0.risk_profile_id, 1);
-    assert_eq!(seat1.risk_profile_id, 2);
+    assert_eq!(seat0.sub_vault_id, 1);
+    assert_eq!(seat1.sub_vault_id, 2);
 
     // Both asks rest on the same market's asks tree.
     let market = fixture.read_market_fixed().await;
     assert_ne!(market.asks_best_index, hypertree::NIL);
 }
 
-/// Profile A's curator cannot place_order_for_risk_profile for profile B.
+/// Profile A's curator cannot place_order_for_sub_vault for profile B.
 /// Cross-curator authorization gate must hold.
 #[tokio::test]
 async fn cross_curator_cannot_place_for_other_profile() {
@@ -183,25 +183,25 @@ async fn cross_curator_cannot_place_for_other_profile() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator_a.pubkey(), Some(5_000), 30 * 86_400)
+        .create_sub_vault(&admin, curator_a.pubkey(), Some(5_000), 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator_b.pubkey(), Some(8_000), 90 * 86_400)
+        .create_sub_vault(&admin, curator_b.pubkey(), Some(8_000), 90 * 86_400)
         .await
         .unwrap();
 
-    // Curator A signing place_order_for_risk_profile with profile_id =
+    // Curator A signing place_order_for_sub_vault with sub_vault_id =
     // 1 (curator B's profile) must reject. The processor's
     // `signer == profile.curator` gate catches this — and the vault
     // market-seat for profile 1 must NOT be auto-created by a rejected
     // call.
     fixture.refresh_blockhash().await;
     let result = fixture
-        .place_order_for_risk_profile(
+        .place_order_for_sub_vault(
             &curator_a,
-            /*profile_id=*/ 2, // curator_b's profile
+            /*sub_vault_id=*/ 2, // curator_b's profile
             500,
             30 * 86_400,
             0,
@@ -222,7 +222,7 @@ async fn cross_curator_cannot_place_for_other_profile() {
 
 /// Both profiles share a single pool of vault-level state but
 /// per-profile aggregates stay independent. Verifies that
-/// `RiskProfile` reads are correctly keyed by `profile_id` and don't
+/// `SubVault` reads are correctly keyed by `sub_vault_id` and don't
 /// alias.
 #[tokio::test]
 async fn profile_aggregates_dont_alias() {
@@ -247,7 +247,7 @@ async fn profile_aggregates_dont_alias() {
     for (id, curator) in [(0u8, &curator_a), (1u8, &curator_b), (2u8, &admin)] {
         fixture.refresh_blockhash().await;
         fixture
-            .create_risk_profile(
+            .create_sub_vault(
                 &admin,
                 curator.pubkey(),
                 Some(5_000 + id as u16 * 1_000), // distinct max_ltv per profile
@@ -258,12 +258,12 @@ async fn profile_aggregates_dont_alias() {
     }
 
     let vault = fixture.read_vault_fixed().await;
-    assert_eq!(vault.risk_profile_count, 3);
+    assert_eq!(vault.sub_vault_count, 3);
 
     // Read all three. Each must have its own curator and max_ltv.
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
-    let p2 = fixture.read_risk_profile(3).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
+    let p2 = fixture.read_sub_vault(3).await;
     assert_eq!(p0.curator, curator_a.pubkey());
     assert_eq!(p1.curator, curator_b.pubkey());
     assert_eq!(p2.curator, admin.pubkey());
@@ -278,9 +278,9 @@ async fn profile_aggregates_dont_alias() {
         .await
         .unwrap();
 
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
-    let p2 = fixture.read_risk_profile(3).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
+    let p2 = fixture.read_sub_vault(3).await;
     let p0_shares = p0.total_shares;
     let p1_shares = p1.total_shares;
     let p2_shares = p2.total_shares;
@@ -333,12 +333,12 @@ async fn vault_aggregate_equals_sum_of_profiles() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator_a.pubkey(), Some(5_000), 30 * 86_400)
+        .create_sub_vault(&admin, curator_a.pubkey(), Some(5_000), 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator_b.pubkey(), Some(8_000), 90 * 86_400)
+        .create_sub_vault(&admin, curator_b.pubkey(), Some(8_000), 90 * 86_400)
         .await
         .unwrap();
 
@@ -349,8 +349,8 @@ async fn vault_aggregate_equals_sum_of_profiles() {
         .global_vault_deposit(&depositor_a, token_a, 1, 100_000_000)
         .await
         .unwrap();
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
     assert_eq!(p0.total_principal_atoms, 99_999_999);
     assert_eq!(p0.total_shares, 99_999_999_u128);
     assert_eq!(p1.total_principal_atoms, 0);
@@ -361,8 +361,8 @@ async fn vault_aggregate_equals_sum_of_profiles() {
         .global_vault_deposit(&depositor_b, token_b, 2, 250_000_000)
         .await
         .unwrap();
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
     assert_eq!(p1.total_principal_atoms, 249_999_999);
     assert_eq!(p1.total_shares, 249_999_999_u128);
     // Vault-wide total = Σ per-profile (the per-profile fields are the
@@ -379,8 +379,8 @@ async fn vault_aggregate_equals_sum_of_profiles() {
         .global_vault_withdraw(&depositor_a, token_a, 1, 40_000_000_u128)
         .await
         .unwrap();
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
     assert_eq!(p0.total_shares, 59_999_999_u128);
     assert_eq!(p0.total_principal_atoms, 59_999_999);
     assert_eq!(
@@ -395,8 +395,8 @@ async fn vault_aggregate_equals_sum_of_profiles() {
         .global_vault_withdraw(&depositor_a, token_a, 1, 59_999_999_u128)
         .await
         .unwrap();
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
     // Profile 0 fully drained; vault-wide total now reflects only p1.
     assert_eq!(p0.total_shares, 0);
     assert_eq!(p0.total_principal_atoms, 0);

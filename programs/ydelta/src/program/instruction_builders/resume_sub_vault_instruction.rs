@@ -1,6 +1,6 @@
-//! Builds the `YdeltaInstruction::RemoveRiskProfile` instruction: vault-admin
-//! removes a `RiskProfile` from the vault tree (only allowed after the
-//! profile has been sunset and wound down).
+//! Builds the `YdeltaInstruction::ResumeSubVault` instruction: vault-admin
+//! escape hatch that flips `profile.is_sunset = 0`, reversing a prior
+//! `SunsetSubVault`.
 
 use borsh::BorshSerialize;
 use solana_program::{
@@ -8,26 +8,23 @@ use solana_program::{
     pubkey::Pubkey,
 };
 
-use crate::program::processor::remove_risk_profile::RemoveRiskProfileParams;
+use crate::program::processor::resume_sub_vault::ResumeSubVaultParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Builds the `RemoveRiskProfile` instruction for the vault keyed by
-/// `mint`. `payer` (signer) must be the vault admin; the target
-/// `profile_id` must already have `is_sunset == 1`.
-pub fn remove_risk_profile_instruction(
+/// Builds the `ResumeSubVault` instruction for the vault keyed by
+/// `mint`. `payer` (signer) must be the vault admin; targets `sub_vault_id`.
+pub fn resume_sub_vault_instruction(
     mint: &Pubkey,
     payer: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
-
-    let mut data = YdeltaInstruction::RemoveRiskProfile.to_vec();
-    RemoveRiskProfileParams { profile_id }
+    let mut data = YdeltaInstruction::ResumeSubVault.to_vec();
+    ResumeSubVaultParams { sub_vault_id }
         .serialize(&mut data)
         .unwrap();
-
     Instruction {
         program_id: crate::id(),
         accounts: vec![

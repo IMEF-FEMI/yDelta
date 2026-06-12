@@ -16,7 +16,7 @@ use crate::state::vault::{
     global_vault_staging_pda,
 };
 
-/// Builds the `ClaimCuratorFee` instruction for `profile_id` on the vault
+/// Builds the `ClaimCuratorFee` instruction for `sub_vault_id` on the vault
 /// keyed by `mint`. `payer` (signer) must equal the profile's curator;
 /// fees are routed to `curator_token` via marginfi's `debt_bank` /
 /// `liquidity_vault` / oracle path.
@@ -32,7 +32,7 @@ pub fn claim_curator_fee_instruction(
     token_program: &Pubkey,
     marginfi_program: &Pubkey,
     marginfi_group: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
     let (global_vault_signer, _) = global_vault_signer_pda(&vault);
@@ -40,7 +40,7 @@ pub fn claim_curator_fee_instruction(
     let (vault_integration, _) = global_vault_integration_account_pda(&vault);
 
     let mut data = YdeltaInstruction::ClaimCuratorFee.to_vec();
-    ClaimCuratorFeeParams { profile_id }
+    ClaimCuratorFeeParams { sub_vault_id }
         .serialize(&mut data)
         .unwrap();
 

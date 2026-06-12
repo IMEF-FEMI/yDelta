@@ -99,7 +99,7 @@ async fn protocol_accumulates_origination_fee_on_fixed_match() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -130,7 +130,7 @@ async fn protocol_accumulates_origination_fee_on_fixed_match() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
 

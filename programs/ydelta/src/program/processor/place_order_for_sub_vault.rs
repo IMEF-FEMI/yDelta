@@ -1,8 +1,8 @@
-//! `PlaceOrderForRiskProfile` — curator rests a vault-owned ask on a market for
-//! one of their risk profiles. Signer is the profile's `curator`. Rejected if
+//! `PlaceOrderForSubVault` — curator rests a vault-owned ask on a market for
+//! one of their sub-vaults. Signer is the profile's `curator`. Rejected if
 //! the profile is sunset; clamps `term_seconds` to `profile.max_term_seconds`.
 //! Claims a vault-owned `ClaimedSeat` on first use, rests an ask via
-//! `rest_vault_ask`, and inserts a `RiskProfileOrderRef` on the global vault.
+//! `rest_vault_ask`, and inserts a `SubVaultOrderRef` on the global vault.
 
 use std::cell::RefMut;
 
@@ -13,27 +13,27 @@ use solana_program::{
     pubkey::Pubkey, rent::Rent, system_instruction, sysvar::Sysvar,
 };
 
-use crate::logs::{emit_stack, PlaceOrderForRiskProfileLog};
+use crate::logs::{emit_stack, PlaceOrderForSubVaultLog};
 use crate::program::YdeltaError;
 use crate::require;
-use crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
+use crate::state::claimed_seat::OWNER_KIND_SUB_VAULT;
 use crate::state::market::{ClaimedSeatTreeReadOnly, MarketRefMut};
 use crate::state::market_helpers::{rest_vault_ask, RestVaultAskArgs};
 use crate::state::vault::{
-    insert_risk_profile_order_ref, vault_expand_node_block, GlobalVaultFixed, RiskProfile,
-    RiskProfileTreeReadOnly,
+    insert_sub_vault_order_ref, vault_expand_node_block, GlobalVaultFixed, SubVault,
+    SubVaultTreeReadOnly,
 };
 use crate::state::ClaimedSeat;
 use crate::state::{MarketFixed, Side, GLOBAL_VAULT_FIXED_SIZE, VAULT_NODE_BLOCK_SIZE};
-use crate::validation::loaders::CancelOrderForRiskProfileContext;
+use crate::validation::loaders::CancelOrderForSubVaultContext;
 
 use super::shared::{expand_market_to_free_blocks, get_mut_dynamic_account};
 
 /// Vault-owned ask parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
-pub struct PlaceOrderForRiskProfileParams {
-    /// Risk profile ID on the global vault (1-based; 0 is the sentinel).
-    pub profile_id: u8,
+pub struct PlaceOrderForSubVaultParams {
+    /// Sub-vault ID on the global vault (1-based; 0 is the sentinel).
+    pub sub_vault_id: u8,
     /// Ask rate in bps that the profile is willing to lend at.
     pub rate_bps: u16,
     /// Loan term in seconds; must be `<= profile.max_term_seconds`.
@@ -42,21 +42,21 @@ pub struct PlaceOrderForRiskProfileParams {
     pub flags: u8,
 }
 
-/// Rest a vault-owned ask on a market on behalf of a risk profile. Signer is
+/// Rest a vault-owned ask on a market on behalf of a sub-vault. Signer is
 /// the profile's curator; blocked when the profile is sunset.
-pub fn process_place_order_for_risk_profile(
+pub fn process_place_order_for_sub_vault(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
-    let params = PlaceOrderForRiskProfileParams::try_from_slice(data)?;
-    let CancelOrderForRiskProfileContext {
+    let params = PlaceOrderForSubVaultParams::try_from_slice(data)?;
+    let CancelOrderForSubVaultContext {
         fee_payer,
         curator,
         vault,
         market,
         _system_program,
-    } = CancelOrderForRiskProfileContext::load(accounts)?;
+    } = CancelOrderForSubVaultContext::load(accounts)?;
 
     let vault_key = *vault.info.key;
     let market_key = *market.info.key;
@@ -67,30 +67,30 @@ pub fn process_place_order_for_risk_profile(
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
 
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+        let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
             profile_idx != NIL,
-            YdeltaError::VaultProfileNotFound,
-            "profile_id {} not found",
-            params.profile_id
+            YdeltaError::SubVaultNotFound,
+            "sub_vault_id {} not found",
+            params.sub_vault_id
         )?;
-        let profile_node = crate::state::vault::get_helper_risk_profile(dynamic, profile_idx);
+        let profile_node = crate::state::vault::get_helper_sub_vault(dynamic, profile_idx);
         let profile = profile_node.get_value();
         require!(
             profile.is_sunset == 0,
-            YdeltaError::VaultProfileSunset,
-            "place_order_for_risk_profile: profile_id {} is sunset; no new orders during \
+            YdeltaError::SubVaultSunset,
+            "place_order_for_sub_vault: sub_vault_id {} is sunset; no new orders during \
              wind-down (curator may still cancel existing orders)",
-            params.profile_id
+            params.sub_vault_id
         )?;
         require!(
             *curator.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,
-            "place_order_for_risk_profile: signer is not profile.curator"
+            "place_order_for_sub_vault: signer is not profile.curator"
         )?;
         require!(
             params.term_seconds <= profile.max_term_seconds,
@@ -106,7 +106,7 @@ pub fn process_place_order_for_risk_profile(
         let market_dyn_offset = std::mem::size_of::<MarketFixed>();
         let header: &MarketFixed = bytemuck::from_bytes(&market_data[..market_dyn_offset]);
         let dynamic = &market_data[market_dyn_offset..];
-        let probe = ClaimedSeat::new_empty(vault_key, OWNER_KIND_RISK_PROFILE, params.profile_id);
+        let probe = ClaimedSeat::new_empty(vault_key, OWNER_KIND_SUB_VAULT, params.sub_vault_id);
         let tree = ClaimedSeatTreeReadOnly::new(dynamic, header.claimed_seats_root_index, NIL);
         tree.lookup_index(&probe) != NIL
     };
@@ -122,7 +122,7 @@ pub fn process_place_order_for_risk_profile(
             let tree =
                 ClaimedSeatTreeReadOnly::new(da.dynamic, da.fixed.claimed_seats_root_index, NIL);
             let probe =
-                ClaimedSeat::new_empty(vault_key, OWNER_KIND_RISK_PROFILE, params.profile_id);
+                ClaimedSeat::new_empty(vault_key, OWNER_KIND_SUB_VAULT, params.sub_vault_id);
             tree.lookup_index(&probe)
         } else {
             {
@@ -132,8 +132,8 @@ pub fn process_place_order_for_risk_profile(
                 };
                 market_ref.claim_seat_with_profile(
                     &vault_key,
-                    OWNER_KIND_RISK_PROFILE,
-                    params.profile_id,
+                    OWNER_KIND_SUB_VAULT,
+                    params.sub_vault_id,
                 )?;
             }
             let seat_idx = {
@@ -143,7 +143,7 @@ pub fn process_place_order_for_risk_profile(
                     NIL,
                 );
                 let probe =
-                    ClaimedSeat::new_empty(vault_key, OWNER_KIND_RISK_PROFILE, params.profile_id);
+                    ClaimedSeat::new_empty(vault_key, OWNER_KIND_SUB_VAULT, params.sub_vault_id);
                 tree.lookup_index(&probe)
             };
             require!(
@@ -198,11 +198,11 @@ pub fn process_place_order_for_risk_profile(
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let _ = insert_risk_profile_order_ref(
+        let _ = insert_sub_vault_order_ref(
             header,
             dynamic,
             market_key,
-            params.profile_id,
+            params.sub_vault_id,
             Side::Ask as u8,
             params.rate_bps,
             params.term_seconds,
@@ -211,10 +211,10 @@ pub fn process_place_order_for_risk_profile(
         )?;
     }
 
-    emit_stack(PlaceOrderForRiskProfileLog {
+    emit_stack(PlaceOrderForSubVaultLog {
         global_vault: vault_key,
         market: market_key,
-        profile_id: params.profile_id,
+        sub_vault_id: params.sub_vault_id,
         side: Side::Ask as u8,
         _pad0: [0; 6],
         rate_bps: params.rate_bps,

@@ -1,4 +1,4 @@
-//! Builds the `YdeltaInstruction::CancelOrderForRiskProfile` instruction:
+//! Builds the `YdeltaInstruction::CancelOrderForSubVault` instruction:
 //! curator-gated cancel of a vault ask on a given market.
 
 use borsh::BorshSerialize;
@@ -8,24 +8,24 @@ use solana_program::{
     system_program,
 };
 
-use crate::program::processor::cancel_order_for_risk_profile::CancelOrderForRiskProfileParams;
+use crate::program::processor::cancel_order_for_sub_vault::CancelOrderForSubVaultParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Builds the `CancelOrderForRiskProfile` instruction. `curator` must sign;
-/// `fee_payer` covers tx fees. Removes the `profile_id` resting ask on
+/// Builds the `CancelOrderForSubVault` instruction. `curator` must sign;
+/// `fee_payer` covers tx fees. Removes the `sub_vault_id` resting ask on
 /// `market` for the vault keyed by `mint`.
-pub fn cancel_order_for_risk_profile_instruction(
+pub fn cancel_order_for_sub_vault_instruction(
     mint: &Pubkey,
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
-    let mut data = YdeltaInstruction::CancelOrderForRiskProfile.to_vec();
-    CancelOrderForRiskProfileParams { profile_id }
+    let mut data = YdeltaInstruction::CancelOrderForSubVault.to_vec();
+    CancelOrderForSubVaultParams { sub_vault_id }
         .serialize(&mut data)
         .unwrap();
     Instruction {

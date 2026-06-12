@@ -9,7 +9,7 @@ use crate::test_utils::{mainnet, MarketFixture};
 
 /// Smoke test: vault create → profile create → deposit → withdraw
 /// round trip with no fills. Validates that the `create_vault`,
-/// `create_risk_profile`, `global_vault_deposit`, and `global_vault_withdraw`
+/// `create_sub_vault`, `global_vault_deposit`, and `global_vault_withdraw`
 /// processors compose end-to-end against a real marginfi bank.
 #[tokio::test]
 async fn vault_genesis_round_trip() {
@@ -31,10 +31,10 @@ async fn vault_genesis_round_trip() {
     fixture.refresh_blockhash().await;
     fixture.create_vault(&admin).await.unwrap();
 
-    // 2. Create a single risk profile.
+    // 2. Create a single sub-vault.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(
+        .create_sub_vault(
             &admin,
             curator.pubkey(),
             /*max_ltv_bps=*/ Some(8_000),
@@ -60,7 +60,7 @@ async fn vault_genesis_round_trip() {
     );
 
     // Verify profile state reflects the deposit.
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     let total_principal = profile.total_principal_atoms;
     let total_assets = profile.total_assets_atoms;
     let total_shares = profile.total_shares;
@@ -78,7 +78,7 @@ async fn vault_genesis_round_trip() {
         .await
         .unwrap();
 
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     let total_shares = profile.total_shares;
     assert_eq!(total_shares, 59_999_999_u128);
 
@@ -89,7 +89,7 @@ async fn vault_genesis_round_trip() {
         .await
         .unwrap();
 
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     let total_shares = profile.total_shares;
     let total_assets = profile.total_assets_atoms;
     let total_principal = profile.total_principal_atoms;
@@ -135,7 +135,7 @@ async fn global_vault_withdraw_rejects_overburn() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
+        .create_sub_vault(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
 
@@ -154,7 +154,7 @@ async fn global_vault_withdraw_rejects_overburn() {
     crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
 }
 
-/// First `place_order_for_risk_profile` on a market auto-creates the
+/// First `place_order_for_sub_vault` on a market auto-creates the
 /// vault's per-(profile, market) `ClaimedSeat` — there is no explicit
 /// claim-seat step in the quote-only model.
 #[tokio::test]
@@ -164,8 +164,8 @@ async fn first_place_order_auto_creates_vault_seat() {
     let depositor = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
 
-    // provide_vault_liquidity runs create_vault → create_risk_profile →
-    // global_vault_deposit → place_order_for_risk_profile. The vault
+    // provide_vault_liquidity runs create_vault → create_sub_vault →
+    // global_vault_deposit → place_order_for_sub_vault. The vault
     // market-seat must not exist before the place_order call, and must
     // exist after it.
     fixture
@@ -173,7 +173,7 @@ async fn first_place_order_auto_creates_vault_seat() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 500,
             /*term_seconds=*/ 30 * 86_400,
@@ -181,29 +181,29 @@ async fn first_place_order_auto_creates_vault_seat() {
         )
         .await;
 
-    // The vault seat keyed by (global_vault, OWNER_KIND_RISK_PROFILE, 0)
+    // The vault seat keyed by (global_vault, OWNER_KIND_SUB_VAULT, 0)
     // exists — read_vault_seat panics if it is missing.
     let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
     let _seat = fixture.read_vault_seat(&gv, 1).await;
 
-    // The resting risk-profile ask is on book.
+    // The resting sub-vault ask is on book.
     let market = fixture.read_market_fixed().await;
     assert_ne!(
         market.asks_best_index,
         hypertree::NIL,
-        "place_order_for_risk_profile must rest an ask",
+        "place_order_for_sub_vault must rest an ask",
     );
     // Vault-idle invariant: nothing in flight yet, profile is fully
     // idle. Tightens this test to verify no spurious encumbrance.
     fixture.assert_vault_idle_invariant(1).await;
-    let p = fixture.read_risk_profile(1).await;
+    let p = fixture.read_sub_vault(1).await;
     assert_eq!(p.deployed_principal_atoms, 0);
     assert_eq!(p.encumbered_in_orders_atoms, 0);
 }
 
-/// `create_risk_profile` rejects when signer is not global_vault_admin.
+/// `create_sub_vault` rejects when signer is not global_vault_admin.
 #[tokio::test]
-async fn create_risk_profile_rejects_non_admin() {
+async fn create_sub_vault_rejects_non_admin() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let interloper = fixture.create_trader().await;
@@ -214,7 +214,7 @@ async fn create_risk_profile_rejects_non_admin() {
 
     fixture.refresh_blockhash().await;
     let result = fixture
-        .create_risk_profile(
+        .create_sub_vault(
             &interloper, // not the admin
             curator.pubkey(),
             Some(8_000),
@@ -249,7 +249,7 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
+        .create_sub_vault(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
 
@@ -282,7 +282,7 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     // Curator place-order must reject while paused.
     fixture.refresh_blockhash().await;
     let place_res = fixture
-        .place_order_for_risk_profile(&curator, 1, 500, 30 * 86_400, 0)
+        .place_order_for_sub_vault(&curator, 1, 500, 30 * 86_400, 0)
         .await;
     crate::assert_custom_error!(place_res, ydelta::program::YdeltaError::VaultPaused);
 

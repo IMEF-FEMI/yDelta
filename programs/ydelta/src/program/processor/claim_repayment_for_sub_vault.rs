@@ -1,5 +1,5 @@
-//! `ClaimRepaymentForRiskProfile` instruction. Permissionless stateless
-//! sweeper that moves a risk profile's `debt_withdrawable_shares` from
+//! `ClaimRepaymentForSubVault` instruction. Permissionless stateless
+//! sweeper that moves a sub-vault's `debt_withdrawable_shares` from
 //! the per-market `lender_marginfi_account` into the per-vault marginfi
 //! integration account. Never touches loan PDAs, never re-accrues.
 
@@ -11,34 +11,34 @@ use solana_program::{
     account_info::AccountInfo, entrypoint::ProgramResult, program::invoke_signed, pubkey::Pubkey,
 };
 
-use crate::logs::{emit_stack, RepaymentClaimedForRiskProfileLog};
+use crate::logs::{emit_stack, RepaymentClaimedForSubVaultLog};
 use crate::program::YdeltaError;
 use crate::protocol::{marginfi::MarginfiV18Adapter, LendingProtocol};
 use crate::require;
-use crate::state::claimed_seat::{ClaimedSeat, OWNER_KIND_RISK_PROFILE};
+use crate::state::claimed_seat::{ClaimedSeat, OWNER_KIND_SUB_VAULT};
 use crate::state::market::{get_mut_helper_seat, ClaimedSeatTreeReadOnly, MarketFixed};
 use crate::state::vault::{
-    get_mut_helper_risk_profile, GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
+    get_mut_helper_sub_vault, GlobalVaultFixed, SubVault, SubVaultTreeReadOnly,
     GLOBAL_VAULT_SIGNER_SEED,
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
-use crate::validation::loaders::ClaimRepaymentForRiskProfileContext;
+use crate::validation::loaders::ClaimRepaymentForSubVaultContext;
 use crate::validation::MARKET_SIGNER_SEED;
 
 use super::shared::get_mut_dynamic_account;
 
-/// Parameters for [`process_claim_repayment_for_risk_profile`].
+/// Parameters for [`process_claim_repayment_for_sub_vault`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Default)]
-pub struct ClaimRepaymentForRiskProfileParams {
-    /// Identifies the risk-profile seat to sweep. Combined with the
+pub struct ClaimRepaymentForSubVaultParams {
+    /// Identifies the sub-vault seat to sweep. Combined with the
     /// global_vault account, locates the seat at
-    /// `(market, OWNER_KIND_RISK_PROFILE, global_vault, risk_profile_id)`.
-    pub risk_profile_id: u8,
+    /// `(market, OWNER_KIND_SUB_VAULT, global_vault, sub_vault_id)`.
+    pub sub_vault_id: u8,
 }
 
 /// Stateless seat→vault sweeper. Per the repay/claim split, this ix
 /// NEVER reads the loan PDA and NEVER re-accrues loan interest. It looks
-/// at the vault's risk-profile market seat, sees how many `debt_withdrawable_shares`
+/// at the vault's sub-vault market seat, sees how many `debt_withdrawable_shares`
 /// have accumulated (from any borrower's repays — or from liquidate/settle
 /// once those ixs land Phase 2B), withdraws the underlying atoms from the
 /// per-market `lender_marginfi_account`, and deposits them into this
@@ -46,19 +46,19 @@ pub struct ClaimRepaymentForRiskProfileParams {
 /// the seat shares and `profile.pending_claim_atoms` by the amount swept.
 ///
 /// Per-loan economic facts (principal, rate, curator_fee_bps, started_at)
-/// were already applied to the risk profile by `repay`/`liquidate_loan`/
+/// were already applied to the sub-vault by `repay`/`liquidate_loan`/
 /// `settle_matured_loan` at their respective close events. The loan PDA
 /// is already closed by the time claim runs; the curator just sweeps.
-pub fn process_claim_repayment_for_risk_profile(
+pub fn process_claim_repayment_for_sub_vault(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
-    let params: ClaimRepaymentForRiskProfileParams =
-        ClaimRepaymentForRiskProfileParams::try_from_slice(data)?;
-    let risk_profile_id: u8 = params.risk_profile_id;
+    let params: ClaimRepaymentForSubVaultParams =
+        ClaimRepaymentForSubVaultParams::try_from_slice(data)?;
+    let sub_vault_id: u8 = params.sub_vault_id;
 
-    let ClaimRepaymentForRiskProfileContext {
+    let ClaimRepaymentForSubVaultContext {
         payer: _,
         market,
         global_vault,
@@ -78,15 +78,15 @@ pub fn process_claim_repayment_for_risk_profile(
         token_program,
         marginfi_group,
         marginfi_program,
-    } = ClaimRepaymentForRiskProfileContext::load(accounts, risk_profile_id)?;
+    } = ClaimRepaymentForSubVaultContext::load(accounts, sub_vault_id)?;
 
     let market_key = *market.info.key;
     let global_vault_key = *global_vault.info.key;
 
-    // (1) Look up the lender risk-profile seat by composite key. Pull
+    // (1) Look up the lender sub-vault seat by composite key. Pull
     // out the pending claim shares; bail no-op if nothing to sweep.
-    // Validation that the seat exists, has owner_kind=RISK_PROFILE, owner=vault,
-    // matching profile_id is implicit in `lookup_index` against the probe.
+    // Validation that the seat exists, has owner_kind=SUB_VAULT, owner=vault,
+    // matching sub_vault_id is implicit in `lookup_index` against the probe.
     let (lender_seat_index, pending_shares) = {
         let market_data: &std::cell::Ref<&mut [u8]> = &market.info.try_borrow_data()?;
         let market_dyn_offset = std::mem::size_of::<MarketFixed>();
@@ -94,17 +94,17 @@ pub fn process_claim_repayment_for_risk_profile(
         let dynamic = &market_data[market_dyn_offset..];
         let probe = ClaimedSeat::new_empty(
             global_vault_key,
-            OWNER_KIND_RISK_PROFILE,
-            risk_profile_id,
+            OWNER_KIND_SUB_VAULT,
+            sub_vault_id,
         );
         let tree = ClaimedSeatTreeReadOnly::new(dynamic, header.claimed_seats_root_index, NIL);
         let idx = tree.lookup_index(&probe);
         require!(
             idx != NIL,
             YdeltaError::IncorrectAccount,
-            "claim: no risk-profile seat found for vault {} profile_id {}",
+            "claim: no sub-vault seat found for vault {} sub_vault_id {}",
             global_vault_key,
-            risk_profile_id,
+            sub_vault_id,
         )?;
         let seat = crate::state::market::get_helper_seat(dynamic, idx).get_value();
         (idx, seat.debt_withdrawable_shares)
@@ -113,11 +113,11 @@ pub fn process_claim_repayment_for_risk_profile(
     if pending_shares == 0 {
         // No-op: nothing has accumulated on the seat. Emit log and return
         // success. This is the common case once the curator catches up.
-        emit_stack(RepaymentClaimedForRiskProfileLog {
+        emit_stack(RepaymentClaimedForSubVaultLog {
             market: market_key,
             loan: Pubkey::default(),
             global_vault: global_vault_key,
-            risk_profile_id,
+            sub_vault_id,
             _pad0: [0; 7],
             claimed_atoms: 0,
             principal_atoms: 0,
@@ -269,28 +269,28 @@ pub fn process_claim_repayment_for_risk_profile(
         let vault_data: &mut RefMut<&mut [u8]> = &mut global_vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-        let probe = RiskProfile::new_empty(risk_profile_id, Pubkey::default(), 1, 1);
+        let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
             profile_idx != NIL,
-            YdeltaError::VaultProfileNotFound,
-            "claim: profile_id {} not found on global_vault",
-            risk_profile_id,
+            YdeltaError::SubVaultNotFound,
+            "claim: sub_vault_id {} not found on global_vault",
+            sub_vault_id,
         )?;
-        let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+        let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
         profile.pending_claim_atoms = profile
             .pending_claim_atoms
             .saturating_sub(actual_atoms);
     }
 
-    emit_stack(RepaymentClaimedForRiskProfileLog {
+    emit_stack(RepaymentClaimedForSubVaultLog {
         market: market_key,
         loan: Pubkey::default(),
         global_vault: global_vault_key,
-        risk_profile_id,
+        sub_vault_id,
         _pad0: [0; 7],
         claimed_atoms: actual_atoms,
         principal_atoms: 0,

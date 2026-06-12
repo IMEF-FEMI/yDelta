@@ -15,8 +15,8 @@ use crate::program::YdeltaError;
 use crate::protocol::{marginfi::MarginfiV18Adapter, LendingProtocol};
 use crate::require;
 use crate::state::vault::{
-    get_helper_risk_profile, get_mut_helper_risk_profile, GlobalVaultFixed, RiskProfile,
-    RiskProfileTreeReadOnly, GLOBAL_VAULT_SIGNER_SEED,
+    get_helper_sub_vault, get_mut_helper_sub_vault, GlobalVaultFixed, SubVault,
+    SubVaultTreeReadOnly, GLOBAL_VAULT_SIGNER_SEED,
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::ClaimCuratorFeeContext;
@@ -24,8 +24,8 @@ use crate::validation::loaders::ClaimCuratorFeeContext;
 /// Parameters for [`process_claim_curator_fee`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct ClaimCuratorFeeParams {
-    /// Identifies the risk profile whose curator fee is being claimed.
-    pub profile_id: u8,
+    /// Identifies the sub-vault whose curator fee is being claimed.
+    pub sub_vault_id: u8,
 }
 
 /// Withdraw a profile's `accumulated_curator_fee_atoms` to the
@@ -62,18 +62,18 @@ pub fn process_claim_curator_fee(
         let vault_data = vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+        let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
             profile_idx != NIL,
-            YdeltaError::VaultProfileNotFound,
-            "profile_id {} not found",
-            params.profile_id
+            YdeltaError::SubVaultNotFound,
+            "sub_vault_id {} not found",
+            params.sub_vault_id
         )?;
-        let profile = get_helper_risk_profile(dynamic, profile_idx).get_value();
+        let profile = get_helper_sub_vault(dynamic, profile_idx).get_value();
         require!(
             *payer.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,
@@ -179,13 +179,13 @@ pub fn process_claim_curator_fee(
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+        let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         if profile_idx != NIL {
-            let profile_node = get_mut_helper_risk_profile(dynamic, profile_idx);
+            let profile_node = get_mut_helper_sub_vault(dynamic, profile_idx);
             let acc = &mut profile_node.get_mut_value().accumulated_curator_fee_atoms;
 
             *acc = acc.saturating_sub(payout_atoms);

@@ -848,7 +848,7 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
 /// Account context for `ProcessMatchedLoan` (tag 5). Carries the
 /// soon-to-be-allocated loan PDA + bump, the debt bank for the asv
 /// snapshot, and (optionally) the per-vault settle accounts when the
-/// matched lender is a risk profile.
+/// matched lender is a sub-vault.
 pub(crate) struct ProcessMatchedLoanContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -965,7 +965,7 @@ impl<'a, 'info> ProcessMatchedLoanContext<'a, 'info> {
                         .get_value()
                         .owner_kind
                 };
-                if owner_kind == crate::state::OWNER_KIND_RISK_PROFILE {
+                if owner_kind == crate::state::OWNER_KIND_SUB_VAULT {
                     Some(load_vault_settle_accounts(
                         account_iter,
                         market.key,
@@ -994,7 +994,7 @@ impl<'a, 'info> ProcessMatchedLoanContext<'a, 'info> {
 
 /// Pull the vault-side accounts a matched-loan promotion needs to move
 /// atoms from the vault's `integration_account` into the market's
-/// `lender_marginfi_account` and update the lender seat / risk profile.
+/// `lender_marginfi_account` and update the lender seat / sub-vault.
 pub(crate) fn load_vault_settle_accounts<'a, 'info>(
     iter: &mut Iter<'a, AccountInfo<'info>>,
     market_key: &Pubkey,
@@ -1181,11 +1181,11 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
 }
 
 #[allow(dead_code)]
-/// Account context for `ClaimRepaymentForRiskProfile` (tag 20). Wires
+/// Account context for `ClaimRepaymentForSubVault` (tag 20). Wires
 /// the market's `lender_marginfi_account` source to the vault's
 /// `integration_account` destination so the keeper sweep can move
 /// `pending_claim_atoms` back into the profile's idle pool.
-pub(crate) struct ClaimRepaymentForRiskProfileContext<'a, 'info> {
+pub(crate) struct ClaimRepaymentForSubVaultContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
     pub global_vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -1208,14 +1208,14 @@ pub(crate) struct ClaimRepaymentForRiskProfileContext<'a, 'info> {
     pub marginfi_program: MarginfiProgram<'a, 'info>,
 }
 
-impl<'a, 'info> ClaimRepaymentForRiskProfileContext<'a, 'info> {
-    /// Loader for the stateless seat→vault sweeper. `risk_profile_id` is
+impl<'a, 'info> ClaimRepaymentForSubVaultContext<'a, 'info> {
+    /// Loader for the stateless seat→vault sweeper. `sub_vault_id` is
     /// passed via the ix params (not the account list) because the seat
     /// is internal to market.dynamic and looked up by composite key, not
     /// by account address.
     pub fn load(
         accounts: &'a [AccountInfo<'info>],
-        _risk_profile_id: u8,
+        _sub_vault_id: u8,
     ) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
@@ -1439,7 +1439,7 @@ pub(crate) struct RepayContext<'a, 'info> {
     pub marginfi_program: MarginfiProgram<'a, 'info>,
     pub user_account_ai: &'a AccountInfo<'info>,
     pub cranker_refund: &'a AccountInfo<'info>,
-    /// Fixed-loan close-out updates the lender vault's risk-profile
+    /// Fixed-loan close-out updates the lender vault's sub-vault
     /// accumulators on full repay. Required for Fixed loans; never read
     /// for P2Pool (the SDK omits the slot for P2Pool repays).
     pub global_vault:
@@ -1602,7 +1602,7 @@ impl<'a, 'info> RepayContext<'a, 'info> {
         )?;
 
         // Fixed-loan close-out needs the lender's global vault for
-        // risk-profile bookkeeping on full repay. P2Pool repays omit
+        // sub-vault bookkeeping on full repay. P2Pool repays omit
         // this slot — there's no vault lender to update.
         let loan_type = loan.get_fixed()?.loan_type()?;
         let global_vault = if loan_type == crate::state::loan::LoanType::Fixed {
@@ -1678,7 +1678,7 @@ pub(crate) struct SettleMaturedLoanContext<'a, 'info> {
     pub marginfi_group: MarginfiGroupInfo<'a, 'info>,
     pub marginfi_program: MarginfiProgram<'a, 'info>,
     pub cranker_refund: &'a AccountInfo<'info>,
-    /// Fixed-loan close-out updates the lender vault's risk-profile on
+    /// Fixed-loan close-out updates the lender vault's sub-vault on
     /// full liquidate/settle. Required for Fixed loans; SDK omits the
     /// slot for P2Pool.
     pub global_vault:
@@ -1897,7 +1897,7 @@ impl<'a, 'info> SettleMaturedLoanContext<'a, 'info> {
         )?;
 
         // Fixed-loan close-out needs the lender's global vault for
-        // risk-profile bookkeeping on full liquidate/settle (mirrors repay).
+        // sub-vault bookkeeping on full liquidate/settle (mirrors repay).
         // P2Pool ixs omit this slot — their close-out is the marginfi.repay
         // on the borrower's marginfi-account, no vault state to update.
         let loan_type = loan.get_fixed()?.loan_type()?;
@@ -2237,7 +2237,7 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
 
 /// Account context for `GlobalVaultDeposit` (tag 10). Routes the
 /// depositor's ATA into the vault's marginfi integration account and
-/// mints fp48 profile shares against the selected `profile_id`.
+/// mints fp48 profile shares against the selected `sub_vault_id`.
 pub(crate) struct GlobalVaultDepositContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2710,10 +2710,10 @@ impl<'a, 'info> ClaimCuratorFeeContext<'a, 'info> {
     }
 }
 
-/// Account context for `CancelOrderForRiskProfile` (tag 13).
+/// Account context for `CancelOrderForSubVault` (tag 13).
 /// Curator-gated; clears both the resting order on the market book
-/// and the vault-side `RiskProfileOrderRef`.
-pub(crate) struct CancelOrderForRiskProfileContext<'a, 'info> {
+/// and the vault-side `SubVaultOrderRef`.
+pub(crate) struct CancelOrderForSubVaultContext<'a, 'info> {
     pub fee_payer: Signer<'a, 'info>,
     pub curator: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2721,7 +2721,7 @@ pub(crate) struct CancelOrderForRiskProfileContext<'a, 'info> {
     pub _system_program: Program<'a, 'info>,
 }
 
-impl<'a, 'info> CancelOrderForRiskProfileContext<'a, 'info> {
+impl<'a, 'info> CancelOrderForSubVaultContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
@@ -2750,15 +2750,15 @@ impl<'a, 'info> CancelOrderForRiskProfileContext<'a, 'info> {
     }
 }
 
-/// Account context for `CreateRiskProfile` (tag 9). Vault-admin gated;
-/// appends a `RiskProfile` to the vault tree with a monotonic profile_id.
-pub(crate) struct CreateRiskProfileContext<'a, 'info> {
+/// Account context for `CreateSubVault` (tag 9). Vault-admin gated;
+/// appends a `SubVault` to the vault tree with a monotonic sub_vault_id.
+pub(crate) struct CreateSubVaultContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
     pub _system_program: Program<'a, 'info>,
 }
 
-impl<'a, 'info> CreateRiskProfileContext<'a, 'info> {
+impl<'a, 'info> CreateSubVaultContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
@@ -2776,7 +2776,7 @@ impl<'a, 'info> CreateRiskProfileContext<'a, 'info> {
         require!(
             *payer.info.key == global_vault_admin,
             YdeltaError::VaultAdminRequired,
-            "create_risk_profile: signer ({}) is not global_vault_admin ({})",
+            "create_sub_vault: signer ({}) is not global_vault_admin ({})",
             payer.info.key,
             global_vault_admin
         )?;
@@ -2789,14 +2789,14 @@ impl<'a, 'info> CreateRiskProfileContext<'a, 'info> {
     }
 }
 
-/// Account context for `RemoveRiskProfile` (tag 37). Vault-admin
+/// Account context for `RemoveSubVault` (tag 37). Vault-admin
 /// gated; removes a sunset, fully drained profile from the vault tree.
-pub(crate) struct RemoveRiskProfileContext<'a, 'info> {
+pub(crate) struct RemoveSubVaultContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
 }
 
-impl<'a, 'info> RemoveRiskProfileContext<'a, 'info> {
+impl<'a, 'info> RemoveSubVaultContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
@@ -2811,7 +2811,7 @@ impl<'a, 'info> RemoveRiskProfileContext<'a, 'info> {
         require!(
             *payer.info.key == global_vault_admin,
             YdeltaError::VaultAdminRequired,
-            "remove_risk_profile: signer ({}) is not global_vault_admin ({})",
+            "remove_sub_vault: signer ({}) is not global_vault_admin ({})",
             payer.info.key,
             global_vault_admin
         )?;
@@ -2823,14 +2823,14 @@ impl<'a, 'info> RemoveRiskProfileContext<'a, 'info> {
     }
 }
 
-/// Account context for `SunsetRiskProfile` (tag 38). Vault-admin
+/// Account context for `SunsetSubVault` (tag 38). Vault-admin
 /// gated; flips `profile.is_sunset = 1`.
-pub(crate) struct SunsetRiskProfileContext<'a, 'info> {
+pub(crate) struct SunsetSubVaultContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
 }
 
-impl<'a, 'info> SunsetRiskProfileContext<'a, 'info> {
+impl<'a, 'info> SunsetSubVaultContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
@@ -2842,7 +2842,7 @@ impl<'a, 'info> SunsetRiskProfileContext<'a, 'info> {
         require!(
             *payer.info.key == global_vault_admin,
             YdeltaError::VaultAdminRequired,
-            "sunset_risk_profile: signer ({}) is not global_vault_admin ({})",
+            "sunset_sub_vault: signer ({}) is not global_vault_admin ({})",
             payer.info.key,
             global_vault_admin
         )?;
@@ -2853,14 +2853,14 @@ impl<'a, 'info> SunsetRiskProfileContext<'a, 'info> {
     }
 }
 
-/// Account context for `ResumeRiskProfile` (tag 39). Vault-admin
+/// Account context for `ResumeSubVault` (tag 39). Vault-admin
 /// gated; flips `profile.is_sunset = 0`.
-pub(crate) struct ResumeRiskProfileContext<'a, 'info> {
+pub(crate) struct ResumeSubVaultContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
 }
 
-impl<'a, 'info> ResumeRiskProfileContext<'a, 'info> {
+impl<'a, 'info> ResumeSubVaultContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
@@ -2872,7 +2872,7 @@ impl<'a, 'info> ResumeRiskProfileContext<'a, 'info> {
         require!(
             *payer.info.key == global_vault_admin,
             YdeltaError::VaultAdminRequired,
-            "resume_risk_profile: signer ({}) is not global_vault_admin ({})",
+            "resume_sub_vault: signer ({}) is not global_vault_admin ({})",
             payer.info.key,
             global_vault_admin
         )?;
@@ -2883,16 +2883,16 @@ impl<'a, 'info> ResumeRiskProfileContext<'a, 'info> {
     }
 }
 
-/// Account context for `AdminCancelRiskProfileOrder` (tag 40).
+/// Account context for `AdminCancelSubVaultOrder` (tag 40).
 /// Vault-admin gated; force-cancels a sunset profile's resting ask
 /// (curator-only on non-sunset profiles).
-pub(crate) struct AdminCancelRiskProfileOrderContext<'a, 'info> {
+pub(crate) struct AdminCancelSubVaultOrderContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
 }
 
-impl<'a, 'info> AdminCancelRiskProfileOrderContext<'a, 'info> {
+impl<'a, 'info> AdminCancelSubVaultOrderContext<'a, 'info> {
     pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
@@ -2905,7 +2905,7 @@ impl<'a, 'info> AdminCancelRiskProfileOrderContext<'a, 'info> {
         require!(
             *payer.info.key == global_vault_admin,
             YdeltaError::VaultAdminRequired,
-            "admin_cancel_risk_profile_order: signer ({}) is not global_vault_admin ({})",
+            "admin_cancel_sub_vault_order: signer ({}) is not global_vault_admin ({})",
             payer.info.key,
             global_vault_admin
         )?;

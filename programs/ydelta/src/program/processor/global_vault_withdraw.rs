@@ -1,4 +1,4 @@
-//! `GlobalVaultWithdraw` instruction. Burn risk-profile shares to
+//! `GlobalVaultWithdraw` instruction. Burn sub-vault shares to
 //! redeem realized principal atoms from the vault. Gated by the
 //! profile's idle pool (`total_principal - deployed - encumbered`);
 //! the last-share burn additionally requires zero in-flight capital.
@@ -21,9 +21,9 @@ use crate::state::user_account::{
     VaultPositionTreeReadOnly,
 };
 use crate::state::vault::{
-    accrue_risk_profile, get_mut_helper_risk_profile, get_mut_helper_risk_profile_depositor_seat,
-    remove_risk_profile_depositor_seat, GlobalVaultFixed, RiskProfile, RiskProfileDepositorSeat,
-    RiskProfileDepositorSeatTreeReadOnly, RiskProfileTreeReadOnly, GLOBAL_VAULT_SIGNER_SEED,
+    accrue_sub_vault, get_mut_helper_sub_vault, get_mut_helper_sub_vault_depositor_seat,
+    remove_sub_vault_depositor_seat, GlobalVaultFixed, SubVault, SubVaultDepositorSeat,
+    SubVaultDepositorSeatTreeReadOnly, SubVaultTreeReadOnly, GLOBAL_VAULT_SIGNER_SEED,
 };
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, USER_ACCOUNT_FIXED_SIZE};
 use crate::validation::loaders::GlobalVaultWithdrawContext;
@@ -33,8 +33,8 @@ use crate::validation::loaders::GlobalVaultWithdrawContext;
 pub struct GlobalVaultWithdrawParams {
     /// Profile shares to redeem. Must be `> 0` and `<= seat.shares`.
     pub shares_to_burn: u128,
-    /// Identifies the risk profile to withdraw from.
-    pub profile_id: u8,
+    /// Identifies the sub-vault to withdraw from.
+    pub sub_vault_id: u8,
 }
 
 /// Burn `shares_to_burn` from the signer's depositor seat and
@@ -79,9 +79,9 @@ pub fn process_global_vault_withdraw(
         let v_data: &Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (v_fixed_bytes, v_dynamic) = v_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let v_header: &GlobalVaultFixed = bytemuck::from_bytes(v_fixed_bytes);
-        let probe = RiskProfileDepositorSeat::probe(*payer.info.key, params.profile_id);
+        let probe = SubVaultDepositorSeat::probe(*payer.info.key, params.sub_vault_id);
         let seat_idx = {
-            let tree = RiskProfileDepositorSeatTreeReadOnly::new(
+            let tree = SubVaultDepositorSeatTreeReadOnly::new(
                 v_dynamic,
                 v_header.claimed_seats_root_index,
                 hypertree::NIL,
@@ -91,10 +91,10 @@ pub fn process_global_vault_withdraw(
         require!(
             seat_idx != hypertree::NIL,
             YdeltaError::InvalidArgument,
-            "depositor has no RiskProfileDepositorSeat for profile_id {}",
-            params.profile_id
+            "depositor has no SubVaultDepositorSeat for sub_vault_id {}",
+            params.sub_vault_id
         )?;
-        let seat = crate::state::vault::get_helper_risk_profile_depositor_seat(v_dynamic, seat_idx)
+        let seat = crate::state::vault::get_helper_sub_vault_depositor_seat(v_dynamic, seat_idx)
             .get_value();
         require!(
             seat.shares >= params.shares_to_burn,
@@ -107,7 +107,7 @@ pub fn process_global_vault_withdraw(
         let data: &Ref<&mut [u8]> = &user_account_ai.try_borrow_data()?;
         let (fixed_bytes, dynamic) = data.split_at(USER_ACCOUNT_FIXED_SIZE);
         let fixed: &UserAccountFixed = bytemuck::from_bytes(fixed_bytes);
-        let probe = VaultPosition::new_empty(vault_key, params.profile_id);
+        let probe = VaultPosition::new_empty(vault_key, params.sub_vault_id);
         let tree = VaultPositionTreeReadOnly::new(
             dynamic,
             fixed.vault_positions_root_index,
@@ -121,16 +121,16 @@ pub fn process_global_vault_withdraw(
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+        let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
             profile_idx != NIL,
-            YdeltaError::VaultProfileNotFound,
-            "profile_id {} not found in vault",
-            params.profile_id
+            YdeltaError::SubVaultNotFound,
+            "sub_vault_id {} not found in vault",
+            params.sub_vault_id
         )?;
 
         let mfi_asset_shares: u128 = crate::protocol::marginfi::read_asset_shares_u128(
@@ -140,12 +140,12 @@ pub fn process_global_vault_withdraw(
         let mfi_atoms: u64 =
             MarginfiV18Adapter.shares_to_amount(&[lending_pool.info.clone()], mfi_asset_shares)?;
 
-        let profile_node = get_mut_helper_risk_profile(dynamic, profile_idx);
+        let profile_node = get_mut_helper_sub_vault(dynamic, profile_idx);
         let profile = profile_node.get_mut_value();
 
         let share_value_fp48 =
             crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info)?;
-        accrue_risk_profile(profile, now, share_value_fp48)?;
+        accrue_sub_vault(profile, now, share_value_fp48)?;
 
         let principal_decrement: u64 = u64::try_from(crate::math::mul_div(
             params.shares_to_burn,
@@ -262,13 +262,13 @@ pub fn process_global_vault_withdraw(
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+        let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         if profile_idx != NIL {
-            let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+            let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
             profile.total_assets_atoms = 0;
             profile.total_principal_atoms = 0;
             profile_total_assets_after = profile.total_assets_atoms;
@@ -311,9 +311,9 @@ pub fn process_global_vault_withdraw(
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let probe = RiskProfileDepositorSeat::probe(*payer.info.key, params.profile_id);
+        let probe = SubVaultDepositorSeat::probe(*payer.info.key, params.sub_vault_id);
         let seat_idx = {
-            let tree = RiskProfileDepositorSeatTreeReadOnly::new(
+            let tree = SubVaultDepositorSeatTreeReadOnly::new(
                 dynamic,
                 header.claimed_seats_root_index,
                 hypertree::NIL,
@@ -326,7 +326,7 @@ pub fn process_global_vault_withdraw(
             YdeltaError::InvalidArgument,
             "global_vault_withdraw: depositor seat vanished mid-ix (impossible single-threaded)"
         )?;
-        let seat = get_mut_helper_risk_profile_depositor_seat(dynamic, seat_idx).get_mut_value();
+        let seat = get_mut_helper_sub_vault_depositor_seat(dynamic, seat_idx).get_mut_value();
         seat.shares = seat
             .shares
             .checked_sub(params.shares_to_burn)
@@ -334,11 +334,11 @@ pub fn process_global_vault_withdraw(
         seat.last_updated_unix = now;
         let zeroed = seat.shares == 0;
         if zeroed {
-            remove_risk_profile_depositor_seat(
+            remove_sub_vault_depositor_seat(
                 header,
                 dynamic,
                 *payer.info.key,
-                params.profile_id,
+                params.sub_vault_id,
             )?;
         }
         zeroed
@@ -355,7 +355,7 @@ pub fn process_global_vault_withdraw(
             .ok_or(ProgramError::ArithmeticOverflow)?;
         pos.last_updated_unix = now;
         if seat_zeroed {
-            remove_vault_position(fixed, dynamic, vault_key, params.profile_id)?;
+            remove_vault_position(fixed, dynamic, vault_key, params.sub_vault_id)?;
         }
     }
 
@@ -366,7 +366,7 @@ pub fn process_global_vault_withdraw(
         profile_total_shares: new_total_shares,
         atoms_out: payout_atoms,
         profile_total_assets_atoms: profile_total_assets_after,
-        profile_id: params.profile_id,
+        sub_vault_id: params.sub_vault_id,
         _padding: [0; 15],
     })?;
 

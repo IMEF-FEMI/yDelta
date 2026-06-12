@@ -4,7 +4,7 @@
 //!  1. A borrower's IOC bid finds no resting asks → the whole principal
 //!     falls through to the P2Pool fallback (`marginfi.borrow`), and the
 //!     cranker promotes a `LoanFixed` with `loan_type == P2Pool`.
-//!  2. A vault risk profile is funded and rests an unbounded ask.
+//!  2. A vault sub-vault is funded and rests an unbounded ask.
 //!  3. `convert_p2pool_to_fixed` crosses that vault ask, withdrawing
 //!     principal from the vault, repaying the borrower's marginfi
 //!     liability, and queuing a Fixed `MatchedLoan`.
@@ -124,7 +124,7 @@ async fn full_conversion_closes_p2pool_pda() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -208,7 +208,7 @@ async fn partial_conversion_is_rejected() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -287,7 +287,7 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(100),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -360,7 +360,7 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -388,7 +388,7 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
     );
 
     fixture
-        .crank_matched_loan_for_risk_profile(1)
+        .crank_matched_loan_for_sub_vault(1)
         .await
         .unwrap();
     let converted = fixture.read_loan(1).await;
@@ -443,7 +443,7 @@ async fn convert_produces_fixed_loan_with_expected_fields() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             VAULT_MAX_LTV_BPS,
             ASK_RATE_BPS,
             ASK_TERM_SECONDS,
@@ -483,7 +483,7 @@ async fn convert_produces_fixed_loan_with_expected_fields() {
 
     // Crank the new MatchedLoan into a LoanFixed PDA.
     fixture
-        .crank_matched_loan_for_risk_profile(1)
+        .crank_matched_loan_for_sub_vault(1)
         .await
         .unwrap();
 

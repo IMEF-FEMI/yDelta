@@ -2,9 +2,9 @@
 //! the borrower (verified against the borrower seat's owner). Handles partial
 //! and full repayment; on full repay this is the only place that closes the
 //! loan PDA, decrements seat encumbrance/counters, releases collateral,
-//! applies risk-profile bookkeeping (weighted-rate, principal, NAV, pending
+//! applies sub-vault bookkeeping (weighted-rate, principal, NAV, pending
 //! claim, curator fee accumulators), and refunds rent to the original
-//! cranker. The companion `claim_repayment_for_risk_profile` is a stateless
+//! cranker. The companion `claim_repayment_for_sub_vault` is a stateless
 //! seat→vault sweeper and never re-accrues or touches the loan PDA.
 
 use std::cell::{Ref, RefMut};
@@ -29,8 +29,8 @@ use crate::state::loan::{
 use crate::state::market::{get_helper_seat, get_mut_helper_seat, MarketFixed};
 use crate::state::user_account::{remove_open_loan, UserAccountFixed};
 use crate::state::vault::{
-    accrue_risk_profile, get_mut_helper_risk_profile, read_bank_asset_share_value_fp48,
-    GlobalVaultFixed, RiskProfile, RiskProfileTreeReadOnly,
+    accrue_sub_vault, get_mut_helper_sub_vault, read_bank_asset_share_value_fp48,
+    GlobalVaultFixed, SubVault, SubVaultTreeReadOnly,
 };
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, USER_ACCOUNT_FIXED_SIZE};
 use crate::validation::loaders::RepayContext;
@@ -53,7 +53,7 @@ pub struct RepayParams {
 
 /// Borrower repay for Fixed and P2Pool loans. Accrues once (the only call site
 /// that does so for repay/claim), applies the repay via marginfi, and on full
-/// repay performs the entire close-out (loan PDA, seats, risk profile).
+/// repay performs the entire close-out (loan PDA, seats, sub-vault).
 pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let params: RepayParams = RepayParams::try_from_slice(data)?;
     let ctx = RepayContext::load(accounts)?;
@@ -89,7 +89,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
     // ONCE here — per the repay/claim split, this is the LAST place loan
     // interest is accrued (claim never re-accrues). For Fixed loans we
     // also capture the lender-side facts needed for the full-repay close-out
-    // (lender_seat_index, lender_profile_id, principal, lender_rate,
+    // (lender_seat_index, lender_sub_vault_id, principal, lender_rate,
     // curator_fee_bps_snapshot, started_at, accumulated fee buckets).
     let (
         borrower_seat_index,
@@ -98,7 +98,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         collateral_atoms,
         collateral_snapshot_fp48,
         lender_seat_index,
-        lender_profile_id,
+        lender_sub_vault_id,
         loan_principal,
         loan_lender_rate,
         loan_curator_fee_bps,
@@ -124,7 +124,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             header.collateral_atoms,
             header.borrower_collateral_share_price_snapshot_fp48,
             header.lender_seat_index,
-            header.lender_profile_id,
+            header.lender_sub_vault_id,
             header.principal_debt_atoms,
             header.lender_rate_bps,
             header.curator_fee_bps_snapshot,
@@ -475,10 +475,10 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
     }
 
     // Full-repay close-out: apply per-loan-derived decrements to the lender
-    // vault's risk profile, then close the loan PDA. The loan's per-loan
+    // vault's sub-vault, then close the loan PDA. The loan's per-loan
     // facts (principal, lender_rate, curator_fee_bps_snapshot, started_at)
     // are needed here BEFORE the PDA is zeroed; we snapshotted them above.
-    // claim_repayment_for_risk_profile never reads the loan PDA after this.
+    // claim_repayment_for_sub_vault never reads the loan PDA after this.
     if did_full_repay {
         let global_vault = global_vault.as_ref().ok_or_else(|| {
             solana_program::msg!(
@@ -487,27 +487,27 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             YdeltaError::IncorrectAccount
         })?;
 
-        // Apply per-loan-derived risk profile updates.
+        // Apply per-loan-derived sub-vault updates.
         {
             let vault_data: &mut RefMut<&mut [u8]> =
                 &mut global_vault.info.try_borrow_mut_data()?;
             let (fixed_bytes, dynamic) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
             let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-            let probe = RiskProfile::new_empty(lender_profile_id, Pubkey::default(), 1, 1);
+            let probe = SubVault::new_empty(lender_sub_vault_id, Pubkey::default(), 1, 1);
             let profile_idx = {
                 let tree =
-                    RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+                    SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
                 tree.lookup_index(&probe)
             };
             require!(
                 profile_idx != NIL,
-                YdeltaError::VaultProfileNotFound,
-                "repay: profile_id {} not found on global_vault",
-                lender_profile_id
+                YdeltaError::SubVaultNotFound,
+                "repay: sub_vault_id {} not found on global_vault",
+                lender_sub_vault_id
             )?;
-            let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+            let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
             let share_value_fp48 = read_bank_asset_share_value_fp48(debt_bank.info)?;
-            accrue_risk_profile(profile, now_unix_ts, share_value_fp48)?;
+            accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
 
             // Per-loan weighted-rate accumulator decrements. These can ONLY
             // be applied at close (the per-loan rate + principal facts go
@@ -575,7 +575,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             // Pending-claim bucket — atoms now physically in
             // lender_marginfi_account but not yet swept to this vault's
             // integration_account. Excluded from idle-MTM in
-            // accrue_risk_profile. claim_repayment_for_risk_profile
+            // accrue_sub_vault. claim_repayment_for_sub_vault
             // decrements this as it sweeps.
             profile.pending_claim_atoms = profile
                 .pending_claim_atoms

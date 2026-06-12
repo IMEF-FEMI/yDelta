@@ -36,7 +36,7 @@ pub struct FeeConfig {
     /// Reserved curator split parameter.
     pub curator_split_bps: u16,
     /// Curator management fee in bps applied to gross lender interest
-    /// when the lender is a risk profile.
+    /// when the lender is a sub-vault.
     pub curator_fee_bps: u16,
     /// Liquidator-keeper bonus in bps.
     pub liquidation_keeper_bps: u16,
@@ -147,7 +147,7 @@ const_assert_eq!(
 );
 const_assert_eq!(size_of::<MatchedLoan>() % 16, 0);
 
-/// Match-time flag: the lender is a `RiskProfile` inside a `GlobalVault`
+/// Match-time flag: the lender is a `SubVault` inside a `GlobalVault`
 /// (not a user wallet).
 pub const MATCHED_LOAN_FLAG_VAULT_LENDER: u8 = 0b0000_0001;
 
@@ -452,7 +452,7 @@ pub fn verify_live_seat(
     let resolved = tree.lookup_index(&ClaimedSeat::new_empty(
         seat.owner,
         seat.owner_kind,
-        seat.risk_profile_id,
+        seat.sub_vault_id,
     ));
     require!(
         resolved == seat_index,
@@ -521,20 +521,20 @@ impl<Fixed: DerefOrBorrow<MarketFixed>, Dynamic: DerefOrBorrow<[u8]>>
         ))
     }
 
-    /// Looks up the seat tree by `(global_vault, OWNER_KIND_RISK_PROFILE,
-    /// risk_profile_id)` and returns the node index, or `NIL`.
-    pub fn lookup_risk_profile_seat_index(
+    /// Looks up the seat tree by `(global_vault, OWNER_KIND_SUB_VAULT,
+    /// sub_vault_id)` and returns the node index, or `NIL`.
+    pub fn lookup_sub_vault_seat_index(
         &self,
         global_vault: &Pubkey,
-        risk_profile_id: u8,
+        sub_vault_id: u8,
     ) -> DataIndex {
         let MarketRef { fixed, dynamic } = self.borrow_market();
         let tree: ClaimedSeatTreeReadOnly =
             ClaimedSeatTreeReadOnly::new(dynamic, fixed.claimed_seats_root_index, NIL);
         tree.lookup_index(&ClaimedSeat::new_empty(
             *global_vault,
-            crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE,
-            risk_profile_id,
+            crate::state::claimed_seat::OWNER_KIND_SUB_VAULT,
+            sub_vault_id,
         ))
     }
 

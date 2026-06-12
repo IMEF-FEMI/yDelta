@@ -29,7 +29,7 @@ use crate::test_utils::marginfi_fixture::mainnet;
 use crate::test_utils::market_fixture::MarketFixture;
 
 /// Stand up a vault-funded loan for the liquidation/settlement tests.
-/// The lender is a vault risk profile resting an unbounded ask; the
+/// The lender is a vault sub-vault resting an unbounded ask; the
 /// borrower deposits wSOL collateral and crosses the ask with an IOC
 /// bid; the cranker promotes the matched loan. Returns
 /// `(keeper, keeper_usdc, keeper_wsol)`.
@@ -52,7 +52,7 @@ async fn setup_vault_funded_loan(
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             term_seconds,
@@ -107,7 +107,7 @@ async fn setup_vault_funded_loan(
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;

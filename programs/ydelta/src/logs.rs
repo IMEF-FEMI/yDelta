@@ -188,7 +188,7 @@ pub struct OrderFilledIocLog {
 impl_discriminant!(OrderFilledIocLog);
 
 /// Emitted from order-cancellation paths (both trader-side and
-/// risk-profile-side) identifying the removed resting order by sequence.
+/// sub-vault-side) identifying the removed resting order by sequence.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct CancelOrderLog {
@@ -198,7 +198,7 @@ pub struct CancelOrderLog {
 }
 impl_discriminant!(CancelOrderLog);
 
-/// Emitted from `UpdateOrderForRiskProfile` (cancel-and-replace) so the
+/// Emitted from `UpdateOrderForSubVault` (cancel-and-replace) so the
 /// indexer can link the retired `old_sequence` to the fresh `new_sequence`.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
@@ -262,22 +262,22 @@ pub struct LoanClaimedLog {
 }
 impl_discriminant!(LoanClaimedLog);
 
-/// Emitted from `process_claim_repayment_for_risk_profile` per sweep
-/// from the lender_marginfi_account into the risk profile's idle pool.
+/// Emitted from `process_claim_repayment_for_sub_vault` per sweep
+/// from the lender_marginfi_account into the sub-vault's idle pool.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct RepaymentClaimedForRiskProfileLog {
+pub struct RepaymentClaimedForSubVaultLog {
     pub market: Pubkey,
     pub loan: Pubkey,
     pub global_vault: Pubkey,
-    pub risk_profile_id: u8,
+    pub sub_vault_id: u8,
     pub _pad0: [u8; 7],
     pub claimed_atoms: u64,
     pub principal_atoms: u64,
     pub _pad1: [u8; 8],
     pub protocol_fee_shares_swept: u128,
 }
-impl_discriminant!(RepaymentClaimedForRiskProfileLog);
+impl_discriminant!(RepaymentClaimedForSubVaultLog);
 
 /// Emitted from `process_create_vault` after the `GlobalVaultFixed` PDA
 /// and its marginfi integration account are initialized.
@@ -293,15 +293,15 @@ pub struct VaultCreatedLog {
 }
 impl_discriminant!(VaultCreatedLog);
 
-/// Emitted from `process_create_risk_profile` after the profile is
-/// appended to the vault's `risk_profiles` tree. `max_ltv_bps == 0`
+/// Emitted from `process_create_sub_vault` after the profile is
+/// appended to the vault's `sub_vaults` tree. `max_ltv_bps == 0`
 /// means the vault inherited the marginfi-derived cap.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct RiskProfileCreatedLog {
+pub struct SubVaultCreatedLog {
     pub global_vault: Pubkey,
     pub curator: Pubkey,
-    pub profile_id: u8,
+    pub sub_vault_id: u8,
 
     pub _reserved0: u8,
     pub _pad0: [u8; 2],
@@ -310,19 +310,19 @@ pub struct RiskProfileCreatedLog {
     pub max_term_seconds: u32,
     pub _pad2: [u8; 4],
 }
-impl_discriminant!(RiskProfileCreatedLog);
+impl_discriminant!(SubVaultCreatedLog);
 
-/// Emitted from `process_remove_risk_profile` after a sunset profile is
+/// Emitted from `process_remove_sub_vault` after a sunset profile is
 /// removed from the vault tree.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct RiskProfileRemovedLog {
+pub struct SubVaultRemovedLog {
     pub global_vault: Pubkey,
     pub curator: Pubkey,
-    pub profile_id: u8,
+    pub sub_vault_id: u8,
     pub _pad0: [u8; 7],
 }
-impl_discriminant!(RiskProfileRemovedLog);
+impl_discriminant!(SubVaultRemovedLog);
 
 /// Emitted from `process_global_vault_deposit`. `shares_minted` and
 /// `gain_atoms` reflect the pre-mint snapshot accrual; the totals are
@@ -337,19 +337,19 @@ pub struct GlobalVaultDepositLog {
     pub atoms_in: u64,
     pub gain_atoms: u64,
     pub profile_total_assets_atoms: u64,
-    pub profile_id: u8,
+    pub sub_vault_id: u8,
     pub _padding: [u8; 7],
 }
 impl_discriminant!(GlobalVaultDepositLog);
 
-/// Emitted from `process_place_order_for_risk_profile` whenever a
+/// Emitted from `process_place_order_for_sub_vault` whenever a
 /// curator rests a vault ask on a market.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct PlaceOrderForRiskProfileLog {
+pub struct PlaceOrderForSubVaultLog {
     pub global_vault: Pubkey,
     pub market: Pubkey,
-    pub profile_id: u8,
+    pub sub_vault_id: u8,
     pub side: u8,
     pub _pad0: [u8; 6],
     pub rate_bps: u16,
@@ -357,22 +357,22 @@ pub struct PlaceOrderForRiskProfileLog {
     pub term_seconds: u32,
     pub order_sequence_in_market: u64,
 }
-impl_discriminant!(PlaceOrderForRiskProfileLog);
+impl_discriminant!(PlaceOrderForSubVaultLog);
 
-/// Emitted from `process_cancel_order_for_risk_profile` and from the
+/// Emitted from `process_cancel_order_for_sub_vault` and from the
 /// admin-cancel + update-order paths. `is_replace = 1` indicates the
 /// cancel half of a cancel-and-replace.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
-pub struct CancelOrderForRiskProfileLog {
+pub struct CancelOrderForSubVaultLog {
     pub global_vault: Pubkey,
     pub market: Pubkey,
-    pub profile_id: u8,
+    pub sub_vault_id: u8,
     pub is_replace: u8,
     pub _pad0: [u8; 6],
     pub order_sequence_in_market: u64,
 }
-impl_discriminant!(CancelOrderForRiskProfileLog);
+impl_discriminant!(CancelOrderForSubVaultLog);
 
 /// Emitted from `process_global_vault_withdraw` after profile shares
 /// are burned and atoms returned to the depositor.
@@ -385,7 +385,7 @@ pub struct GlobalVaultWithdrawLog {
     pub profile_total_shares: u128,
     pub atoms_out: u64,
     pub profile_total_assets_atoms: u64,
-    pub profile_id: u8,
+    pub sub_vault_id: u8,
     pub _padding: [u8; 15],
 }
 impl_discriminant!(GlobalVaultWithdrawLog);

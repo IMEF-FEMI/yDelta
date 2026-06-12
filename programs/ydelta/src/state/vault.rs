@@ -1,8 +1,8 @@
 //! `GlobalVaultFixed` is the per-mint lending vault account. Its dynamic
-//! tail holds two tree regions: a profile region (`RiskProfile` nodes)
-//! and a node region (`RiskProfileDepositorSeat` and
-//! `RiskProfileOrderRef` nodes), each backed by its own free list. A
-//! risk profile aggregates per-curator parameters and per-tick MTM
+//! tail holds two tree regions: a profile region (`SubVault` nodes)
+//! and a node region (`SubVaultDepositorSeat` and
+//! `SubVaultOrderRef` nodes), each backed by its own free list. A
+//! sub-vault aggregates per-curator parameters and per-tick MTM
 //! accounting so individual depositor seats can be split / recombined
 //! without re-running marginfi reads.
 
@@ -21,8 +21,8 @@ use crate::require;
 use crate::validation::YdeltaAccount;
 
 use super::constants::{
-    GLOBAL_VAULT_FIXED_DISCRIMINANT, GLOBAL_VAULT_FIXED_SIZE, RISK_PROFILE_BLOCK_PAYLOAD_SIZE,
-    RISK_PROFILE_BLOCK_SIZE, VAULT_CLAIMED_SEAT_SIZE, VAULT_NODE_BLOCK_PAYLOAD_SIZE,
+    GLOBAL_VAULT_FIXED_DISCRIMINANT, GLOBAL_VAULT_FIXED_SIZE, SUB_VAULT_BLOCK_PAYLOAD_SIZE,
+    SUB_VAULT_BLOCK_SIZE, VAULT_CLAIMED_SEAT_SIZE, VAULT_NODE_BLOCK_PAYLOAD_SIZE,
     VAULT_NODE_BLOCK_SIZE, VAULT_ORDER_REF_SIZE,
 };
 
@@ -82,11 +82,11 @@ pub struct GlobalVaultFixed {
     /// Marginfi bank pubkey for this mint.
     pub lending_pool: Pubkey,
 
-    /// Root of the `RiskProfile` tree (profile region).
-    pub risk_profiles_root_index: DataIndex,
-    /// Root of the `RiskProfileDepositorSeat` tree (node region).
+    /// Root of the `SubVault` tree (profile region).
+    pub sub_vaults_root_index: DataIndex,
+    /// Root of the `SubVaultDepositorSeat` tree (node region).
     pub claimed_seats_root_index: DataIndex,
-    /// Root of the `RiskProfileOrderRef` tree (node region).
+    /// Root of the `SubVaultOrderRef` tree (node region).
     pub market_orders_root_index: DataIndex,
 
     /// Head of the profile-region free list.
@@ -97,17 +97,17 @@ pub struct GlobalVaultFixed {
     /// Total bytes currently allocated across both dynamic regions.
     pub num_bytes_allocated: u32,
 
-    /// Number of live `RiskProfile` nodes.
-    pub risk_profile_count: u8,
+    /// Number of live `SubVault` nodes.
+    pub sub_vault_count: u8,
     /// Bump for `global_vault_signer`.
     pub global_vault_signer_bump: u8,
 
     /// Account layout version; checked by loaders.
     pub version: u8,
     _pad0: [u8; 1],
-    /// Number of live `RiskProfileDepositorSeat` nodes.
+    /// Number of live `SubVaultDepositorSeat` nodes.
     pub claimed_seat_count: u32,
-    /// Number of live `RiskProfileOrderRef` nodes.
+    /// Number of live `SubVaultOrderRef` nodes.
     pub open_order_count: u32,
     _pad1: [u8; 4],
 
@@ -119,9 +119,9 @@ pub struct GlobalVaultFixed {
     /// Per-vault pause switch.
     pub is_paused: u8,
 
-    /// Next risk-profile id to assign. Starts at 1; 0 is the
+    /// Next sub-vault id to assign. Starts at 1; 0 is the
     /// invalid/sentinel id.
-    pub next_profile_id: u8,
+    pub next_sub_vault_id: u8,
     _pad2: [u8; 6],
 
     _reserved: [u64; 1],
@@ -131,7 +131,7 @@ const_assert_eq!(size_of::<GlobalVaultFixed>() % 8, 0);
 
 impl GlobalVaultFixed {
     /// Build a fresh vault header for `mint`. Trees and free lists are
-    /// empty; `next_profile_id` starts at 1 so the first profile lands
+    /// empty; `next_sub_vault_id` starts at 1 so the first profile lands
     /// at id 1 (id 0 stays reserved as the sentinel).
     #[allow(clippy::too_many_arguments)]
     pub fn new_empty(
@@ -151,13 +151,13 @@ impl GlobalVaultFixed {
             integration_account,
             global_vault_signer,
             lending_pool,
-            risk_profiles_root_index: NIL,
+            sub_vaults_root_index: NIL,
             claimed_seats_root_index: NIL,
             market_orders_root_index: NIL,
             profile_free_list_head_index: NIL,
             node_free_list_head_index: NIL,
             num_bytes_allocated: 0,
-            risk_profile_count: 0,
+            sub_vault_count: 0,
             global_vault_signer_bump,
             version: crate::state::constants::ACCOUNT_LAYOUT_VERSION,
             _pad0: [0; 1],
@@ -167,7 +167,7 @@ impl GlobalVaultFixed {
             pending_global_vault_admin: Pubkey::default(),
             _reserved_aggregates: [0; 4],
             is_paused: 0,
-            next_profile_id: 1,
+            next_sub_vault_id: 1,
             _pad2: [0; 6],
             _reserved: [0; 1],
         }
@@ -215,7 +215,7 @@ impl YdeltaAccount for GlobalVaultFixed {
     }
 }
 
-/// Padding type sized to [`super::constants::RISK_PROFILE_FREE_LIST_BLOCK_SIZE`].
+/// Padding type sized to [`super::constants::SUB_VAULT_FREE_LIST_BLOCK_SIZE`].
 #[repr(C, packed)]
 #[derive(Default, Copy, Clone, Pod, Zeroable)]
 pub struct ProfileUnusedFreeListPadding {
@@ -225,7 +225,7 @@ pub struct ProfileUnusedFreeListPadding {
 }
 const_assert_eq!(
     size_of::<ProfileUnusedFreeListPadding>(),
-    super::constants::RISK_PROFILE_FREE_LIST_BLOCK_SIZE
+    super::constants::SUB_VAULT_FREE_LIST_BLOCK_SIZE
 );
 
 /// Padding type sized to [`super::constants::VAULT_NODE_FREE_LIST_BLOCK_SIZE`].
@@ -240,16 +240,16 @@ const_assert_eq!(
     super::constants::VAULT_NODE_FREE_LIST_BLOCK_SIZE
 );
 
-/// Per-curator risk profile inside a `GlobalVault`. Tracks total
+/// Per-curator sub-vault inside a `GlobalVault`. Tracks total
 /// principal, MTM-adjusted total assets, atoms-in-flight, the
 /// weighted-rate aggregates for instantaneous yield, and the two
 /// cumulative yield indices used to settle per-seat NAV at deposit /
 /// withdraw boundaries.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
-pub struct RiskProfile {
+pub struct SubVault {
     /// 1-based profile id within the vault.
-    pub profile_id: u8,
+    pub sub_vault_id: u8,
     /// When non-zero, profile is sunset: deposits, new orders, updates,
     /// and matches reject; withdraw / cancel / fee-claim / repay /
     /// liquidate still operate.
@@ -289,7 +289,7 @@ pub struct RiskProfile {
 
     /// Curator fees accumulated and awaiting `ClaimCuratorFee`.
     pub accumulated_curator_fee_atoms: u64,
-    /// Unix-ts of the last `accrue_risk_profile` pass.
+    /// Unix-ts of the last `accrue_sub_vault` pass.
     pub last_accrue_unix: i64,
 
     /// Per-share cumulative idle-supply yield index, scaled by 2^48.
@@ -310,15 +310,15 @@ pub struct RiskProfile {
     pub total_weighted_net_rate_bps: u128,
 
     /// Atoms that have been retired by repay/liquidation/settle-matured but
-    /// not yet swept by the curator's `claim_repayment_for_risk_profile`.
+    /// not yet swept by the curator's `claim_repayment_for_sub_vault`.
     /// They physically live in the per-market `lender_marginfi_account`,
     /// not in this vault's `global_vault_integration_account`, so they must
-    /// be EXCLUDED from the `accrue_risk_profile` idle MTM calc — otherwise
+    /// be EXCLUDED from the `accrue_sub_vault` idle MTM calc — otherwise
     /// they'd appear to earn the integration-account's share-value drift
     /// while sitting in a different account.
     ///
     /// Lifecycle: `repay` (full-repay close-out) bumps this by the closed
-    /// loan's `principal_debt_atoms`. `claim_repayment_for_risk_profile`
+    /// loan's `principal_debt_atoms`. `claim_repayment_for_sub_vault`
     /// decrements it by the atoms it physically moves from the per-market
     /// `lender_marginfi_account` into this vault's integration account.
     pub pending_claim_atoms: u64,
@@ -326,17 +326,17 @@ pub struct RiskProfile {
     _reserved_a: [u64; 29],
     _reserved_b: [u64; 2],
 }
-const_assert_eq!(size_of::<RiskProfile>(), RISK_PROFILE_BLOCK_PAYLOAD_SIZE);
-const_assert_eq!(size_of::<RiskProfile>() % 16, 0);
+const_assert_eq!(size_of::<SubVault>(), SUB_VAULT_BLOCK_PAYLOAD_SIZE);
+const_assert_eq!(size_of::<SubVault>() % 16, 0);
 
-impl RiskProfile {
+impl SubVault {
     /// Returns the tree key (the 1-based profile id).
     pub fn key(&self) -> u8 {
-        self.profile_id
+        self.sub_vault_id
     }
 
     /// `true` when every accounting field is zero — the gate
-    /// `remove_risk_profile` uses to decide whether deletion is safe.
+    /// `remove_sub_vault` uses to decide whether deletion is safe.
     pub fn is_empty(&self) -> bool {
         self.total_shares == 0
             && self.total_assets_atoms == 0
@@ -350,13 +350,13 @@ impl RiskProfile {
     /// Build a fresh profile with the supplied identity / cap fields
     /// and all accounting fields zeroed.
     pub fn new_empty(
-        profile_id: u8,
+        sub_vault_id: u8,
         curator: Pubkey,
         max_ltv_bps: u16,
         max_term_seconds: u32,
     ) -> Self {
         Self {
-            profile_id,
+            sub_vault_id,
             is_sunset: 0,
             _pad0: [0; 6],
             curator,
@@ -384,44 +384,44 @@ impl RiskProfile {
     }
 }
 
-impl PartialEq for RiskProfile {
+impl PartialEq for SubVault {
     fn eq(&self, other: &Self) -> bool {
-        self.profile_id == other.profile_id
+        self.sub_vault_id == other.sub_vault_id
     }
 }
-impl Eq for RiskProfile {}
-impl Ord for RiskProfile {
+impl Eq for SubVault {}
+impl Ord for SubVault {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.profile_id.cmp(&other.profile_id)
+        self.sub_vault_id.cmp(&other.sub_vault_id)
     }
 }
-impl PartialOrd for RiskProfile {
+impl PartialOrd for SubVault {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::fmt::Display for RiskProfile {
+impl std::fmt::Display for SubVault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RiskProfile(id={}, curator={})",
-            self.profile_id, self.curator
+            "SubVault(id={}, curator={})",
+            self.sub_vault_id, self.curator
         )
     }
 }
 
-/// Per-depositor seat inside a vault, one per `(owner, profile_id)`.
+/// Per-depositor seat inside a vault, one per `(owner, sub_vault_id)`.
 /// Holds the depositor's share balance and snapshots of the profile's
 /// two cumulative yield indices so NAV growth between touches can be
 /// settled lazily.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
-pub struct RiskProfileDepositorSeat {
+pub struct SubVaultDepositorSeat {
     /// Depositor wallet.
     pub owner: Pubkey,
-    /// Risk profile id.
-    pub profile_id: u8,
+    /// Sub-vault id.
+    pub sub_vault_id: u8,
     _pad0: [u8; 15],
     /// Depositor's share balance.
     pub shares: u128,
@@ -436,64 +436,64 @@ pub struct RiskProfileDepositorSeat {
     _reserved: [u64; 4],
 }
 const_assert_eq!(
-    size_of::<RiskProfileDepositorSeat>(),
+    size_of::<SubVaultDepositorSeat>(),
     VAULT_CLAIMED_SEAT_SIZE
 );
-const_assert_eq!(size_of::<RiskProfileDepositorSeat>() % 8, 0);
+const_assert_eq!(size_of::<SubVaultDepositorSeat>() % 8, 0);
 
-impl RiskProfileDepositorSeat {
+impl SubVaultDepositorSeat {
     /// Builds a probe value with identity fields set and all balance
     /// fields zeroed; used for tree lookups.
-    pub fn probe(owner: Pubkey, profile_id: u8) -> Self {
+    pub fn probe(owner: Pubkey, sub_vault_id: u8) -> Self {
         Self {
             owner,
-            profile_id,
+            sub_vault_id,
             ..Default::default()
         }
     }
 }
 
-impl PartialEq for RiskProfileDepositorSeat {
+impl PartialEq for SubVaultDepositorSeat {
     fn eq(&self, other: &Self) -> bool {
-        self.owner == other.owner && self.profile_id == other.profile_id
+        self.owner == other.owner && self.sub_vault_id == other.sub_vault_id
     }
 }
-impl Eq for RiskProfileDepositorSeat {}
-impl Ord for RiskProfileDepositorSeat {
+impl Eq for SubVaultDepositorSeat {}
+impl Ord for SubVaultDepositorSeat {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.owner.cmp(&other.owner) {
-            std::cmp::Ordering::Equal => self.profile_id.cmp(&other.profile_id),
+            std::cmp::Ordering::Equal => self.sub_vault_id.cmp(&other.sub_vault_id),
             ord => ord,
         }
     }
 }
-impl PartialOrd for RiskProfileDepositorSeat {
+impl PartialOrd for SubVaultDepositorSeat {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
-impl std::fmt::Display for RiskProfileDepositorSeat {
+impl std::fmt::Display for SubVaultDepositorSeat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RiskProfileDepositorSeat(owner={}, profile_id={})",
-            self.owner, self.profile_id
+            "SubVaultDepositorSeat(owner={}, sub_vault_id={})",
+            self.owner, self.sub_vault_id
         )
     }
 }
 
-/// Vault-side pointer to a resting risk-profile ask on a market. One per
-/// `(market, profile_id)`; lets curators enumerate their open orders
+/// Vault-side pointer to a resting sub-vault ask on a market. One per
+/// `(market, sub_vault_id)`; lets curators enumerate their open orders
 /// without scanning every market.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
-pub struct RiskProfileOrderRef {
+pub struct SubVaultOrderRef {
     /// Market the ask rests on.
     pub market: Pubkey,
-    /// Risk profile id.
-    pub profile_id: u8,
+    /// Sub-vault id.
+    pub sub_vault_id: u8,
 
-    /// Side (always `Side::Ask` for risk-profile orders).
+    /// Side (always `Side::Ask` for sub-vault orders).
     pub side: u8,
     _pad0: [u8; 2],
     /// Quoted rate.
@@ -510,16 +510,16 @@ pub struct RiskProfileOrderRef {
 
     _reserved: [u64; 10],
 }
-const_assert_eq!(size_of::<RiskProfileOrderRef>(), VAULT_ORDER_REF_SIZE);
-const_assert_eq!(size_of::<RiskProfileOrderRef>() % 8, 0);
+const_assert_eq!(size_of::<SubVaultOrderRef>(), VAULT_ORDER_REF_SIZE);
+const_assert_eq!(size_of::<SubVaultOrderRef>() % 8, 0);
 
-impl RiskProfileOrderRef {
+impl SubVaultOrderRef {
     /// Builds a probe value with identity fields set and order detail
     /// fields zeroed; used for tree lookups.
-    pub fn probe(market: Pubkey, profile_id: u8) -> Self {
+    pub fn probe(market: Pubkey, sub_vault_id: u8) -> Self {
         Self {
             market,
-            profile_id,
+            sub_vault_id,
             side: 0,
             _pad0: [0; 2],
             rate_bps: 0,
@@ -533,94 +533,94 @@ impl RiskProfileOrderRef {
     }
 }
 
-impl PartialEq for RiskProfileOrderRef {
+impl PartialEq for SubVaultOrderRef {
     fn eq(&self, other: &Self) -> bool {
-        self.market == other.market && self.profile_id == other.profile_id
+        self.market == other.market && self.sub_vault_id == other.sub_vault_id
     }
 }
-impl Eq for RiskProfileOrderRef {}
-impl Ord for RiskProfileOrderRef {
+impl Eq for SubVaultOrderRef {}
+impl Ord for SubVaultOrderRef {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.market.cmp(&other.market) {
-            std::cmp::Ordering::Equal => self.profile_id.cmp(&other.profile_id),
+            std::cmp::Ordering::Equal => self.sub_vault_id.cmp(&other.sub_vault_id),
             ord => ord,
         }
     }
 }
-impl PartialOrd for RiskProfileOrderRef {
+impl PartialOrd for SubVaultOrderRef {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::fmt::Display for RiskProfileOrderRef {
+impl std::fmt::Display for SubVaultOrderRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RiskProfileOrderRef(market={}, profile_id={}, side={})",
-            self.market, self.profile_id, self.side
+            "SubVaultOrderRef(market={}, sub_vault_id={}, side={})",
+            self.market, self.sub_vault_id, self.side
         )
     }
 }
 
-/// Mutable view of the `RiskProfile` tree.
-pub type RiskProfileTree<'a> = RedBlackTree<'a, RiskProfile>;
-/// Read-only view of the `RiskProfile` tree.
-pub type RiskProfileTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, RiskProfile>;
+/// Mutable view of the `SubVault` tree.
+pub type SubVaultTree<'a> = RedBlackTree<'a, SubVault>;
+/// Read-only view of the `SubVault` tree.
+pub type SubVaultTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, SubVault>;
 
 /// Mutable view of the depositor-seat tree.
-pub type RiskProfileDepositorSeatTree<'a> = RedBlackTree<'a, RiskProfileDepositorSeat>;
+pub type SubVaultDepositorSeatTree<'a> = RedBlackTree<'a, SubVaultDepositorSeat>;
 /// Read-only view of the depositor-seat tree.
-pub type RiskProfileDepositorSeatTreeReadOnly<'a> =
-    RedBlackTreeReadOnly<'a, RiskProfileDepositorSeat>;
+pub type SubVaultDepositorSeatTreeReadOnly<'a> =
+    RedBlackTreeReadOnly<'a, SubVaultDepositorSeat>;
 
 /// Mutable view of the profile order-ref tree.
-pub type RiskProfileOrderRefTree<'a> = RedBlackTree<'a, RiskProfileOrderRef>;
+pub type SubVaultOrderRefTree<'a> = RedBlackTree<'a, SubVaultOrderRef>;
 /// Read-only view of the profile order-ref tree.
-pub type RiskProfileOrderRefTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, RiskProfileOrderRef>;
+pub type SubVaultOrderRefTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, SubVaultOrderRef>;
 
-/// Returns a shared reference to the `RiskProfile` node at `index`.
-pub fn get_helper_risk_profile(data: &[u8], index: DataIndex) -> &RBNode<RiskProfile> {
-    get_helper::<RBNode<RiskProfile>>(data, index)
+/// Returns a shared reference to the `SubVault` node at `index`.
+pub fn get_helper_sub_vault(data: &[u8], index: DataIndex) -> &RBNode<SubVault> {
+    get_helper::<RBNode<SubVault>>(data, index)
 }
 
-/// Returns a mutable reference to the `RiskProfile` node at `index`.
-pub fn get_mut_helper_risk_profile(data: &mut [u8], index: DataIndex) -> &mut RBNode<RiskProfile> {
-    get_mut_helper::<RBNode<RiskProfile>>(data, index)
+/// Returns a mutable reference to the `SubVault` node at `index`.
+pub fn get_mut_helper_sub_vault(data: &mut [u8], index: DataIndex) -> &mut RBNode<SubVault> {
+    get_mut_helper::<RBNode<SubVault>>(data, index)
 }
 
-/// Returns a shared reference to the `RiskProfileDepositorSeat` at
+/// Returns a shared reference to the `SubVaultDepositorSeat` at
 /// `index`.
-pub fn get_helper_risk_profile_depositor_seat(
+pub fn get_helper_sub_vault_depositor_seat(
     data: &[u8],
     index: DataIndex,
-) -> &RBNode<RiskProfileDepositorSeat> {
-    get_helper::<RBNode<RiskProfileDepositorSeat>>(data, index)
+) -> &RBNode<SubVaultDepositorSeat> {
+    get_helper::<RBNode<SubVaultDepositorSeat>>(data, index)
 }
 
-/// Returns a mutable reference to the `RiskProfileDepositorSeat` at
+/// Returns a mutable reference to the `SubVaultDepositorSeat` at
 /// `index`.
-pub fn get_mut_helper_risk_profile_depositor_seat(
+pub fn get_mut_helper_sub_vault_depositor_seat(
     data: &mut [u8],
     index: DataIndex,
-) -> &mut RBNode<RiskProfileDepositorSeat> {
-    get_mut_helper::<RBNode<RiskProfileDepositorSeat>>(data, index)
+) -> &mut RBNode<SubVaultDepositorSeat> {
+    get_mut_helper::<RBNode<SubVaultDepositorSeat>>(data, index)
 }
 
-/// Returns a shared reference to the `RiskProfileOrderRef` at `index`.
-pub fn get_helper_risk_profile_order_ref(
+/// Returns a shared reference to the `SubVaultOrderRef` at `index`.
+pub fn get_helper_sub_vault_order_ref(
     data: &[u8],
     index: DataIndex,
-) -> &RBNode<RiskProfileOrderRef> {
-    get_helper::<RBNode<RiskProfileOrderRef>>(data, index)
+) -> &RBNode<SubVaultOrderRef> {
+    get_helper::<RBNode<SubVaultOrderRef>>(data, index)
 }
 
-/// Returns a mutable reference to the `RiskProfileOrderRef` at `index`.
-pub fn get_mut_helper_risk_profile_order_ref(
+/// Returns a mutable reference to the `SubVaultOrderRef` at `index`.
+pub fn get_mut_helper_sub_vault_order_ref(
     data: &mut [u8],
     index: DataIndex,
-) -> &mut RBNode<RiskProfileOrderRef> {
-    get_mut_helper::<RBNode<RiskProfileOrderRef>>(data, index)
+) -> &mut RBNode<SubVaultOrderRef> {
+    get_mut_helper::<RBNode<SubVaultOrderRef>>(data, index)
 }
 
 const ACCRUE_INDEX_SCALE: u128 = 1u128 << 48;
@@ -645,8 +645,8 @@ pub fn read_bank_asset_share_value_fp48(
 /// `total_weighted_net_rate_bps × elapsed`. Updates the two cumulative
 /// indices, the asset/principal pair, and `last_supply_share_value_fp48`,
 /// then calls [`restore_assets_principal_invariant`].
-pub fn accrue_risk_profile(
-    profile: &mut RiskProfile,
+pub fn accrue_sub_vault(
+    profile: &mut SubVault,
     now: i64,
     current_share_value: crate::math::Fp48,
 ) -> ProgramResult {
@@ -784,7 +784,7 @@ pub fn accrue_risk_profile(
 /// Enforces `total_assets_atoms >= total_principal_atoms` by floor-ing
 /// the assets to the principal basis. Corrects the per-tick rounding
 /// drift between the two fields at deposit / withdraw / close boundaries.
-pub fn restore_assets_principal_invariant(profile: &mut RiskProfile) {
+pub fn restore_assets_principal_invariant(profile: &mut SubVault) {
     if profile.total_assets_atoms < profile.total_principal_atoms {
         profile.total_assets_atoms = profile.total_principal_atoms;
     }
@@ -794,7 +794,7 @@ const _: () = {
     assert!(VAULT_CLAIMED_SEAT_SIZE == VAULT_NODE_BLOCK_PAYLOAD_SIZE);
     assert!(VAULT_ORDER_REF_SIZE == VAULT_NODE_BLOCK_PAYLOAD_SIZE);
 
-    assert!(RISK_PROFILE_BLOCK_PAYLOAD_SIZE != VAULT_NODE_BLOCK_PAYLOAD_SIZE);
+    assert!(SUB_VAULT_BLOCK_PAYLOAD_SIZE != VAULT_NODE_BLOCK_PAYLOAD_SIZE);
 };
 
 /// Pops a free block off the profile region's free list.
@@ -858,7 +858,7 @@ pub fn vault_expand_profile_block(
     free_list.add(fixed.num_bytes_allocated);
     fixed.num_bytes_allocated = fixed
         .num_bytes_allocated
-        .checked_add(RISK_PROFILE_BLOCK_SIZE as u32)
+        .checked_add(SUB_VAULT_BLOCK_SIZE as u32)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     fixed.profile_free_list_head_index = free_list.get_head();
     Ok(())
@@ -879,19 +879,19 @@ pub fn vault_expand_node_block(fixed: &mut GlobalVaultFixed, dynamic: &mut [u8])
     Ok(())
 }
 
-/// Inserts a `RiskProfileDepositorSeat` for `(owner, profile_id)` if
+/// Inserts a `SubVaultDepositorSeat` for `(owner, sub_vault_id)` if
 /// absent; returns the existing node index on hit. Bumps
 /// `claimed_seat_count` on insert.
-pub fn upsert_risk_profile_depositor_seat(
+pub fn upsert_sub_vault_depositor_seat(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     owner: Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Result<DataIndex, ProgramError> {
-    let probe = RiskProfileDepositorSeat::probe(owner, profile_id);
+    let probe = SubVaultDepositorSeat::probe(owner, sub_vault_id);
     let existing_idx = {
         let tree =
-            RiskProfileDepositorSeatTreeReadOnly::new(dynamic, fixed.claimed_seats_root_index, NIL);
+            SubVaultDepositorSeatTreeReadOnly::new(dynamic, fixed.claimed_seats_root_index, NIL);
         tree.lookup_index(&probe)
     };
     if existing_idx != NIL {
@@ -904,7 +904,7 @@ pub fn upsert_risk_profile_depositor_seat(
         ProgramError::AccountDataTooSmall,
         "no free vault-node block (vault_expand_node_block should have run)"
     )?;
-    let mut tree = RiskProfileDepositorSeatTree::new(dynamic, fixed.claimed_seats_root_index, NIL);
+    let mut tree = SubVaultDepositorSeatTree::new(dynamic, fixed.claimed_seats_root_index, NIL);
     tree.insert(order_index, probe);
     fixed.claimed_seats_root_index = tree.get_root_index();
     drop(tree);
@@ -915,24 +915,24 @@ pub fn upsert_risk_profile_depositor_seat(
     Ok(order_index)
 }
 
-/// Removes the depositor seat for `(owner, profile_id)` and returns the
+/// Removes the depositor seat for `(owner, sub_vault_id)` and returns the
 /// freed node index, or `NIL` when not present.
-pub fn remove_risk_profile_depositor_seat(
+pub fn remove_sub_vault_depositor_seat(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     owner: Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Result<DataIndex, ProgramError> {
-    let probe = RiskProfileDepositorSeat::probe(owner, profile_id);
+    let probe = SubVaultDepositorSeat::probe(owner, sub_vault_id);
     let existing_idx = {
         let tree =
-            RiskProfileDepositorSeatTreeReadOnly::new(dynamic, fixed.claimed_seats_root_index, NIL);
+            SubVaultDepositorSeatTreeReadOnly::new(dynamic, fixed.claimed_seats_root_index, NIL);
         tree.lookup_index(&probe)
     };
     if existing_idx == NIL {
         return Ok(NIL);
     }
-    let mut tree = RiskProfileDepositorSeatTree::new(dynamic, fixed.claimed_seats_root_index, NIL);
+    let mut tree = SubVaultDepositorSeatTree::new(dynamic, fixed.claimed_seats_root_index, NIL);
     tree.remove_by_index(existing_idx);
     fixed.claimed_seats_root_index = tree.get_root_index();
     drop(tree);
@@ -944,37 +944,37 @@ pub fn remove_risk_profile_depositor_seat(
     Ok(existing_idx)
 }
 
-/// Inserts a `RiskProfileOrderRef` keyed on `(market, profile_id)`.
-/// Errors with `VaultProfileOrderExists` when one already exists — the
+/// Inserts a `SubVaultOrderRef` keyed on `(market, sub_vault_id)`.
+/// Errors with `SubVaultOrderExists` when one already exists — the
 /// vault enforces at most one resting ask per profile per market.
 #[allow(clippy::too_many_arguments)]
-pub fn insert_risk_profile_order_ref(
+pub fn insert_sub_vault_order_ref(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     market: Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
     side: u8,
     rate_bps: u16,
     term_seconds: u32,
     order_sequence_in_market: u64,
     placed_at_unix: i64,
 ) -> Result<DataIndex, ProgramError> {
-    let probe = RiskProfileOrderRef {
+    let probe = SubVaultOrderRef {
         market,
-        profile_id,
+        sub_vault_id,
         ..Default::default()
     };
     let existing_idx = {
         let tree =
-            RiskProfileOrderRefTreeReadOnly::new(dynamic, fixed.market_orders_root_index, NIL);
+            SubVaultOrderRefTreeReadOnly::new(dynamic, fixed.market_orders_root_index, NIL);
         tree.lookup_index(&probe)
     };
     require!(
         existing_idx == NIL,
-        crate::program::YdeltaError::VaultProfileOrderExists,
-        "RiskProfileOrderRef already exists for (market={}, profile_id={})",
+        crate::program::YdeltaError::SubVaultOrderExists,
+        "SubVaultOrderRef already exists for (market={}, sub_vault_id={})",
         market,
-        profile_id
+        sub_vault_id
     )?;
 
     let order_index = get_free_node_address_on_vault_fixed(fixed, dynamic);
@@ -984,9 +984,9 @@ pub fn insert_risk_profile_order_ref(
         "no free vault-node block"
     )?;
 
-    let order = RiskProfileOrderRef {
+    let order = SubVaultOrderRef {
         market,
-        profile_id,
+        sub_vault_id,
         side,
         _pad0: [0; 2],
         rate_bps,
@@ -997,7 +997,7 @@ pub fn insert_risk_profile_order_ref(
         placed_at_unix,
         _reserved: [0; 10],
     };
-    let mut tree = RiskProfileOrderRefTree::new(dynamic, fixed.market_orders_root_index, NIL);
+    let mut tree = SubVaultOrderRefTree::new(dynamic, fixed.market_orders_root_index, NIL);
     tree.insert(order_index, order);
     fixed.market_orders_root_index = tree.get_root_index();
     drop(tree);
@@ -1008,69 +1008,69 @@ pub fn insert_risk_profile_order_ref(
     Ok(order_index)
 }
 
-/// Removes the `RiskProfile` with `profile_id` and returns the freed
+/// Removes the `SubVault` with `sub_vault_id` and returns the freed
 /// node index. Errors with `InvalidArgument` when the profile is not
 /// empty (i.e. it still has shares, principal, deployed atoms, fees, or
 /// pending claims).
-pub fn remove_risk_profile(
+pub fn remove_sub_vault(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Result<DataIndex, ProgramError> {
-    let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+    let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
     let idx = {
-        let tree = RiskProfileTreeReadOnly::new(dynamic, fixed.risk_profiles_root_index, NIL);
+        let tree = SubVaultTreeReadOnly::new(dynamic, fixed.sub_vaults_root_index, NIL);
         tree.lookup_index(&probe)
     };
     if idx == NIL {
         return Ok(NIL);
     }
     {
-        let profile = get_helper_risk_profile(dynamic, idx).get_value();
+        let profile = get_helper_sub_vault(dynamic, idx).get_value();
         require!(
             profile.is_empty(),
             crate::program::YdeltaError::InvalidArgument,
-            "remove_risk_profile: profile {} not empty (deployed={}, shares={}, principal={})",
-            profile_id,
+            "remove_sub_vault: profile {} not empty (deployed={}, shares={}, principal={})",
+            sub_vault_id,
             profile.deployed_principal_atoms,
             profile.total_shares,
             profile.total_principal_atoms,
         )?;
     }
-    let mut tree = RiskProfileTree::new(dynamic, fixed.risk_profiles_root_index, NIL);
+    let mut tree = SubVaultTree::new(dynamic, fixed.sub_vaults_root_index, NIL);
     tree.remove_by_index(idx);
-    fixed.risk_profiles_root_index = tree.get_root_index();
+    fixed.sub_vaults_root_index = tree.get_root_index();
     drop(tree);
-    fixed.risk_profile_count = fixed
-        .risk_profile_count
+    fixed.sub_vault_count = fixed
+        .sub_vault_count
         .checked_sub(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     release_profile_address_on_vault_fixed(fixed, dynamic, idx);
     Ok(idx)
 }
 
-/// Removes the `RiskProfileOrderRef` for `(market, profile_id)` and
+/// Removes the `SubVaultOrderRef` for `(market, sub_vault_id)` and
 /// returns the freed node index, or `NIL` when not present.
-pub fn remove_risk_profile_order_ref(
+pub fn remove_sub_vault_order_ref(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     market: Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Result<DataIndex, ProgramError> {
-    let probe = RiskProfileOrderRef {
+    let probe = SubVaultOrderRef {
         market,
-        profile_id,
+        sub_vault_id,
         ..Default::default()
     };
     let idx = {
         let tree =
-            RiskProfileOrderRefTreeReadOnly::new(dynamic, fixed.market_orders_root_index, NIL);
+            SubVaultOrderRefTreeReadOnly::new(dynamic, fixed.market_orders_root_index, NIL);
         tree.lookup_index(&probe)
     };
     if idx == NIL {
         return Ok(NIL);
     }
-    let mut tree = RiskProfileOrderRefTree::new(dynamic, fixed.market_orders_root_index, NIL);
+    let mut tree = SubVaultOrderRefTree::new(dynamic, fixed.market_orders_root_index, NIL);
     tree.remove_by_index(idx);
     fixed.market_orders_root_index = tree.get_root_index();
     drop(tree);
@@ -1093,13 +1093,13 @@ mod tests {
     }
 
     #[test]
-    fn risk_profile_size_locked() {
-        assert_eq!(size_of::<RiskProfile>(), RISK_PROFILE_BLOCK_PAYLOAD_SIZE);
+    fn sub_vault_size_locked() {
+        assert_eq!(size_of::<SubVault>(), SUB_VAULT_BLOCK_PAYLOAD_SIZE);
     }
 
     #[test]
-    fn risk_profile_order_ref_size_locked() {
-        assert_eq!(size_of::<RiskProfileOrderRef>(), VAULT_ORDER_REF_SIZE);
+    fn sub_vault_order_ref_size_locked() {
+        assert_eq!(size_of::<SubVaultOrderRef>(), VAULT_ORDER_REF_SIZE);
     }
 
     #[test]
@@ -1121,8 +1121,8 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    fn fresh_profile() -> RiskProfile {
-        RiskProfile::new_empty(7, Pubkey::default(), 5_000, 30 * 86_400)
+    fn fresh_profile() -> SubVault {
+        SubVault::new_empty(7, Pubkey::default(), 5_000, 30 * 86_400)
     }
 
     const SHARE_VALUE_ONE: u128 = 1u128 << 48;
@@ -1134,7 +1134,7 @@ mod tests {
         p.total_principal_atoms = 1_000_000;
         p.total_assets_atoms = 1_000_000;
         p.last_accrue_unix = 1_000;
-        accrue_risk_profile(&mut p, 1_000, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
+        accrue_sub_vault(&mut p, 1_000, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
         assert_eq!(p.total_assets_atoms, 1_000_000);
         assert_eq!(p.last_accrue_unix, 1_000);
     }
@@ -1149,7 +1149,7 @@ mod tests {
         p.last_supply_share_value_fp48 = Fp48::from_raw(SHARE_VALUE_ONE);
 
         let current = SHARE_VALUE_ONE + (SHARE_VALUE_ONE / 100);
-        accrue_risk_profile(&mut p, 86_400, Fp48::from_raw(current)).unwrap();
+        accrue_sub_vault(&mut p, 86_400, Fp48::from_raw(current)).unwrap();
 
         let yield_atoms = p.total_assets_atoms - 1_000_000;
         assert!(yield_atoms >= 9_990 && yield_atoms <= 10_010);
@@ -1169,7 +1169,7 @@ mod tests {
         p.last_accrue_unix = 0;
         p.last_supply_share_value_fp48 = Fp48::from_raw(SHARE_VALUE_ONE);
         let current = SHARE_VALUE_ONE - (SHARE_VALUE_ONE / 100);
-        accrue_risk_profile(&mut p, 86_400, Fp48::from_raw(current)).unwrap();
+        accrue_sub_vault(&mut p, 86_400, Fp48::from_raw(current)).unwrap();
         let loss_atoms = 1_000_000 - p.total_assets_atoms;
         assert!(loss_atoms >= 9_990 && loss_atoms <= 10_010);
         assert_eq!(
@@ -1189,7 +1189,7 @@ mod tests {
         p.total_weighted_net_rate_bps = 100_000u128 * 800;
         p.total_assets_atoms = 1_000_000;
         p.last_accrue_unix = 0;
-        accrue_risk_profile(&mut p, 86_400, Fp48::ZERO).unwrap();
+        accrue_sub_vault(&mut p, 86_400, Fp48::ZERO).unwrap();
         let expected = (100_000u128 * 800 * 86_400) / (10_000 * 31_536_000);
         assert_eq!(p.total_assets_atoms - 1_000_000, expected as u64);
     }
@@ -1208,7 +1208,7 @@ mod tests {
         p.total_weighted_net_rate_bps = net_weighted;
         p.total_assets_atoms = 1_000_000;
         p.last_accrue_unix = 0;
-        accrue_risk_profile(&mut p, 86_400, Fp48::ZERO).unwrap();
+        accrue_sub_vault(&mut p, 86_400, Fp48::ZERO).unwrap();
 
         let credited = p.total_assets_atoms - 1_000_000;
         let expected_net = (net_weighted * 86_400) / (10_000 * 31_536_000);
@@ -1234,10 +1234,10 @@ mod tests {
         p.total_assets_atoms = 1_000_000;
         p.last_accrue_unix = 0;
         p.last_supply_share_value_fp48 = Fp48::from_raw(SHARE_VALUE_ONE);
-        accrue_risk_profile(&mut p, 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
+        accrue_sub_vault(&mut p, 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
         let assets_after_first = p.total_assets_atoms;
 
-        accrue_risk_profile(&mut p, 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
+        accrue_sub_vault(&mut p, 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
         assert_eq!(p.total_assets_atoms, assets_after_first);
     }
 
@@ -1253,9 +1253,9 @@ mod tests {
         a.last_accrue_unix = 0;
         a.last_supply_share_value_fp48 = Fp48::from_raw(SHARE_VALUE_ONE);
         let mut b = a;
-        accrue_risk_profile(&mut a, 30 * 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
-        accrue_risk_profile(&mut b, 15 * 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
-        accrue_risk_profile(&mut b, 30 * 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
+        accrue_sub_vault(&mut a, 30 * 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
+        accrue_sub_vault(&mut b, 15 * 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
+        accrue_sub_vault(&mut b, 30 * 86_400, Fp48::from_raw(SHARE_VALUE_ONE)).unwrap();
         let diff = (a.total_assets_atoms as i64 - b.total_assets_atoms as i64).abs();
         assert!(
             diff <= 1,
@@ -1275,7 +1275,7 @@ mod tests {
         p.last_accrue_unix = 0;
         p.last_supply_share_value_fp48 = Fp48::from_raw(SHARE_VALUE_ONE);
         let current = SHARE_VALUE_ONE + (SHARE_VALUE_ONE / 100);
-        accrue_risk_profile(&mut p, 86_400, Fp48::from_raw(current)).unwrap();
+        accrue_sub_vault(&mut p, 86_400, Fp48::from_raw(current)).unwrap();
         let yield_atoms = p.total_assets_atoms - 1_000_000;
         assert!(
             yield_atoms >= 9_990 && yield_atoms <= 10_010,
@@ -1300,10 +1300,10 @@ mod tests {
         p.total_assets_atoms = 1_000_000;
         p.last_accrue_unix = 0;
         p.last_supply_share_value_fp48 = Fp48::from_raw(SHARE_VALUE_ONE);
-        let result = accrue_risk_profile(&mut p, 86_400, Fp48::from_raw(SHARE_VALUE_ONE));
+        let result = accrue_sub_vault(&mut p, 86_400, Fp48::from_raw(SHARE_VALUE_ONE));
         assert!(
             result.is_err(),
-            "accrue_risk_profile must hard-fail when deployed > total_principal"
+            "accrue_sub_vault must hard-fail when deployed > total_principal"
         );
     }
 
@@ -1319,12 +1319,12 @@ mod tests {
             Pubkey::default(),
         );
         assert_eq!(vault.discriminator, GLOBAL_VAULT_FIXED_DISCRIMINANT);
-        assert_eq!(vault.risk_profiles_root_index, NIL);
+        assert_eq!(vault.sub_vaults_root_index, NIL);
         assert_eq!(vault.claimed_seats_root_index, NIL);
         assert_eq!(vault.market_orders_root_index, NIL);
         assert_eq!(vault.profile_free_list_head_index, NIL);
         assert_eq!(vault.node_free_list_head_index, NIL);
-        assert_eq!(vault.risk_profile_count, 0);
+        assert_eq!(vault.sub_vault_count, 0);
         assert_eq!(vault.claimed_seat_count, 0);
         assert_eq!(vault.open_order_count, 0);
         assert_eq!(vault.global_vault_signer_bump, 255);
@@ -1332,8 +1332,8 @@ mod tests {
         assert!(!vault.has_free_node_block());
     }
 
-    fn profile_with(total_assets: u64, total_principal: u64) -> RiskProfile {
-        let mut p = RiskProfile::new_empty(0, Pubkey::default(), 1, 1);
+    fn profile_with(total_assets: u64, total_principal: u64) -> SubVault {
+        let mut p = SubVault::new_empty(0, Pubkey::default(), 1, 1);
         p.total_assets_atoms = total_assets;
         p.total_principal_atoms = total_principal;
         p

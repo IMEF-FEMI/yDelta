@@ -50,12 +50,12 @@ pub enum YdeltaInstruction {
     /// marginfi integration account. First caller becomes `global_vault_admin`.
     CreateVault = 8,
 
-    /// Vault-admin gated: append a `RiskProfile` to the vault. Stamps
+    /// Vault-admin gated: append a `SubVault` to the vault. Stamps
     /// curator + LTV cap (optional, defaults to marginfi-derived) +
-    /// max term. Auto-assigns a monotonic `profile_id` starting at 1.
-    CreateRiskProfile = 9,
+    /// max term. Auto-assigns a monotonic `sub_vault_id` starting at 1.
+    CreateSubVault = 9,
 
-    /// Lender deposits atoms into a risk profile, minting profile shares.
+    /// Lender deposits atoms into a sub-vault, minting profile shares.
     GlobalVaultDeposit = 10,
 
     /// Burn profile shares to redeem atoms. Rejected when the burn would
@@ -64,16 +64,16 @@ pub enum YdeltaInstruction {
 
     /// Curator-gated: rest an unbounded vault ask on a market. Auto-
     /// creates the per-(profile, market) `ClaimedSeat` and the
-    /// vault-side `RiskProfileOrderRef` on first call.
-    PlaceOrderForRiskProfile = 12,
+    /// vault-side `SubVaultOrderRef` on first call.
+    PlaceOrderForSubVault = 12,
 
     /// Curator-gated: remove a vault ask (clears the resting order +
-    /// the vault-side `RiskProfileOrderRef`).
-    CancelOrderForRiskProfile = 13,
+    /// the vault-side `SubVaultOrderRef`).
+    CancelOrderForSubVault = 13,
 
     /// Curator-gated: cancel-and-replace a vault ask. Same as cancel
     /// followed by place in a single tx, with a fresh order sequence.
-    UpdateOrderForRiskProfile = 14,
+    UpdateOrderForSubVault = 14,
 
     /// Curator-gated: withdraw the profile's accrued
     /// `accumulated_curator_fee_atoms` to the curator's wallet.
@@ -99,7 +99,7 @@ pub enum YdeltaInstruction {
     /// Permissionless: sweep a profile's `pending_claim_atoms` from the
     /// per-market `lender_marginfi_account` back into the vault's own
     /// `integration_account` (one-way profile → vault sweeper).
-    ClaimRepaymentForRiskProfile = 20,
+    ClaimRepaymentForSubVault = 20,
 
     /// Initiate market-admin handoff (two-step transfer). Signer must
     /// equal the current admin; sets `pending_admin`.
@@ -139,9 +139,9 @@ pub enum YdeltaInstruction {
     /// every state-mutating ix that takes the global config account.
     SetGlobalPause = 31,
 
-    /// Vault-admin gated: update mutable `RiskProfile` policy fields
+    /// Vault-admin gated: update mutable `SubVault` policy fields
     /// (`max_ltv_bps`, `max_term_seconds`). Rejected on sunset profiles.
-    UpdateRiskProfile = 32,
+    UpdateSubVault = 32,
 
     /// Borrower-initiated upgrade of a P2Pool (variable-rate) loan into
     /// one or more Fixed loans. The matcher crosses compatible vault asks
@@ -161,24 +161,24 @@ pub enum YdeltaInstruction {
     /// reject vault-scoped state-mutating ixs.
     SetVaultPause = 36,
 
-    /// Vault-admin gated: remove a `RiskProfile` from the vault tree.
+    /// Vault-admin gated: remove a `SubVault` from the vault tree.
     /// Requires `is_sunset == 1` — admin takes responsibility for the
     /// state via the sunset wind-down workflow before invoking remove.
-    RemoveRiskProfile = 37,
+    RemoveSubVault = 37,
 
     /// Vault-admin gated: flip `profile.is_sunset = 1`. Disables new
     /// deposits / orders / order updates / matches against the profile,
     /// while withdrawals and curator-side cleanups remain enabled.
-    SunsetRiskProfile = 38,
+    SunsetSubVault = 38,
 
     /// Vault-admin gated: flip `profile.is_sunset = 0`. Reverses
-    /// `SunsetRiskProfile` (admin escape hatch).
-    ResumeRiskProfile = 39,
+    /// `SunsetSubVault` (admin escape hatch).
+    ResumeSubVault = 39,
 
     /// Vault-admin gated: force-cancel a vault ask. Only allowed on
     /// sunset profiles (during wind-down) — non-sunset profiles can only
-    /// be cancelled by the curator via `CancelOrderForRiskProfile`.
-    AdminCancelRiskProfileOrder = 40,
+    /// be cancelled by the curator via `CancelOrderForSubVault`.
+    AdminCancelSubVaultOrder = 40,
 }
 
 impl YdeltaInstruction {

@@ -1,8 +1,8 @@
 //! Encumbrance conservation across a borrower IOC fill.
 //!
 //! Only the borrower (taker) seat carries a per-seat encumbrance —
-//! vault risk-profile asks are open-ended and tracked via
-//! `RiskProfile.encumbered_in_orders_atoms`, not per-seat shares.
+//! vault sub-vault asks are open-ended and tracked via
+//! `SubVault.encumbered_in_orders_atoms`, not per-seat shares.
 //! There is no resting-bid encumbrance.
 //!
 //! These tests pin two invariants on an IOC cross:
@@ -45,7 +45,7 @@ async fn borrower_encumbrance_retained_on_full_match() {
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
+        .create_sub_vault(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -55,10 +55,10 @@ async fn borrower_encumbrance_retained_on_full_match() {
         .unwrap();
     fixture.refresh_blockhash().await;
     // No claim-seat step — the vault market-seat is auto-created on the
-    // curator's first place_order_for_risk_profile. The ask is
+    // curator's first place_order_for_sub_vault. The ask is
     // unbounded; each cross is capped by the profile's idle balance.
     fixture
-        .place_order_for_risk_profile(&curator, 1, /*rate_bps=*/ 500, 30 * 86_400, 0)
+        .place_order_for_sub_vault(&curator, 1, /*rate_bps=*/ 500, 30 * 86_400, 0)
         .await
         .unwrap();
 
@@ -126,7 +126,7 @@ async fn borrower_encumbrance_retained_on_full_match() {
     // Vault side: the crossed profile is encumbered by exactly the
     // matched principal; total principal is untouched (atoms migrate
     // only when the cranker settles).
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms, principal_atoms,
         "vault profile encumbered for exactly the matched principal"

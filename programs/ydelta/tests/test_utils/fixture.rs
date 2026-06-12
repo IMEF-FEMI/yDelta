@@ -697,7 +697,7 @@ impl TestFixture {
     }
 
     /// Walk the market's claimed_seats tree, returning the seat for `owner`
-    /// (with `risk_profile_id = 0`). Panics if not present.
+    /// (with `sub_vault_id = 0`). Panics if not present.
     pub async fn read_seat(&self, owner: &Pubkey) -> ClaimedSeat {
         let market = self.read_market().await;
         let tree: RedBlackTreeReadOnly<ClaimedSeat> =

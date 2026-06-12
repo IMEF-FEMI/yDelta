@@ -1,7 +1,7 @@
 //! End-to-end test for `process_repay` in the quote-only model.
 //!
 //! Flow:
-//! 1. A vault risk profile is funded and rests an unbounded ask
+//! 1. A vault sub-vault is funded and rests an unbounded ask
 //!    (`provide_vault_liquidity`).
 //! 2. The borrower's collateral seat is seeded directly to skip the
 //!    wSOL-deposit overflow; market state is fine.
@@ -51,7 +51,7 @@ async fn match_one_loan(fixture: &MarketFixture) -> (solana_sdk::signature::Keyp
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             TERM_SECONDS,
@@ -90,9 +90,9 @@ async fn match_one_loan(fixture: &MarketFixture) -> (solana_sdk::signature::Keyp
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Vault-funded loan → promote via the risk-profile cranker.
+    // Vault-funded loan → promote via the sub-vault cranker.
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
