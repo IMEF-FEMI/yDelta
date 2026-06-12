@@ -21,11 +21,9 @@ pub const MAX_GRACE_PERIOD_SECONDS: u32 = 90 * 86_400;
 /// Sanity cap on the liquidation keeper's bonus share (50%).
 pub const MAX_LIQUIDATION_KEEPER_BPS: u16 = 5_000;
 
-/// Sanity cap on the curator's slice of interest (50%).
-pub const MAX_CURATOR_FEE_BPS: u16 = 5_000;
 
 /// Bounds-check every `Some` field in `params`. Each bps value must
-/// be `<= 10_000`; `liquidation_keeper_bps` and `curator_fee_bps`
+/// be `<= 10_000`; `liquidation_keeper_bps`
 /// additionally cap at 5_000; `grace_period_seconds` caps at 90 days.
 pub fn validate_fee_config_overrides(params: &FeeConfigOverrides) -> ProgramResult {
     fn check_bps(value: Option<u16>) -> ProgramResult {
@@ -42,7 +40,6 @@ pub fn validate_fee_config_overrides(params: &FeeConfigOverrides) -> ProgramResu
     check_bps(params.protocol_fee_bps_floor)?;
     check_bps(params.origination_bps)?;
     check_bps(params.curator_split_bps)?;
-    check_bps(params.curator_fee_bps)?;
     check_bps(params.liquidation_keeper_bps)?;
     check_bps(params.liquidation_protocol_bps)?;
     check_bps(params.ltv_buffer_bps)?;
@@ -54,17 +51,6 @@ pub fn validate_fee_config_overrides(params: &FeeConfigOverrides) -> ProgramResu
             "liquidation_keeper_bps {} exceeds {} (50%) sanity cap",
             v,
             MAX_LIQUIDATION_KEEPER_BPS
-        )?;
-    }
-
-    if let Some(v) = params.curator_fee_bps {
-        require!(
-            v <= MAX_CURATOR_FEE_BPS,
-            YdeltaError::InvalidFeeConfig,
-            "curator_fee_bps {} exceeds {} (50%) sanity cap — protects depositors \
-             from a compromised market admin maxing the curator's slice",
-            v,
-            MAX_CURATOR_FEE_BPS
         )?;
     }
 
@@ -92,9 +78,6 @@ pub fn apply_fee_config_overrides(target: &mut FeeConfig, params: &FeeConfigOver
     }
     if let Some(v) = params.curator_split_bps {
         target.curator_split_bps = v;
-    }
-    if let Some(v) = params.curator_fee_bps {
-        target.curator_fee_bps = v;
     }
     if let Some(v) = params.liquidation_keeper_bps {
         target.liquidation_keeper_bps = v;

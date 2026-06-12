@@ -533,6 +533,11 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
                 .deployed_principal_atoms
                 .checked_sub(loan_principal)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
+            // v1 D16: retire the open-loan counter stamped at fill.
+            profile.open_loans_count = profile
+                .open_loans_count
+                .checked_sub(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
 
             // Reconcile realized vs estimated for NAV (total_assets_atoms)
             // and cost basis (total_principal_atoms). lender_claimable_atoms

@@ -467,7 +467,6 @@ pub fn process_convert_p2pool_to_fixed(
     // otherwise `encumbered_in_orders_atoms` stays permanently inflated
     // and the crossed profile's idle pool is frozen for good.
     {
-        let curator_fee_bps: u16 = market.get_fixed()?.fee_config.curator_fee_bps;
         let share_value_fp48 = read_bank_asset_share_value_fp48(debt_bank.info)?;
 
         let data: &mut RefMut<&mut [u8]> = &mut global_vault.info.try_borrow_mut_data()?;
@@ -493,6 +492,10 @@ pub fn process_convert_p2pool_to_fixed(
             // Crystallise yield at the OLD weighted rate before folding
             // in the new loan's contribution.
             accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
+            // v1 D3b: the curator fee is per-sub-vault — fold the net
+            // weighted rate using THIS profile's fee, matching the
+            // snapshot the engine stamped on the cross's MatchedLoan.
+            let curator_fee_bps: u16 = profile.curator_fee_bps;
             let principal = cross.filled_principal_atoms;
             profile.deployed_principal_atoms = profile
                 .deployed_principal_atoms

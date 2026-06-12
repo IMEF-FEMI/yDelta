@@ -283,38 +283,50 @@ async fn promote_matched_loan_keeps_borrower_and_fee_claims_backed() {
 async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
     let fixture = MarketFixture::new().await;
 
-    // (1) Initial fee config: 10% curator fee — this is the value that
-    // the lender capital is "committed under" when the bid matches.
-    let mut fee_params = SetFeeConfigParams::default();
-    fee_params.curator_fee_bps = Some(1_000);
-    let cfg_ix = set_fee_config_instruction(
-        &fixture.market.pubkey(),
-        &fixture.payer.pubkey(),
-        fee_params,
-    );
-    let payer_kp = fixture.payer.insecure_clone();
-    fixture.process(cfg_ix, &[&payer_kp]).await.unwrap();
-    fixture.refresh_blockhash().await;
-
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await;
 
-    // (2) Stand up the vault profile + rest the unbounded ask. Does NOT
-    // crank — the matched node will sit in the queue until step (5).
+    // (1) v1 D3b: the curator fee lives on the SUB-VAULT, set at
+    // creation (10%) and immutable — `UpdateSubVault` has no fee field,
+    // so the old market-admin front-run window is closed at the type
+    // level. This test pins the remaining half of the guarantee: the
+    // fee is snapshotted onto the MatchedLoan at MATCH time and carried
+    // to the LoanFixed at promotion.
+    fixture.refresh_blockhash().await;
+    fixture.create_vault(&admin).await.unwrap();
+    fixture.refresh_blockhash().await;
     fixture
-        .provide_vault_liquidity(
-            &admin,
-            &depositor,
-            &curator,
-            /*sub_vault_id=*/ 1,
-            /*max_ltv_bps=*/ Some(8_000),
-            /*rate_bps=*/ 600,
-            /*term_seconds=*/ 30 * 86_400,
-            /*deposit_atoms=*/ 10_000_000,
+        .create_pool_sub_vault_full(
+            curator.pubkey(),
+            /*spread_bps=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*liquidation_ltv_bps=*/ 9_000,
+            30 * 86_400,
+            /*curator_fee_bps=*/ 1_000,
         )
-        .await;
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
+    fixture.put_token_account(
+        depositor_token,
+        mainnet::usdc_mint(),
+        depositor.pubkey(),
+        20_000_000,
+    );
+    fixture.refresh_blockhash().await;
+    fixture
+        .global_vault_deposit(&depositor, depositor_token, 1, 10_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture
+        .place_order_for_sub_vault(&curator, 1, 600, 30 * 86_400, 0)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
 
     fixture.claim_seat(&bob).await;
     fixture
@@ -322,8 +334,8 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
         .await;
     fixture.refresh_blockhash().await;
 
-    // (3) Borrower bid crosses the ask. MatchedLoan node inserted; the
-    // vault's capital is now encumbered under the 10% fee regime.
+    // (2) Borrower bid crosses the ask; the MatchedLoan node must stamp
+    // the sub-vault's 1_000 bps at match time.
     let principal_atoms: u64 = 1_000_000;
     fixture
         .place_order_with_flags(
@@ -340,32 +352,8 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Sanity check before the front-run: market still reads 1_000 bps.
-    let market_pre_attack = fixture.read_market_fixed().await;
-    assert_eq!(
-        market_pre_attack.fee_config.curator_fee_bps, 1_000,
-        "pre-attack: market fee config holds the match-time value"
-    );
-
-    // (4) THE FRONT-RUN: admin flips curator_fee_bps to 90% AFTER the
-    // lender capital was committed but BEFORE the cranker promotes.
-    // This is the exact window the bug opened.
-    let mut attack_params = SetFeeConfigParams::default();
-    attack_params.curator_fee_bps = Some(5_000);
-    let attack_ix = set_fee_config_instruction(
-        &fixture.market.pubkey(),
-        &fixture.payer.pubkey(),
-        attack_params,
-    );
-    fixture.process(attack_ix, &[&payer_kp]).await.unwrap();
-    fixture.refresh_blockhash().await;
-    let market_post_attack = fixture.read_market_fixed().await;
-    assert_eq!(
-        market_post_attack.fee_config.curator_fee_bps, 5_000,
-        "post-attack: market fee config now reads the attacker's value"
-    );
-
-    // (5) Cranker promotes the queued match.
+    // (3) Cranker promotes the queued match; the LoanFixed must carry
+    // the match-time snapshot.
     fixture
         .crank_matched_loan_for_sub_vault(0)
         .await
@@ -375,9 +363,7 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
     let loan = fixture.read_loan(0).await;
     assert_eq!(
         loan.curator_fee_bps_snapshot, 1_000,
-        "loan must lock in the MATCH-time curator_fee_bps (1_000), \
-         NOT the admin-changed value at PROMOTION time (5_000). \
-         Got {} — admin front-run succeeded.",
+        "loan must carry the sub-vault's match-time curator_fee_bps; got {}",
         loan.curator_fee_bps_snapshot,
     );
 }

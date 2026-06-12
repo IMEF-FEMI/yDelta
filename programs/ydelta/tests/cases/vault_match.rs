@@ -575,6 +575,10 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
     let vault_pk = ydelta::state::vault::global_vault_pda(&mainnet::usdc_bank()).0;
     let seat = fixture.read_vault_seat(&vault_pk, 1).await;
     assert_eq!(seat.open_lend_count, 1, "one resting ask");
+    // v1 D16 counters: one resting ask, no loans yet.
+    let sv = fixture.read_sub_vault(1).await;
+    assert_eq!(sv.open_orders_count, 1);
+    assert_eq!(sv.open_loans_count, 0);
 
     fixture.claim_seat(&borrower).await;
     let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
@@ -612,6 +616,8 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
 
     let seat = fixture.read_vault_seat(&vault_pk, 1).await;
     assert_eq!(seat.open_lend_count, 2, "resting ask + one open loan");
+    let sv = fixture.read_sub_vault(1).await;
+    assert_eq!(sv.open_loans_count, 1, "fill stamps the loan counter (D16)");
 
     fixture.refresh_blockhash().await;
     fixture
@@ -631,6 +637,9 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
         seat.open_lend_count, 1,
         "loan close retires only the fill's count; the resting ask survives"
     );
+    let sv = fixture.read_sub_vault(1).await;
+    assert_eq!(sv.open_loans_count, 0, "full close retires the loan counter (D16)");
+    assert_eq!(sv.open_orders_count, 1, "the resting ask's counter survives the close");
 
     let cancel_ix = cancel_order_for_sub_vault_instruction(
         &mainnet::usdc_bank(),
@@ -645,6 +654,8 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
         .expect("curator cancel after a full loan close must succeed");
     let seat = fixture.read_vault_seat(&vault_pk, 1).await;
     assert_eq!(seat.open_lend_count, 0, "cancel retires the ask's count");
+    let sv = fixture.read_sub_vault(1).await;
+    assert_eq!(sv.open_orders_count, 0, "cancel retires the order counter (D16)");
 }
 
 /// The profile LTV cap is per-ask policy: a bid whose collateral fails a

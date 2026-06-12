@@ -992,6 +992,40 @@ pub fn remove_sub_vault_depositor_seat(
 /// Errors with `SubVaultOrderExists` when one already exists — the
 /// vault enforces at most one resting ask per profile per market.
 #[allow(clippy::too_many_arguments)]
+/// Adjusts the per-sub-vault `open_orders_count` (v1 D16). `delta` is
+/// +1 on place, -1 on cancel/admin-cancel. Errors when the sub-vault is
+/// missing or the counter would underflow — both indicate accounting
+/// drift that must surface, not be masked.
+fn bump_sub_vault_order_count(
+    fixed: &GlobalVaultFixed,
+    dynamic: &mut [u8],
+    sub_vault_id: u16,
+    delta: i32,
+) -> ProgramResult {
+    let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
+    let idx = {
+        let tree = SubVaultTreeReadOnly::new(dynamic, fixed.sub_vaults_root_index, NIL);
+        tree.lookup_index(&probe)
+    };
+    require!(
+        idx != NIL,
+        crate::program::YdeltaError::SubVaultNotFound,
+        "order-count bump: sub_vault_id {} not found",
+        sub_vault_id
+    )?;
+    let sv = get_mut_helper_sub_vault(dynamic, idx).get_mut_value();
+    sv.open_orders_count = if delta >= 0 {
+        sv.open_orders_count
+            .checked_add(delta as u16)
+            .ok_or(ProgramError::ArithmeticOverflow)?
+    } else {
+        sv.open_orders_count
+            .checked_sub((-delta) as u16)
+            .ok_or(ProgramError::ArithmeticOverflow)?
+    };
+    Ok(())
+}
+
 pub fn insert_sub_vault_order_ref(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
@@ -1049,6 +1083,7 @@ pub fn insert_sub_vault_order_ref(
         .open_order_count
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
+    bump_sub_vault_order_count(fixed, dynamic, sub_vault_id, 1)?;
     Ok(order_index)
 }
 
@@ -1123,6 +1158,7 @@ pub fn remove_sub_vault_order_ref(
         .checked_sub(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     release_node_address_on_vault_fixed(fixed, dynamic, idx);
+    bump_sub_vault_order_count(fixed, dynamic, sub_vault_id, -1)?;
     Ok(idx)
 }
 
