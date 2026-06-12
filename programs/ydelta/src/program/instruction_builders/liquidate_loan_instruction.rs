@@ -42,7 +42,7 @@ pub fn liquidate_loan_instruction(
     repay_atoms_max: u64,
     cranker_refund: &Pubkey,
     // REQUIRED for Fixed loans (full-liquidate close-out updates the
-    // lender vault's risk profile + bumps pending_claim). MUST be `None`
+    // lender vault's sub-vault + bumps pending_claim). MUST be `None`
     // for P2Pool liquidations — the loader only consumes this slot when
     // the loan PDA reads as LoanType::Fixed.
     global_vault: Option<&Pubkey>,

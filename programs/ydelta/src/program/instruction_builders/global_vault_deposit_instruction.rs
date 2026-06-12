@@ -1,5 +1,5 @@
 //! Builds the `YdeltaInstruction::GlobalVaultDeposit` instruction: lender
-//! moves atoms from their wallet ATA into a risk profile, minting profile
+//! moves atoms from their wallet ATA into a sub-vault, minting profile
 //! shares against the vault NAV.
 
 use borsh::BorshSerialize;
@@ -21,8 +21,8 @@ use crate::state::vault::{
 /// Builds the `GlobalVaultDeposit` instruction for the vault keyed by
 /// `mint`. `depositor` (signer) is the lender; `depositor_token` is their
 /// wallet ATA. `lending_pool` + `liquidity_vault` are the marginfi bank
-/// accounts the deposit flows into. `profile_id` selects the target
-/// `RiskProfile`; `amount_atoms` is the deposit in token atoms.
+/// accounts the deposit flows into. `sub_vault_id` selects the target
+/// `SubVault`; `amount_atoms` is the deposit in token atoms.
 #[allow(clippy::too_many_arguments)]
 pub fn global_vault_deposit_instruction(
     mint: &Pubkey,
@@ -33,7 +33,7 @@ pub fn global_vault_deposit_instruction(
     lending_pool: &Pubkey,
     liquidity_vault: &Pubkey,
     marginfi_program: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
     amount_atoms: u64,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
@@ -45,7 +45,7 @@ pub fn global_vault_deposit_instruction(
     let mut data = YdeltaInstruction::GlobalVaultDeposit.to_vec();
     GlobalVaultDepositParams {
         amount_atoms,
-        profile_id,
+        sub_vault_id,
     }
     .serialize(&mut data)
     .unwrap();

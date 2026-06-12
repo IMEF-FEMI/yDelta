@@ -1,4 +1,4 @@
-//! Builds the `YdeltaInstruction::ClaimRepaymentForRiskProfile` instruction:
+//! Builds the `YdeltaInstruction::ClaimRepaymentForSubVault` instruction:
 //! permissionless sweep of a profile's `pending_claim_atoms` from the
 //! market's `lender_marginfi_account` back into the vault's own
 //! `integration_account`.
@@ -9,7 +9,7 @@ use solana_program::{
     pubkey::Pubkey,
 };
 
-use crate::program::processor::claim_repayment_for_risk_profile::ClaimRepaymentForRiskProfileParams;
+use crate::program::processor::claim_repayment_for_sub_vault::ClaimRepaymentForSubVaultParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::{
@@ -18,16 +18,16 @@ use crate::state::vault::{
 use crate::validation::pdas::get_market_signer_address;
 use crate::validation::token_checkers::get_vault_address;
 
-/// Builds the `ClaimRepaymentForRiskProfile` instruction for
-/// `risk_profile_id` on `market`. `payer` signs (permissionless cranker).
+/// Builds the `ClaimRepaymentForSubVault` instruction for
+/// `sub_vault_id` on `market`. `payer` signs (permissionless cranker).
 /// The marginfi inputs (`debt_bank`, `debt_liquidity_vault`, `debt_bank_lva`,
 /// `bank_oracles`, `lender_marginfi_account`) drive the marginfi withdraw
 /// into the vault staging ATA.
 #[allow(clippy::too_many_arguments)]
-pub fn claim_repayment_for_risk_profile_instruction(
+pub fn claim_repayment_for_sub_vault_instruction(
     payer: &Pubkey,
     market: &Pubkey,
-    risk_profile_id: u8,
+    sub_vault_id: u8,
     global_vault: &Pubkey,
     debt_mint: &Pubkey,
     debt_bank: &Pubkey,
@@ -45,8 +45,8 @@ pub fn claim_repayment_for_risk_profile_instruction(
     let (global_vault_staging, _) = global_vault_staging_pda(global_vault);
     let (global_vault_integration_account, _) = global_vault_integration_account_pda(global_vault);
 
-    let mut data = YdeltaInstruction::ClaimRepaymentForRiskProfile.to_vec();
-    ClaimRepaymentForRiskProfileParams { risk_profile_id }
+    let mut data = YdeltaInstruction::ClaimRepaymentForSubVault.to_vec();
+    ClaimRepaymentForSubVaultParams { sub_vault_id }
         .serialize(&mut data)
         .unwrap();
 

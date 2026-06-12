@@ -1,15 +1,15 @@
 //! Vault-as-maker matching tests.
 //!
 //! Verifies the quote-only vault profile order design:
-//!   1. A risk profile rests one open-ended (unbounded) ask per market
-//!      via `place_order_for_risk_profile` — the vault market-seat is
+//!   1. A sub-vault rests one open-ended (unbounded) ask per market
+//!      via `place_order_for_sub_vault` — the vault market-seat is
 //!      auto-created on the curator's first such call.
 //!   2. A borrower IOC Bid crosses the resting vault ask → the matching
 //!      engine records a match and bumps the vault state inline:
-//!      `RiskProfile.encumbered_in_orders_atoms += matched`.
+//!      `SubVault.encumbered_in_orders_atoms += matched`.
 //!   3. Each cross is capped by the profile's *live idle balance*
 //!      (`total_principal - deployed - encumbered`), not a per-seat cap.
-//!   4. The resting risk-profile ask is never removed by the engine —
+//!   4. The resting sub-vault ask is never removed by the engine —
 //!      only the curator removes it.
 
 use solana_sdk::signer::Signer;
@@ -33,7 +33,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 500,
             /*term_seconds=*/ 30 * 86_400,
@@ -43,7 +43,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
 
     // Verify pre-cross profile state — encumbered should be zero
     // (vault hasn't matched yet; just rests open-ended).
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(profile.encumbered_in_orders_atoms, 0);
     assert_eq!(profile.deployed_principal_atoms, 0);
 
@@ -78,7 +78,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
 
     // Post-match: vault profile is encumbered for the matched amount;
     // total principal is untouched until the cranker settles.
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms, principal_atoms,
         "match-time vault encumbrance should bump encumbered_in_orders_atoms"
@@ -170,7 +170,7 @@ async fn vault_match_capped_at_idle_pool() {
     // engine's per-profile marginfi-rounding reserve — the cross caps
     // at `idle - reserve`, not at the gross idle.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms,
         49 - MARGINFI_ROUNDING_RESERVE_ATOMS,
@@ -190,9 +190,9 @@ async fn vault_match_capped_at_idle_pool() {
 }
 
 /// Risk-profile orders persist on full-fill: the matching engine never
-/// removes them. Only the curator removes via `cancel_order_for_risk_profile`.
+/// removes them. Only the curator removes via `cancel_order_for_sub_vault`.
 #[tokio::test]
-async fn risk_profile_order_persists_after_full_fill() {
+async fn sub_vault_order_persists_after_full_fill() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
@@ -242,16 +242,16 @@ async fn risk_profile_order_persists_after_full_fill() {
         .unwrap();
 
     // The matching engine matched the bid but must NOT remove the
-    // resting risk-profile order.
+    // resting sub-vault order.
     let market = fixture.read_market_fixed().await;
     assert_ne!(
         market.asks_best_index,
         hypertree::NIL,
-        "risk-profile ask must persist after full-fill (only the curator removes it)",
+        "sub-vault ask must persist after full-fill (only the curator removes it)",
     );
 
     // Vault profile encumbered for exactly the matched principal.
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms, 1_000_000,
         "vault profile encumbered for the full match",
@@ -282,7 +282,7 @@ async fn risk_profile_order_persists_after_full_fill() {
 /// silently skips subsequent matches — the resting order stays on book,
 /// the new bid rests un-matched (with OB_ONLY) instead of erroring.
 #[tokio::test]
-async fn risk_profile_match_skips_at_idle_exhaustion() {
+async fn sub_vault_match_skips_at_idle_exhaustion() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
@@ -336,7 +336,7 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
     // Borrower B: tries to match, but the profile's idle pool is now
     // fully encumbered. Use OB_ONLY so the unfilled residual rests
     // instead of falling into the P2Pool fallback. Match-time should
-    // silently skip the now-idle-exhausted risk-profile maker.
+    // silently skip the now-idle-exhausted sub-vault maker.
     fixture.claim_seat(&borrower_b).await;
     let b_wsol = solana_program::pubkey::Pubkey::new_unique();
     fixture.put_wsol_token_account(b_wsol, borrower_b.pubkey(), 100_000);
@@ -378,7 +378,7 @@ async fn risk_profile_match_skips_at_idle_exhaustion() {
     // The profile is encumbered at the deposited idle minus the
     // matching engine's marginfi-rounding reserve.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(
         profile.encumbered_in_orders_atoms,
         99 - MARGINFI_ROUNDING_RESERVE_ATOMS,
@@ -426,13 +426,13 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
 
     // Profile 0: deposit 1.5 USDC and rest an unbounded ask. The
     // `provide_vault_liquidity` helper runs create_vault →
-    // create_risk_profile → deposit → place_order.
+    // create_sub_vault → deposit → place_order.
     fixture
         .provide_vault_liquidity(
             &admin,
             &depositor_0,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 500,
             /*term_seconds=*/ 30 * 86_400,
@@ -443,7 +443,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     // Profile 1: a second profile in the same vault with 5 USDC idle.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
+        .create_sub_vault(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -485,11 +485,11 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     // marginfi account and bumps profile 0's deployed_principal_atoms.
     fixture.refresh_blockhash().await;
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
 
-    let p0 = fixture.read_risk_profile(1).await;
+    let p0 = fixture.read_sub_vault(1).await;
     assert_eq!(
         p0.deployed_principal_atoms, 1_000_000,
         "loan settled: 1.0 USDC of profile 0's principal is deployed",
@@ -530,7 +530,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     );
 
     // Profile 1's capital is untouched.
-    let p1 = fixture.read_risk_profile(2).await;
+    let p1 = fixture.read_sub_vault(2).await;
     assert_eq!(
         p1.total_principal_atoms, 4_999_999,
         "profile 1's principal must be untouched by profile 0's withdrawal",
@@ -547,11 +547,11 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
 ///
 /// Regression: the close-out paths used to `saturating_sub(1)` without a
 /// matching fill-time increment, eating the resting ask's count — after
-/// one full repay the curator's `cancel_order_for_risk_profile` failed
+/// one full repay the curator's `cancel_order_for_sub_vault` failed
 /// with ArithmeticOverflow on `checked_sub(0)`.
 #[tokio::test]
 async fn lender_open_lend_count_survives_full_repay_then_cancel() {
-    use ydelta::program::instruction_builders::cancel_order_for_risk_profile_instruction::cancel_order_for_risk_profile_instruction;
+    use ydelta::program::instruction_builders::cancel_order_for_sub_vault_instruction::cancel_order_for_sub_vault_instruction;
 
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
@@ -564,7 +564,7 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 500,
             /*term_seconds=*/ 30 * 86_400,
@@ -615,7 +615,7 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
 
     fixture.refresh_blockhash().await;
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -632,7 +632,7 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
         "loan close retires only the fill's count; the resting ask survives"
     );
 
-    let cancel_ix = cancel_order_for_risk_profile_instruction(
+    let cancel_ix = cancel_order_for_sub_vault_instruction(
         &mainnet::usdc_mint(),
         &fixture.market.pubkey(),
         &admin.pubkey(),
@@ -671,7 +671,7 @@ async fn profile_ltv_cap_skips_strict_ask_and_fills_looser_one() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(1_000),
             /*rate_bps=*/ 400,
             /*term_seconds=*/ 30 * 86_400,
@@ -682,7 +682,7 @@ async fn profile_ltv_cap_skips_strict_ask_and_fills_looser_one() {
     // Profile 2: loose 80% cap at a worse rate, same vault, also funded.
     fixture.refresh_blockhash().await;
     fixture
-        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
+        .create_sub_vault(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -693,7 +693,7 @@ async fn profile_ltv_cap_skips_strict_ask_and_fills_looser_one() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .place_order_for_risk_profile(&curator, 2, 500, 30 * 86_400, 0)
+        .place_order_for_sub_vault(&curator, 2, 500, 30 * 86_400, 0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -725,12 +725,12 @@ async fn profile_ltv_cap_skips_strict_ask_and_fills_looser_one() {
         .await;
     result.expect("a stricter profile cap must skip the ask, not fail the bid");
 
-    let p1 = fixture.read_risk_profile(1).await;
+    let p1 = fixture.read_sub_vault(1).await;
     assert_eq!(
         p1.encumbered_in_orders_atoms, 0,
         "skipped strict profile must carry no stale encumbrance"
     );
-    let p2 = fixture.read_risk_profile(2).await;
+    let p2 = fixture.read_sub_vault(2).await;
     assert_eq!(
         p2.encumbered_in_orders_atoms, 1_000_000,
         "the looser profile behind it fills the whole bid"

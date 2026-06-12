@@ -71,15 +71,15 @@ pub const GLOBAL_VAULT_FIXED_SIZE: usize = 320;
 /// Eight-byte tag at the head of every global vault account.
 pub const GLOBAL_VAULT_FIXED_DISCRIMINANT: u64 = 0x79_64_65_6C_74_61_56_61;
 
-/// Per-node block size for the global vault's risk-profile region.
-/// `RiskProfile` payloads are large enough to need their own block size.
-pub const RISK_PROFILE_BLOCK_SIZE: usize = 512;
-/// Payload byte size of a [`super::vault::RiskProfile`] node.
-pub const RISK_PROFILE_BLOCK_PAYLOAD_SIZE: usize = RISK_PROFILE_BLOCK_SIZE - RBTREE_OVERHEAD_BYTES;
-/// Byte size of a free-list padding block in the risk-profile region.
-pub const RISK_PROFILE_FREE_LIST_BLOCK_SIZE: usize = RISK_PROFILE_BLOCK_SIZE - FREE_LIST_OVERHEAD;
-/// Alias for [`RISK_PROFILE_BLOCK_PAYLOAD_SIZE`].
-pub const RISK_PROFILE_SIZE: usize = RISK_PROFILE_BLOCK_PAYLOAD_SIZE;
+/// Per-node block size for the global vault's sub-vault region.
+/// `SubVault` payloads are large enough to need their own block size.
+pub const SUB_VAULT_BLOCK_SIZE: usize = 512;
+/// Payload byte size of a [`super::vault::SubVault`] node.
+pub const SUB_VAULT_BLOCK_PAYLOAD_SIZE: usize = SUB_VAULT_BLOCK_SIZE - RBTREE_OVERHEAD_BYTES;
+/// Byte size of a free-list padding block in the sub-vault region.
+pub const SUB_VAULT_FREE_LIST_BLOCK_SIZE: usize = SUB_VAULT_BLOCK_SIZE - FREE_LIST_OVERHEAD;
+/// Alias for [`SUB_VAULT_BLOCK_PAYLOAD_SIZE`].
+pub const SUB_VAULT_SIZE: usize = SUB_VAULT_BLOCK_PAYLOAD_SIZE;
 
 /// Per-node block size for the global vault's auxiliary node region
 /// (depositor seats and order refs).
@@ -88,7 +88,7 @@ pub const VAULT_NODE_BLOCK_SIZE: usize = MARKET_BLOCK_SIZE;
 pub const VAULT_NODE_BLOCK_PAYLOAD_SIZE: usize = VAULT_NODE_BLOCK_SIZE - RBTREE_OVERHEAD_BYTES;
 /// Byte size of a free-list padding block in the vault-node region.
 pub const VAULT_NODE_FREE_LIST_BLOCK_SIZE: usize = VAULT_NODE_BLOCK_SIZE - FREE_LIST_OVERHEAD;
-/// Payload byte size of a [`super::vault::RiskProfileDepositorSeat`].
+/// Payload byte size of a [`super::vault::SubVaultDepositorSeat`].
 pub const VAULT_CLAIMED_SEAT_SIZE: usize = VAULT_NODE_BLOCK_PAYLOAD_SIZE;
-/// Payload byte size of a [`super::vault::RiskProfileOrderRef`].
+/// Payload byte size of a [`super::vault::SubVaultOrderRef`].
 pub const VAULT_ORDER_REF_SIZE: usize = VAULT_NODE_BLOCK_PAYLOAD_SIZE;

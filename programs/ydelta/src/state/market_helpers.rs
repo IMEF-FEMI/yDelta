@@ -1,6 +1,6 @@
 //! Mutation primitives over the market account's dynamic region: seat
 //! balance bookkeeping, free-list allocation, the order-matching engine
-//! (`match_order`, `match_borrower_bid`), risk-profile ask placement
+//! (`match_order`, `match_borrower_bid`), sub-vault ask placement
 //! (`rest_vault_ask`), and the P2Pool residual refinance scan
 //! (`match_p2pool_residual_against_asks`). Each function pairs a
 //! `MarketFixed` mutator with a `&mut [u8]` view of the tree region.
@@ -22,8 +22,8 @@ use crate::logs::{emit_stack, MatchedLoanCreatedLog, OrderPlacedLog};
 use crate::program::YdeltaError;
 use crate::require;
 use crate::state::vault::{
-    get_helper_risk_profile, get_mut_helper_risk_profile, GlobalVaultFixed, RiskProfile,
-    RiskProfileTreeReadOnly,
+    get_helper_sub_vault, get_mut_helper_sub_vault, GlobalVaultFixed, SubVault,
+    SubVaultTreeReadOnly,
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 
@@ -316,7 +316,7 @@ pub fn get_seat_index_with_hint(
             let seat: &ClaimedSeat = get_helper_seat(dynamic, idx).get_value();
             if seat.owner == *signer
                 && seat.owner_kind == OWNER_KIND_USER
-                && seat.risk_profile_id == 0
+                && seat.sub_vault_id == 0
             {
                 return Ok(idx);
             }
@@ -413,7 +413,7 @@ pub enum ResidualAction {
 pub const FLAG_OB_ONLY: u8 = 0b0000_0010;
 
 /// Walks the ask bookside from best to worst rate, filling against
-/// risk-profile makers up to the taker's principal. Mutates seat counters
+/// sub-vault makers up to the taker's principal. Mutates seat counters
 /// and the profile's `encumbered_in_orders_atoms`, emits
 /// `MatchedLoanCreated` logs, and inserts a `MatchedLoan` node per fill.
 /// `vault_ai` is the resting-ask vault account; passing `None` skips
@@ -466,16 +466,16 @@ pub fn match_order(
         }
 
         let matched_principal: u64;
-        let profile_id: u8;
+        let sub_vault_id: u8;
 
         let mut profile_max_ltv_bps: u16 = 0;
         let mut profile_max_term_seconds: u32 = 0;
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             require!(
-                lender_seat.owner_kind == crate::state::OWNER_KIND_RISK_PROFILE,
+                lender_seat.owner_kind == crate::state::OWNER_KIND_SUB_VAULT,
                 YdeltaError::IncorrectAccount,
-                "resting ask's lender seat owner_kind is {} (expected RISK_PROFILE)",
+                "resting ask's lender seat owner_kind is {} (expected SUB_VAULT)",
                 lender_seat.owner_kind,
             )?;
             let vault_ai_ref = match vault_ai {
@@ -485,20 +485,20 @@ pub fn match_order(
                     continue;
                 }
             };
-            profile_id = lender_seat.risk_profile_id;
+            sub_vault_id = lender_seat.sub_vault_id;
 
             let profile_idle: u64 = {
                 let vault_data = vault_ai_ref.try_borrow_data()?;
                 let (fixed_bytes, vault_dyn) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
                 let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-                let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+                let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
                 let tree =
-                    RiskProfileTreeReadOnly::new(vault_dyn, header.risk_profiles_root_index, NIL);
+                    SubVaultTreeReadOnly::new(vault_dyn, header.sub_vaults_root_index, NIL);
                 let idx = tree.lookup_index(&probe);
                 if idx == NIL {
                     0
                 } else {
-                    let p = get_helper_risk_profile(vault_dyn, idx).get_value();
+                    let p = get_helper_sub_vault(vault_dyn, idx).get_value();
                     if p.is_sunset != 0 {
                         0
                     } else {
@@ -589,12 +589,12 @@ pub fn match_order(
             let mut vault_data = vault_ai_ref.try_borrow_mut_data()?;
             let (fixed_bytes, vault_dyn) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
             let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-            let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+            let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
             let tree =
-                RiskProfileTreeReadOnly::new(vault_dyn, header.risk_profiles_root_index, NIL);
+                SubVaultTreeReadOnly::new(vault_dyn, header.sub_vaults_root_index, NIL);
             let idx = tree.lookup_index(&probe);
             if idx != NIL {
-                let p = get_mut_helper_risk_profile(vault_dyn, idx).get_mut_value();
+                let p = get_mut_helper_sub_vault(vault_dyn, idx).get_mut_value();
                 p.encumbered_in_orders_atoms = p
                     .encumbered_in_orders_atoms
                     .checked_add(matched_principal)
@@ -750,7 +750,7 @@ fn mul_div_u64(a: u64, b: u64, c: u64) -> Result<u64, ProgramError> {
 }
 
 impl<'a> MarketRefMut<'a> {
-    /// Convenience wrapper that claims a seat with `risk_profile_id = 0`
+    /// Convenience wrapper that claims a seat with `sub_vault_id = 0`
     /// (the user-seat default).
     pub fn claim_seat(&mut self, owner: &Pubkey, owner_kind: u8) -> ProgramResult {
         self.claim_seat_with_profile(owner, owner_kind, 0)
@@ -758,16 +758,16 @@ impl<'a> MarketRefMut<'a> {
 
     /// Inserts a fresh, zeroed `ClaimedSeat` into the market's seat tree.
     /// Errors with `AlreadyClaimedSeat` when one already exists for the
-    /// `(owner, owner_kind, risk_profile_id)` triple.
+    /// `(owner, owner_kind, sub_vault_id)` triple.
     pub fn claim_seat_with_profile(
         &mut self,
         owner: &Pubkey,
         owner_kind: u8,
-        risk_profile_id: u8,
+        sub_vault_id: u8,
     ) -> ProgramResult {
         let MarketRefMut { fixed, dynamic } = self;
 
-        let probe = ClaimedSeat::new_empty(*owner, owner_kind, risk_profile_id);
+        let probe = ClaimedSeat::new_empty(*owner, owner_kind, sub_vault_id);
         let lookup_tree =
             RedBlackTreeReadOnly::<ClaimedSeat>::new(dynamic, fixed.claimed_seats_root_index, NIL);
         if is_not_nil!(lookup_tree.lookup_index(&probe)) {
@@ -782,7 +782,7 @@ impl<'a> MarketRefMut<'a> {
             "Market account has no free block — expand before claim_seat"
         )?;
 
-        let seat = ClaimedSeat::new_empty(*owner, owner_kind, risk_profile_id);
+        let seat = ClaimedSeat::new_empty(*owner, owner_kind, sub_vault_id);
         let mut tree = ClaimedSeatTree::new(dynamic, fixed.claimed_seats_root_index, NIL);
         tree.insert(free_addr, seat);
         fixed.claimed_seats_root_index = tree.get_root_index();
@@ -922,7 +922,7 @@ pub struct RestVaultAskArgs {
     /// Market the ask is placed against.
     pub market_pubkey: Pubkey,
 
-    /// Curator's risk-profile seat index in the market.
+    /// Curator's sub-vault seat index in the market.
     pub maker_seat_index: DataIndex,
     /// Quoted ask rate.
     pub rate_bps: u16,
@@ -1153,7 +1153,7 @@ pub fn match_borrower_bid(
     })
 }
 
-/// Rests a curator's risk-profile ask on the book. Vault asks are
+/// Rests a curator's sub-vault ask on the book. Vault asks are
 /// unbounded (`principal_atoms = u64::MAX`) and zero-collateral: the
 /// per-fill cap comes from the profile's idle balance at match time.
 /// Returns the assigned per-market order sequence.
@@ -1258,7 +1258,7 @@ pub fn lookup_order_by_seq(
     Err(YdeltaError::OrderNotFound.into())
 }
 
-/// Cancels the ask at `order_index`. For risk-profile asks decrements
+/// Cancels the ask at `order_index`. For sub-vault asks decrements
 /// `open_lend_count`; for user asks unencumbers the seat's debt /
 /// collateral shares using the order's stored share-price snapshot.
 /// Errors with `OrderNotOwnedBySigner` when the caller's seat doesn't
@@ -1280,7 +1280,7 @@ pub fn cancel_order_by_index(
         let seat = get_helper_seat(dynamic, order.trader_seat_index).get_value();
         seat.owner_kind
     };
-    if owner_kind == crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE {
+    if owner_kind == crate::state::claimed_seat::OWNER_KIND_SUB_VAULT {
         let seat = get_mut_helper_seat(dynamic, order.trader_seat_index).get_mut_value();
         seat.open_lend_count = seat
             .open_lend_count
@@ -1304,7 +1304,7 @@ pub fn cancel_order_by_index(
 
 /// Inputs to [`match_p2pool_residual_against_asks`] — the engine that
 /// converts an open P2Pool loan into one or more fixed-term loans by
-/// matching against resting risk-profile asks.
+/// matching against resting sub-vault asks.
 pub struct MatchP2PoolRefinanceArgs {
     /// Market the refinance runs against.
     pub market_pubkey: Pubkey,
@@ -1361,8 +1361,8 @@ pub struct MatchP2PoolRefinanceArgs {
 /// processor uses these to drive per-lender marginfi accounting.
 #[derive(Clone, Copy)]
 pub struct P2PoolRefinanceCross {
-    /// Lender risk-profile id that filled.
-    pub lender_profile_id: u8,
+    /// Lender sub-vault id that filled.
+    pub lender_sub_vault_id: u8,
 
     /// Effective lender rate.
     pub lender_rate_bps: u16,
@@ -1430,15 +1430,15 @@ pub fn match_p2pool_residual_against_asks(
         }
 
         let matched_principal: u64;
-        let lender_profile_id: u8;
+        let lender_sub_vault_id: u8;
 
         let mut profile_max_ltv_bps: u16 = 0;
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             require!(
-                lender_seat.owner_kind == crate::state::OWNER_KIND_RISK_PROFILE,
+                lender_seat.owner_kind == crate::state::OWNER_KIND_SUB_VAULT,
                 YdeltaError::IncorrectAccount,
-                "resting ask's lender seat owner_kind is {} (expected RISK_PROFILE)",
+                "resting ask's lender seat owner_kind is {} (expected SUB_VAULT)",
                 lender_seat.owner_kind,
             )?;
             let vault_ai_ref = match vault_ai {
@@ -1448,20 +1448,20 @@ pub fn match_p2pool_residual_against_asks(
                     continue;
                 }
             };
-            let profile_id = lender_seat.risk_profile_id;
-            lender_profile_id = profile_id;
+            let sub_vault_id = lender_seat.sub_vault_id;
+            lender_sub_vault_id = sub_vault_id;
             let profile_idle: u64 = {
                 let vault_data = vault_ai_ref.try_borrow_data()?;
                 let (fixed_bytes, vault_dyn) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
                 let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-                let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+                let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
                 let tree =
-                    RiskProfileTreeReadOnly::new(vault_dyn, header.risk_profiles_root_index, NIL);
+                    SubVaultTreeReadOnly::new(vault_dyn, header.sub_vaults_root_index, NIL);
                 let idx = tree.lookup_index(&probe);
                 if idx == NIL {
                     0
                 } else {
-                    let p = get_helper_risk_profile(vault_dyn, idx).get_value();
+                    let p = get_helper_sub_vault(vault_dyn, idx).get_value();
                     if p.is_sunset != 0 {
                         0
                     } else {
@@ -1533,12 +1533,12 @@ pub fn match_p2pool_residual_against_asks(
                 let mut vault_data = vault_ai_ref.try_borrow_mut_data()?;
                 let (fixed_bytes, vault_dyn) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
                 let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-                let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+                let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
                 let tree =
-                    RiskProfileTreeReadOnly::new(vault_dyn, header.risk_profiles_root_index, NIL);
+                    SubVaultTreeReadOnly::new(vault_dyn, header.sub_vaults_root_index, NIL);
                 let idx = tree.lookup_index(&probe);
                 if idx != NIL {
-                    let p = get_mut_helper_risk_profile(vault_dyn, idx).get_mut_value();
+                    let p = get_mut_helper_sub_vault(vault_dyn, idx).get_mut_value();
                     p.encumbered_in_orders_atoms = p
                         .encumbered_in_orders_atoms
                         .checked_add(matched_principal)
@@ -1634,7 +1634,7 @@ pub fn match_p2pool_residual_against_asks(
         }
 
         crosses.push(P2PoolRefinanceCross {
-            lender_profile_id,
+            lender_sub_vault_id,
             lender_rate_bps: lender_rate,
             filled_principal_atoms: matched_principal,
         });

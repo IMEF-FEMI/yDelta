@@ -2,7 +2,7 @@
 //!
 //! Top-level layout:
 //! - [`state`] — on-chain account data types (markets, vaults, loans,
-//!   risk profiles, seats, orders) and the helpers that mutate them.
+//!   sub-vaults, seats, orders) and the helpers that mutate them.
 //! - [`program`] — instruction tag enum, error enum, processor handlers
 //!   (one per instruction), and client-side instruction builders.
 //! - [`protocol`] — adapters to external programs (marginfi v0.1.8 CPIs,
@@ -31,20 +31,20 @@ pub mod deps {
 }
 
 use program::{
-    admin_cancel_risk_profile_order::process_admin_cancel_risk_profile_order,
+    admin_cancel_sub_vault_order::process_admin_cancel_sub_vault_order,
     admin_transfer::{
         process_accept_curator, process_accept_global_vault_admin, process_accept_market_admin,
         process_transfer_curator, process_transfer_global_vault_admin,
         process_transfer_market_admin,
     },
-    cancel_order_for_risk_profile::process_cancel_order_for_risk_profile,
+    cancel_order_for_sub_vault::process_cancel_order_for_sub_vault,
     check_liquidatable::{process_check_ltv_liquidatable, process_check_maturity_liquidatable},
     claim_curator_fee::process_claim_curator_fee,
-    claim_repayment_for_risk_profile::process_claim_repayment_for_risk_profile,
+    claim_repayment_for_sub_vault::process_claim_repayment_for_sub_vault,
     claim_seat::process_claim_seat,
     convert_p2pool_to_fixed::process_convert_p2pool_to_fixed,
     create_market::process_create_market,
-    create_risk_profile::process_create_risk_profile,
+    create_sub_vault::process_create_sub_vault,
     create_vault::process_create_vault,
     deposit::process_deposit,
     global_config_admin::{
@@ -55,20 +55,20 @@ use program::{
     global_vault_withdraw::process_global_vault_withdraw,
     liquidate_loan::process_liquidate_loan,
     place_order::process_place_order,
-    place_order_for_risk_profile::process_place_order_for_risk_profile,
+    place_order_for_sub_vault::process_place_order_for_sub_vault,
     process_matched_loan::process_process_matched_loan,
     protocol_fee_claim::process_protocol_fee_claim,
-    remove_risk_profile::process_remove_risk_profile,
+    remove_sub_vault::process_remove_sub_vault,
     repay::process_repay,
-    resume_risk_profile::process_resume_risk_profile,
+    resume_sub_vault::process_resume_sub_vault,
     set_fee_config::process_set_fee_config,
     set_market_pause::process_set_market_pause,
     set_vault_pause::process_set_vault_pause,
     settle_matured_loan::process_settle_matured_loan,
-    sunset_risk_profile::process_sunset_risk_profile,
+    sunset_sub_vault::process_sunset_sub_vault,
     sync_market_position::process_sync_market_position,
-    update_order_for_risk_profile::process_update_order_for_risk_profile,
-    update_risk_profile::process_update_risk_profile,
+    update_order_for_sub_vault::process_update_order_for_sub_vault,
+    update_sub_vault::process_update_sub_vault,
     withdraw::process_withdraw,
     YdeltaInstruction,
 };
@@ -129,8 +129,8 @@ pub fn process_instruction(
             process_sync_market_position(program_id, accounts, data)?
         }
         YdeltaInstruction::CreateVault => process_create_vault(program_id, accounts, data)?,
-        YdeltaInstruction::CreateRiskProfile => {
-            process_create_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::CreateSubVault => {
+            process_create_sub_vault(program_id, accounts, data)?
         }
         YdeltaInstruction::GlobalVaultDeposit => {
             process_global_vault_deposit(program_id, accounts, data)?
@@ -138,14 +138,14 @@ pub fn process_instruction(
         YdeltaInstruction::GlobalVaultWithdraw => {
             process_global_vault_withdraw(program_id, accounts, data)?
         }
-        YdeltaInstruction::PlaceOrderForRiskProfile => {
-            process_place_order_for_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::PlaceOrderForSubVault => {
+            process_place_order_for_sub_vault(program_id, accounts, data)?
         }
-        YdeltaInstruction::CancelOrderForRiskProfile => {
-            process_cancel_order_for_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::CancelOrderForSubVault => {
+            process_cancel_order_for_sub_vault(program_id, accounts, data)?
         }
-        YdeltaInstruction::UpdateOrderForRiskProfile => {
-            process_update_order_for_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::UpdateOrderForSubVault => {
+            process_update_order_for_sub_vault(program_id, accounts, data)?
         }
         YdeltaInstruction::ClaimCuratorFee => {
             process_claim_curator_fee(program_id, accounts, data)?
@@ -158,8 +158,8 @@ pub fn process_instruction(
         YdeltaInstruction::ProtocolFeeClaim => {
             process_protocol_fee_claim(program_id, accounts, data)?
         }
-        YdeltaInstruction::ClaimRepaymentForRiskProfile => {
-            process_claim_repayment_for_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::ClaimRepaymentForSubVault => {
+            process_claim_repayment_for_sub_vault(program_id, accounts, data)?
         }
         YdeltaInstruction::TransferMarketAdmin => {
             process_transfer_market_admin(program_id, accounts, data)?
@@ -186,8 +186,8 @@ pub fn process_instruction(
             process_accept_protocol_admin(program_id, accounts, data)?
         }
         YdeltaInstruction::SetGlobalPause => process_set_global_pause(program_id, accounts, data)?,
-        YdeltaInstruction::UpdateRiskProfile => {
-            process_update_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::UpdateSubVault => {
+            process_update_sub_vault(program_id, accounts, data)?
         }
         YdeltaInstruction::ConvertP2PoolToFixed => {
             process_convert_p2pool_to_fixed(program_id, accounts, data)?
@@ -199,17 +199,17 @@ pub fn process_instruction(
             process_check_maturity_liquidatable(program_id, accounts, data)?
         }
         YdeltaInstruction::SetVaultPause => process_set_vault_pause(program_id, accounts, data)?,
-        YdeltaInstruction::RemoveRiskProfile => {
-            process_remove_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::RemoveSubVault => {
+            process_remove_sub_vault(program_id, accounts, data)?
         }
-        YdeltaInstruction::SunsetRiskProfile => {
-            process_sunset_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::SunsetSubVault => {
+            process_sunset_sub_vault(program_id, accounts, data)?
         }
-        YdeltaInstruction::ResumeRiskProfile => {
-            process_resume_risk_profile(program_id, accounts, data)?
+        YdeltaInstruction::ResumeSubVault => {
+            process_resume_sub_vault(program_id, accounts, data)?
         }
-        YdeltaInstruction::AdminCancelRiskProfileOrder => {
-            process_admin_cancel_risk_profile_order(program_id, accounts, data)?
+        YdeltaInstruction::AdminCancelSubVaultOrder => {
+            process_admin_cancel_sub_vault_order(program_id, accounts, data)?
         }
     }
 

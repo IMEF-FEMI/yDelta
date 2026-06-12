@@ -1,8 +1,8 @@
-//! `UpdateOrderForRiskProfile` — atomic cancel-and-replace of the existing
-//! vault-owned ask for `(market, profile_id)`. Signer is the profile's
+//! `UpdateOrderForSubVault` — atomic cancel-and-replace of the existing
+//! vault-owned ask for `(market, sub_vault_id)`. Signer is the profile's
 //! curator; blocked when the profile is sunset (curators may still cancel
 //! during wind-down). Looks up the old order via the vault's
-//! `RiskProfileOrderRef`, cancels it on the market, rests a new ask with the
+//! `SubVaultOrderRef`, cancels it on the market, rests a new ask with the
 //! supplied params, and swaps the ref entry on the vault.
 
 use std::cell::RefMut;
@@ -14,28 +14,28 @@ use solana_program::{
     pubkey::Pubkey, rent::Rent, system_instruction, sysvar::Sysvar,
 };
 
-use crate::logs::{emit_stack, CancelOrderForRiskProfileLog, PlaceOrderForRiskProfileLog};
+use crate::logs::{emit_stack, CancelOrderForSubVaultLog, PlaceOrderForSubVaultLog};
 use crate::program::YdeltaError;
 use crate::require;
-use crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
+use crate::state::claimed_seat::OWNER_KIND_SUB_VAULT;
 use crate::state::market::ClaimedSeatTreeReadOnly;
 use crate::state::market_helpers::{cancel_order_by_index, rest_vault_ask, RestVaultAskArgs};
 use crate::state::vault::{
-    insert_risk_profile_order_ref, remove_risk_profile_order_ref, vault_expand_node_block,
-    GlobalVaultFixed, RiskProfile, RiskProfileOrderRef, RiskProfileOrderRefTreeReadOnly,
-    RiskProfileTreeReadOnly,
+    insert_sub_vault_order_ref, remove_sub_vault_order_ref, vault_expand_node_block,
+    GlobalVaultFixed, SubVault, SubVaultOrderRef, SubVaultOrderRefTreeReadOnly,
+    SubVaultTreeReadOnly,
 };
 use crate::state::ClaimedSeat;
 use crate::state::{MarketFixed, Side, GLOBAL_VAULT_FIXED_SIZE, VAULT_NODE_BLOCK_SIZE};
-use crate::validation::loaders::CancelOrderForRiskProfileContext;
+use crate::validation::loaders::CancelOrderForSubVaultContext;
 
 use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 
 /// Cancel-and-replace parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
-pub struct UpdateOrderForRiskProfileParams {
-    /// Risk profile ID that owns the order (1-based; 0 is the sentinel).
-    pub profile_id: u8,
+pub struct UpdateOrderForSubVaultParams {
+    /// Sub-vault ID that owns the order (1-based; 0 is the sentinel).
+    pub sub_vault_id: u8,
     /// Replacement ask rate in bps.
     pub new_rate_bps: u16,
     /// Replacement term in seconds; must be `<= profile.max_term_seconds`.
@@ -47,19 +47,19 @@ pub struct UpdateOrderForRiskProfileParams {
 /// Cancel the profile's existing ask for this market and rest a new one with
 /// the supplied parameters in a single instruction. Curator-signed; rejected
 /// when the profile is sunset.
-pub fn process_update_order_for_risk_profile(
+pub fn process_update_order_for_sub_vault(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
-    let params = UpdateOrderForRiskProfileParams::try_from_slice(data)?;
-    let CancelOrderForRiskProfileContext {
+    let params = UpdateOrderForSubVaultParams::try_from_slice(data)?;
+    let CancelOrderForSubVaultContext {
         fee_payer,
         curator,
         vault,
         market,
         _system_program,
-    } = CancelOrderForRiskProfileContext::load(accounts)?;
+    } = CancelOrderForSubVaultContext::load(accounts)?;
 
     let vault_key = *vault.info.key;
     let market_key = *market.info.key;
@@ -70,30 +70,30 @@ pub fn process_update_order_for_risk_profile(
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
 
-        let profile_probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+        let profile_probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&profile_probe)
         };
         require!(
             profile_idx != NIL,
-            YdeltaError::VaultProfileNotFound,
-            "profile_id {} not found",
-            params.profile_id
+            YdeltaError::SubVaultNotFound,
+            "sub_vault_id {} not found",
+            params.sub_vault_id
         )?;
-        let profile_node = crate::state::vault::get_helper_risk_profile(dynamic, profile_idx);
+        let profile_node = crate::state::vault::get_helper_sub_vault(dynamic, profile_idx);
         let profile = profile_node.get_value();
         require!(
             profile.is_sunset == 0,
-            YdeltaError::VaultProfileSunset,
-            "update_order_for_risk_profile: profile_id {} is sunset; updates are rejected \
+            YdeltaError::SubVaultSunset,
+            "update_order_for_sub_vault: sub_vault_id {} is sunset; updates are rejected \
              during wind-down (cancel is allowed)",
-            params.profile_id
+            params.sub_vault_id
         )?;
         require!(
             *curator.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,
-            "update_order_for_risk_profile: signer is not profile.curator"
+            "update_order_for_sub_vault: signer is not profile.curator"
         )?;
         require!(
             params.new_term_seconds <= profile.max_term_seconds,
@@ -103,19 +103,19 @@ pub fn process_update_order_for_risk_profile(
             { profile.max_term_seconds }
         )?;
 
-        let order_probe = RiskProfileOrderRef::probe(market_key, params.profile_id);
+        let order_probe = SubVaultOrderRef::probe(market_key, params.sub_vault_id);
         let order_idx = {
             let tree =
-                RiskProfileOrderRefTreeReadOnly::new(dynamic, header.market_orders_root_index, NIL);
+                SubVaultOrderRefTreeReadOnly::new(dynamic, header.market_orders_root_index, NIL);
             tree.lookup_index(&order_probe)
         };
         require!(
             order_idx != NIL,
             YdeltaError::InvalidArgument,
-            "no RiskProfileOrderRef for (market, profile_id={}) — nothing to update",
-            params.profile_id
+            "no SubVaultOrderRef for (market, sub_vault_id={}) — nothing to update",
+            params.sub_vault_id
         )?;
-        crate::state::vault::get_helper_risk_profile_order_ref(dynamic, order_idx)
+        crate::state::vault::get_helper_sub_vault_order_ref(dynamic, order_idx)
             .get_value()
             .order_sequence_in_market
     };
@@ -125,7 +125,7 @@ pub fn process_update_order_for_risk_profile(
         let market_dyn_offset = std::mem::size_of::<MarketFixed>();
         let header: &MarketFixed = bytemuck::from_bytes(&market_data[..market_dyn_offset]);
         let dynamic = &market_data[market_dyn_offset..];
-        let probe = ClaimedSeat::new_empty(vault_key, OWNER_KIND_RISK_PROFILE, params.profile_id);
+        let probe = ClaimedSeat::new_empty(vault_key, OWNER_KIND_SUB_VAULT, params.sub_vault_id);
         let seat_idx = {
             let tree = ClaimedSeatTreeReadOnly::new(dynamic, header.claimed_seats_root_index, NIL);
             tree.lookup_index(&probe)
@@ -133,7 +133,7 @@ pub fn process_update_order_for_risk_profile(
         require!(
             seat_idx != NIL,
             YdeltaError::IncorrectAccount,
-            "no vault-owned ClaimedSeat for (vault, profile_id)"
+            "no vault-owned ClaimedSeat for (vault, sub_vault_id)"
         )?;
         seat_idx
     };
@@ -175,7 +175,7 @@ pub fn process_update_order_for_risk_profile(
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        remove_risk_profile_order_ref(header, dynamic, market_key, params.profile_id)?;
+        remove_sub_vault_order_ref(header, dynamic, market_key, params.sub_vault_id)?;
     }
 
     let need_expand: bool = {
@@ -207,11 +207,11 @@ pub fn process_update_order_for_risk_profile(
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let _ = insert_risk_profile_order_ref(
+        let _ = insert_sub_vault_order_ref(
             header,
             dynamic,
             market_key,
-            params.profile_id,
+            params.sub_vault_id,
             Side::Ask as u8,
             params.new_rate_bps,
             params.new_term_seconds,
@@ -220,18 +220,18 @@ pub fn process_update_order_for_risk_profile(
         )?;
     }
 
-    emit_stack(CancelOrderForRiskProfileLog {
+    emit_stack(CancelOrderForSubVaultLog {
         global_vault: vault_key,
         market: market_key,
-        profile_id: params.profile_id,
+        sub_vault_id: params.sub_vault_id,
         is_replace: 1,
         _pad0: [0; 6],
         order_sequence_in_market: old_order_sequence,
     })?;
-    emit_stack(PlaceOrderForRiskProfileLog {
+    emit_stack(PlaceOrderForSubVaultLog {
         global_vault: vault_key,
         market: market_key,
-        profile_id: params.profile_id,
+        sub_vault_id: params.sub_vault_id,
         side: Side::Ask as u8,
         _pad0: [0; 6],
         rate_bps: params.new_rate_bps,

@@ -1,6 +1,6 @@
-//! Builds the `YdeltaInstruction::PlaceOrderForRiskProfile` instruction:
+//! Builds the `YdeltaInstruction::PlaceOrderForSubVault` instruction:
 //! curator rests an unbounded vault ask on a market, auto-creating the
-//! per-(profile, market) seat and `RiskProfileOrderRef` on first call.
+//! per-(profile, market) seat and `SubVaultOrderRef` on first call.
 
 use borsh::BorshSerialize;
 use solana_program::{
@@ -9,30 +9,30 @@ use solana_program::{
     system_program,
 };
 
-use crate::program::processor::place_order_for_risk_profile::PlaceOrderForRiskProfileParams;
+use crate::program::processor::place_order_for_sub_vault::PlaceOrderForSubVaultParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Builds the `PlaceOrderForRiskProfile` instruction. `curator` must sign;
-/// `fee_payer` covers tx fees. Posts an unbounded ask for `profile_id` on
+/// Builds the `PlaceOrderForSubVault` instruction. `curator` must sign;
+/// `fee_payer` covers tx fees. Posts an unbounded ask for `sub_vault_id` on
 /// `market`, charging `rate_bps` (basis points) for a max term of
 /// `term_seconds` (seconds). `flags` carries the order option bitmask.
 #[allow(clippy::too_many_arguments)]
-pub fn place_order_for_risk_profile_instruction(
+pub fn place_order_for_sub_vault_instruction(
     mint: &Pubkey,
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
     rate_bps: u16,
     term_seconds: u32,
     flags: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
-    let mut data = YdeltaInstruction::PlaceOrderForRiskProfile.to_vec();
-    PlaceOrderForRiskProfileParams {
-        profile_id,
+    let mut data = YdeltaInstruction::PlaceOrderForSubVault.to_vec();
+    PlaceOrderForSubVaultParams {
+        sub_vault_id,
         rate_bps,
         term_seconds,
         flags,

@@ -21,7 +21,7 @@ use crate::state::vault::{
 /// `mint`. `depositor` (signer) is the share holder; `depositor_token`
 /// receives the atoms. `lending_pool` / `lending_pool_oracle` /
 /// `liquidity_vault` / `bank_liquidity_vault_authority` drive the marginfi
-/// withdraw. `profile_id` selects the source profile; `shares_to_burn` is
+/// withdraw. `sub_vault_id` selects the source profile; `shares_to_burn` is
 /// the I80F48-raw share count to redeem.
 #[allow(clippy::too_many_arguments)]
 pub fn global_vault_withdraw_instruction(
@@ -35,7 +35,7 @@ pub fn global_vault_withdraw_instruction(
     liquidity_vault: &Pubkey,
     bank_liquidity_vault_authority: &Pubkey,
     marginfi_program: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
     shares_to_burn: u128,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
@@ -47,7 +47,7 @@ pub fn global_vault_withdraw_instruction(
     let mut data = YdeltaInstruction::GlobalVaultWithdraw.to_vec();
     GlobalVaultWithdrawParams {
         shares_to_burn,
-        profile_id,
+        sub_vault_id,
     }
     .serialize(&mut data)
     .unwrap();

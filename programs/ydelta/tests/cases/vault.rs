@@ -1,8 +1,8 @@
 //! `GlobalVault` bootstrap tests.
 //!
 //! Native (no marginfi) coverage:
-//! - Account-count invariants for `create_vault` / `create_risk_profile`.
-//! - Borsh round-trip on `CreateRiskProfileParams`.
+//! - Account-count invariants for `create_vault` / `create_sub_vault`.
+//! - Borsh round-trip on `CreateSubVaultParams`.
 //! - PDA derivation determinism.
 //!
 //! SBPF (with marginfi) coverage lands later in Group C alongside the
@@ -14,28 +14,28 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 
 use ydelta::program::instruction_builders::{
-    cancel_order_for_risk_profile_instruction::cancel_order_for_risk_profile_instruction,
+    cancel_order_for_sub_vault_instruction::cancel_order_for_sub_vault_instruction,
     claim_curator_fee_instruction::claim_curator_fee_instruction,
-    create_risk_profile_instruction::create_risk_profile_instruction,
+    create_sub_vault_instruction::create_sub_vault_instruction,
     create_vault_instruction::create_vault_instruction,
     global_vault_deposit_instruction::global_vault_deposit_instruction,
     global_vault_withdraw_instruction::global_vault_withdraw_instruction,
-    place_order_for_risk_profile_instruction::place_order_for_risk_profile_instruction,
+    place_order_for_sub_vault_instruction::place_order_for_sub_vault_instruction,
     set_vault_pause_instruction::set_vault_pause_instruction,
-    update_order_for_risk_profile_instruction::update_order_for_risk_profile_instruction,
+    update_order_for_sub_vault_instruction::update_order_for_sub_vault_instruction,
 };
-use ydelta::program::processor::cancel_order_for_risk_profile::CancelOrderForRiskProfileParams;
+use ydelta::program::processor::cancel_order_for_sub_vault::CancelOrderForSubVaultParams;
 use ydelta::program::processor::claim_curator_fee::ClaimCuratorFeeParams;
-use ydelta::program::processor::create_risk_profile::CreateRiskProfileParams;
+use ydelta::program::processor::create_sub_vault::CreateSubVaultParams;
 use ydelta::program::processor::global_vault_deposit::GlobalVaultDepositParams;
 use ydelta::program::processor::global_vault_withdraw::GlobalVaultWithdrawParams;
-use ydelta::program::processor::place_order_for_risk_profile::PlaceOrderForRiskProfileParams;
-use ydelta::program::processor::update_order_for_risk_profile::UpdateOrderForRiskProfileParams;
+use ydelta::program::processor::place_order_for_sub_vault::PlaceOrderForSubVaultParams;
+use ydelta::program::processor::update_order_for_sub_vault::UpdateOrderForSubVaultParams;
 use ydelta::state::loan::LoanFixed;
 use ydelta::state::vault::{
     global_vault_integration_account_pda, global_vault_pda, global_vault_signer_pda,
 };
-use ydelta::state::{LOAN_FIXED_SIZE, OWNER_KIND_RISK_PROFILE, OWNER_KIND_USER};
+use ydelta::state::{LOAN_FIXED_SIZE, OWNER_KIND_SUB_VAULT, OWNER_KIND_USER};
 
 #[test]
 fn create_vault_ix_has_thirteen_accounts() {
@@ -68,29 +68,29 @@ fn create_vault_ix_has_thirteen_accounts() {
 }
 
 #[test]
-fn create_risk_profile_ix_has_four_accounts() {
+fn create_sub_vault_ix_has_four_accounts() {
     let mint = Pubkey::new_unique();
     let payer = Keypair::new();
     let curator = Pubkey::new_unique();
-    let ix = create_risk_profile_instruction(&mint, &payer.pubkey(), &curator, Some(5_000), 30 * 86_400);
+    let ix = create_sub_vault_instruction(&mint, &payer.pubkey(), &curator, Some(5_000), 30 * 86_400);
     // payer (signer) + global_config + vault PDA + system_program.
     assert_eq!(
         ix.accounts.len(),
         4,
-        "create_risk_profile account list includes global_config gate"
+        "create_sub_vault account list includes global_config gate"
     );
 }
 
 #[test]
-fn create_risk_profile_params_borsh_round_trip() {
-    let original = CreateRiskProfileParams {
+fn create_sub_vault_params_borsh_round_trip() {
+    let original = CreateSubVaultParams {
         curator: Pubkey::new_unique(),
         max_ltv_bps: Some(5_000),
         max_term_seconds: 30 * 86_400,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
-    let decoded = CreateRiskProfileParams::try_from_slice(&data).unwrap();
+    let decoded = CreateSubVaultParams::try_from_slice(&data).unwrap();
     assert_eq!(decoded.curator, original.curator);
     assert_eq!(decoded.max_ltv_bps, Some(5_000));
     assert_eq!(decoded.max_term_seconds, 30 * 86_400);
@@ -152,7 +152,7 @@ fn global_vault_deposit_ix_has_fourteen_accounts() {
         &Pubkey::new_unique(), // lending_pool
         &Pubkey::new_unique(), // liquidity_vault
         &Pubkey::new_unique(), // marginfi_program
-        0,                     // profile_id
+        0,                     // sub_vault_id
         100_000,               // amount_atoms
     );
     assert_eq!(
@@ -180,7 +180,7 @@ fn global_vault_withdraw_ix_has_sixteen_accounts() {
         &Pubkey::new_unique(), // liquidity_vault
         &Pubkey::new_unique(), // bank_liquidity_vault_authority
         &Pubkey::new_unique(), // marginfi_program
-        0,                     // profile_id
+        0,                     // sub_vault_id
         100_000_000,           // shares_to_burn
     );
     // global_vault_deposit (15) + lending_pool_oracle + bank_liquidity_vault_authority = 17.
@@ -195,37 +195,37 @@ fn global_vault_withdraw_ix_has_sixteen_accounts() {
 fn global_vault_deposit_params_borsh_round_trip() {
     let original = GlobalVaultDepositParams {
         amount_atoms: 100_000,
-        profile_id: 7,
+        sub_vault_id: 7,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
     let decoded = GlobalVaultDepositParams::try_from_slice(&data).unwrap();
     assert_eq!(decoded.amount_atoms, 100_000);
-    assert_eq!(decoded.profile_id, 7);
+    assert_eq!(decoded.sub_vault_id, 7);
 }
 
 #[test]
 fn global_vault_withdraw_params_borsh_round_trip() {
     let original = GlobalVaultWithdrawParams {
         shares_to_burn: 12_345_678_901_234_u128,
-        profile_id: 3,
+        sub_vault_id: 3,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
     let decoded = GlobalVaultWithdrawParams::try_from_slice(&data).unwrap();
     assert_eq!(decoded.shares_to_burn, 12_345_678_901_234_u128);
-    assert_eq!(decoded.profile_id, 3);
+    assert_eq!(decoded.sub_vault_id, 3);
 }
 
 // ─────────────────── Group E — curator ixs ───────────────────
 
 #[test]
-fn place_order_for_risk_profile_ix_has_six_accounts() {
+fn place_order_for_sub_vault_ix_has_six_accounts() {
     let mint = Pubkey::new_unique();
     let market = Pubkey::new_unique();
     let fee_payer = Keypair::new();
     let curator = Keypair::new();
-    let ix = place_order_for_risk_profile_instruction(
+    let ix = place_order_for_sub_vault_instruction(
         &mint,
         &market,
         &fee_payer.pubkey(),
@@ -239,12 +239,12 @@ fn place_order_for_risk_profile_ix_has_six_accounts() {
 }
 
 #[test]
-fn cancel_order_for_risk_profile_ix_has_six_accounts() {
+fn cancel_order_for_sub_vault_ix_has_six_accounts() {
     let mint = Pubkey::new_unique();
     let market = Pubkey::new_unique();
     let fee_payer = Keypair::new();
     let curator = Keypair::new();
-    let ix = cancel_order_for_risk_profile_instruction(
+    let ix = cancel_order_for_sub_vault_instruction(
         &mint,
         &market,
         &fee_payer.pubkey(),
@@ -255,12 +255,12 @@ fn cancel_order_for_risk_profile_ix_has_six_accounts() {
 }
 
 #[test]
-fn update_order_for_risk_profile_ix_has_six_accounts() {
+fn update_order_for_sub_vault_ix_has_six_accounts() {
     let mint = Pubkey::new_unique();
     let market = Pubkey::new_unique();
     let fee_payer = Keypair::new();
     let curator = Keypair::new();
-    let ix = update_order_for_risk_profile_instruction(
+    let ix = update_order_for_sub_vault_instruction(
         &mint,
         &market,
         &fee_payer.pubkey(),
@@ -274,42 +274,42 @@ fn update_order_for_risk_profile_ix_has_six_accounts() {
 }
 
 #[test]
-fn place_order_for_risk_profile_params_borsh_round_trip() {
-    let original = PlaceOrderForRiskProfileParams {
-        profile_id: 5,
+fn place_order_for_sub_vault_params_borsh_round_trip() {
+    let original = PlaceOrderForSubVaultParams {
+        sub_vault_id: 5,
         rate_bps: 800,
         term_seconds: 30 * 86_400,
         flags: 0,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
-    let decoded = PlaceOrderForRiskProfileParams::try_from_slice(&data).unwrap();
-    assert_eq!(decoded.profile_id, 5);
+    let decoded = PlaceOrderForSubVaultParams::try_from_slice(&data).unwrap();
+    assert_eq!(decoded.sub_vault_id, 5);
     assert_eq!(decoded.rate_bps, 800);
     assert_eq!(decoded.term_seconds, 30 * 86_400);
 }
 
 #[test]
-fn cancel_order_for_risk_profile_params_borsh_round_trip() {
-    let original = CancelOrderForRiskProfileParams { profile_id: 5 };
+fn cancel_order_for_sub_vault_params_borsh_round_trip() {
+    let original = CancelOrderForSubVaultParams { sub_vault_id: 5 };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
-    let decoded = CancelOrderForRiskProfileParams::try_from_slice(&data).unwrap();
-    assert_eq!(decoded.profile_id, 5);
+    let decoded = CancelOrderForSubVaultParams::try_from_slice(&data).unwrap();
+    assert_eq!(decoded.sub_vault_id, 5);
 }
 
 #[test]
-fn update_order_for_risk_profile_params_borsh_round_trip() {
-    let original = UpdateOrderForRiskProfileParams {
-        profile_id: 5,
+fn update_order_for_sub_vault_params_borsh_round_trip() {
+    let original = UpdateOrderForSubVaultParams {
+        sub_vault_id: 5,
         new_rate_bps: 900,
         new_term_seconds: 45 * 86_400,
         new_flags: 0,
     };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
-    let decoded = UpdateOrderForRiskProfileParams::try_from_slice(&data).unwrap();
-    assert_eq!(decoded.profile_id, 5);
+    let decoded = UpdateOrderForSubVaultParams::try_from_slice(&data).unwrap();
+    assert_eq!(decoded.sub_vault_id, 5);
     assert_eq!(decoded.new_rate_bps, 900);
     assert_eq!(decoded.new_term_seconds, 45 * 86_400);
 }
@@ -340,11 +340,11 @@ fn claim_curator_fee_ix_has_fourteen_accounts() {
 
 #[test]
 fn claim_curator_fee_params_borsh_round_trip() {
-    let original = ClaimCuratorFeeParams { profile_id: 3 };
+    let original = ClaimCuratorFeeParams { sub_vault_id: 3 };
     let mut data = Vec::new();
     original.serialize(&mut data).unwrap();
     let decoded = ClaimCuratorFeeParams::try_from_slice(&data).unwrap();
-    assert_eq!(decoded.profile_id, 3);
+    assert_eq!(decoded.sub_vault_id, 3);
 }
 
 /// Pins the curator-fee accumulator arithmetic `claim_curator_fee`
@@ -412,7 +412,7 @@ fn set_vault_pause_ix_has_three_accounts() {
 
 #[test]
 fn loan_fixed_grows_to_carry_vault_lender_fields() {
-    // LoanFixed carries (lender_kind, lender_profile_id, _pad,
+    // LoanFixed carries (lender_kind, lender_sub_vault_id, _pad,
     // lender_global_vault) so vault-funded loans can route repayment
     // back to the originating profile.
     assert_eq!(size_of::<LoanFixed>(), LOAN_FIXED_SIZE);
@@ -440,7 +440,7 @@ fn loan_fixed_grows_to_carry_vault_lender_fields() {
         SHARE_VALUE_ONE,
     );
     assert_eq!(loan.lender_kind, 0); // wallet
-    assert_eq!(loan.lender_profile_id, 0);
+    assert_eq!(loan.lender_sub_vault_id, 0);
     assert_eq!(loan.lender_global_vault, Pubkey::default());
     // Pin the rest of the constructor result so a future refactor
     // can't silently break the field-from-MatchedLoan stamping.
@@ -486,28 +486,28 @@ fn loan_fixed_with_vault_lender_fields_stamped() {
         ydelta::state::loan::LoanType::Fixed,
         0,
         1, // lender_kind = Vault
-        7, // lender_profile_id
+        7, // lender_sub_vault_id
         vault_pk,
         0, // curator_fee_bps_snapshot
         SHARE_VALUE_ONE,
         SHARE_VALUE_ONE,
     );
     assert_eq!(loan.lender_kind, 1);
-    assert_eq!(loan.lender_profile_id, 7);
+    assert_eq!(loan.lender_sub_vault_id, 7);
     assert_eq!(loan.lender_global_vault, vault_pk);
 }
 
 /// Pin the seat owner-kind discriminants: user seats and vault
-/// (risk-profile) seats must stay distinct, and the literal values are
+/// (sub-vault) seats must stay distinct, and the literal values are
 /// load-bearing for tree-key ordering and loader gates.
 /// (Secondary loan sale is out of scope for v1 — see docs/v1-spec.md §9;
 /// this test used to carry that framing but only ever pinned constants.)
 #[test]
 fn owner_kind_discriminants_are_pinned() {
-    // Sanity: vault-lender loans (`lender_kind = OWNER_KIND_RISK_PROFILE`)
+    // Sanity: vault-lender loans (`lender_kind = OWNER_KIND_SUB_VAULT`)
     // must be a different value than the wallet path the loader
     // gates on.
-    assert_ne!(OWNER_KIND_USER, OWNER_KIND_RISK_PROFILE);
+    assert_ne!(OWNER_KIND_USER, OWNER_KIND_SUB_VAULT);
     assert_eq!(OWNER_KIND_USER, 0);
-    assert_eq!(OWNER_KIND_RISK_PROFILE, 1);
+    assert_eq!(OWNER_KIND_SUB_VAULT, 1);
 }

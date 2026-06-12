@@ -1,7 +1,7 @@
 //! `RestingOrder` is the per-ask node that lives in a market's `Bookside`
 //! red-black tree. Bids never rest — they are taker-only and matched at
 //! `place_order` time — so every resting order is an ask placed by a
-//! risk-profile curator. Ord/Eq are tuned so the tree's max-index points
+//! sub-vault curator. Ord/Eq are tuned so the tree's max-index points
 //! at the best (lowest-rate, lowest-sequence) ask.
 
 use std::cmp::Ordering;

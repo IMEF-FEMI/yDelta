@@ -1,4 +1,4 @@
-//! Builds the `YdeltaInstruction::UpdateRiskProfile` instruction:
+//! Builds the `YdeltaInstruction::UpdateSubVault` instruction:
 //! vault-admin patches a profile's mutable policy fields. Rejected on
 //! sunset profiles.
 
@@ -9,28 +9,28 @@ use solana_program::{
     system_program,
 };
 
-use crate::program::processor::update_risk_profile::UpdateRiskProfileParams;
+use crate::program::processor::update_sub_vault::UpdateSubVaultParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Builds the `UpdateRiskProfile` instruction for the vault keyed by
+/// Builds the `UpdateSubVault` instruction for the vault keyed by
 /// `mint`. `payer` (signer) must be the vault admin. `new_max_ltv_bps`
 /// overrides the LTV cap in basis points when `Some`; `new_max_term_seconds`
 /// overrides the max term in seconds when `Some`. `None` fields are left
 /// unchanged.
-pub fn update_risk_profile_instruction(
+pub fn update_sub_vault_instruction(
     mint: &Pubkey,
     payer: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
     new_max_ltv_bps: Option<u16>,
     new_max_term_seconds: Option<u32>,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
 
-    let mut data = YdeltaInstruction::UpdateRiskProfile.to_vec();
-    UpdateRiskProfileParams {
-        profile_id,
+    let mut data = YdeltaInstruction::UpdateSubVault.to_vec();
+    UpdateSubVaultParams {
+        sub_vault_id,
         new_max_ltv_bps,
         new_max_term_seconds,
     }

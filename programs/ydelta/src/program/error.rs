@@ -72,29 +72,29 @@ pub enum YdeltaError {
 
     #[error("vault: passed mint does not match GlobalVaultFixed.mint")]
     VaultWrongMint = 25,
-    #[error("vault: profile_id not found in vault.risk_profiles tree")]
-    VaultProfileNotFound = 26,
+    #[error("vault: sub_vault_id not found in vault.sub_vaults tree")]
+    SubVaultNotFound = 26,
 
-    #[error("vault order: term_seconds exceeds RiskProfile.max_term_seconds")]
+    #[error("vault order: term_seconds exceeds SubVault.max_term_seconds")]
     VaultOrderTermExceedsProfileMax = 28,
-    #[error("vault: signer is not RiskProfile.curator")]
+    #[error("vault: signer is not SubVault.curator")]
     VaultCuratorRequired = 29,
     #[error("vault: signer is not GlobalVaultFixed.global_vault_admin")]
     VaultAdminRequired = 30,
 
-    #[error("place_order_for_risk_profile: a RiskProfileOrderRef already exists for (market, profile_id)")]
-    VaultProfileOrderExists = 32,
+    #[error("place_order_for_sub_vault: a SubVaultOrderRef already exists for (market, sub_vault_id)")]
+    SubVaultOrderExists = 32,
     #[error("global_vault_withdraw: idle_principal_atoms < requested atoms (deployed liquidity cannot be withdrawn until repaid)")]
     VaultInsufficientIdleAtoms = 33,
     #[error("vault: profile has nonzero seats / orders / loans / shares; cannot remove")]
-    VaultProfileNotEmpty = 34,
+    SubVaultNotEmpty = 34,
 
-    #[error("create_risk_profile: profile_id already exists in vault")]
-    VaultProfileIdExists = 36,
-    #[error("create_risk_profile: max_ltv_bps must be between 1 and 9_999")]
-    VaultProfileLtvOutOfRange = 37,
-    #[error("create_risk_profile: max_term_seconds must be > 0")]
-    VaultProfileTermInvalid = 38,
+    #[error("create_sub_vault: sub_vault_id already exists in vault")]
+    SubVaultIdExists = 36,
+    #[error("create_sub_vault: max_ltv_bps must be between 1 and 9_999")]
+    SubVaultLtvOutOfRange = 37,
+    #[error("create_sub_vault: max_term_seconds must be > 0")]
+    SubVaultTermInvalid = 38,
 
     #[error(
         "settle_matured_loan: now <= matures_at_unix + grace_period_seconds (loan not yet matured)"
@@ -132,14 +132,14 @@ pub enum YdeltaError {
              collateral — state corruption, refusing silent collateral drop")]
     InsufficientEncumberedCollateral = 53,
 
-    #[error("risk profile is sunset: new deposits / new orders / order updates / \
+    #[error("sub-vault is sunset: new deposits / new orders / order updates / \
              matches are rejected; only withdrawals, fee claims, and cancellations \
              are allowed during wind-down")]
-    VaultProfileSunset = 54,
+    SubVaultSunset = 54,
 
-    #[error("risk profile is not sunset: this admin operation requires the profile \
-             to be in sunset state first (call SunsetRiskProfile)")]
-    VaultProfileNotSunset = 55,
+    #[error("sub-vault is not sunset: this admin operation requires the profile \
+             to be in sunset state first (call SunsetSubVault)")]
+    SubVaultNotSunset = 55,
 }
 
 impl From<YdeltaError> for ProgramError {

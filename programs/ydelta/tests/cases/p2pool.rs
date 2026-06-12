@@ -237,7 +237,7 @@ async fn bid_partial_match_residual_p2pool_borrows() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -280,7 +280,7 @@ async fn bid_partial_match_residual_p2pool_borrows() {
 
     // Two MatchedLoans queued — one Fixed, one P2Pool. The vault ask
     // persists on the book (the matching engine never removes a
-    // risk-profile ask — it's unbounded and only the curator removes
+    // sub-vault ask — it's unbounded and only the curator removes
     // it); the bid residual went to P2Pool (not rested).
     let market = fixture.read_market_fixed().await;
     assert_eq!(
@@ -289,14 +289,14 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     );
     assert_ne!(
         market.asks_root_index, NIL,
-        "the vault risk-profile ask must persist after the cross",
+        "the vault sub-vault ask must persist after the cross",
     );
 
     // Crank both queue nodes → two `LoanFixed` PDAs. The Fixed cross
-    // has a vault-profile lender → risk-profile cranker; the P2Pool
+    // has a vault-profile lender → sub-vault cranker; the P2Pool
     // residual has no vault lender → plain cranker.
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;

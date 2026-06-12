@@ -117,7 +117,7 @@ pub struct LoanFixed {
     pub collateral_atoms: u64,
     /// Spread-side interest accumulated for the protocol.
     pub accumulated_protocol_fee_atoms: u64,
-    /// Curator-side fee accumulated when the lender is a risk profile.
+    /// Curator-side fee accumulated when the lender is a sub-vault.
     pub accumulated_curator_fee_atoms: u64,
 
     /// Unix-ts when the loan started.
@@ -149,11 +149,11 @@ pub struct LoanFixed {
     /// PDA bump.
     pub bump: u8,
 
-    /// Lender's `owner_kind` tag (user wallet vs risk profile).
+    /// Lender's `owner_kind` tag (user wallet vs sub-vault).
     pub lender_kind: u8,
 
-    /// Lender risk-profile id when `lender_kind == OWNER_KIND_RISK_PROFILE`.
-    pub lender_profile_id: u8,
+    /// Lender sub-vault id when `lender_kind == OWNER_KIND_SUB_VAULT`.
+    pub lender_sub_vault_id: u8,
 
     _reserved_byte: u8,
 
@@ -162,7 +162,7 @@ pub struct LoanFixed {
     pub curator_fee_bps_snapshot: u16,
     _padding1: [u8; 2],
 
-    /// Lender's global-vault pubkey when the lender is a risk profile.
+    /// Lender's global-vault pubkey when the lender is a sub-vault.
     pub lender_global_vault: Pubkey,
 
     /// Principal portion physically retired by all partial resolutions.
@@ -348,7 +348,7 @@ impl LoanFixed {
         loan_type: LoanType,
         borrower_marginfi_borrow_shares: u128,
         lender_kind: u8,
-        lender_profile_id: u8,
+        lender_sub_vault_id: u8,
         lender_global_vault: Pubkey,
         curator_fee_bps_snapshot: u16,
         lender_debt_share_price_snapshot_fp48: crate::math::Fp48,
@@ -382,7 +382,7 @@ impl LoanFixed {
             version: crate::state::constants::ACCOUNT_LAYOUT_VERSION,
             bump,
             lender_kind,
-            lender_profile_id,
+            lender_sub_vault_id,
             _reserved_byte: 0,
             curator_fee_bps_snapshot,
             _padding1: [0; 2],
@@ -486,7 +486,7 @@ pub fn accrue_loan(loan: &mut LoanFixed, now: i64, _grace_period_seconds: u32) -
         .checked_sub(cum_spread_prior)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    let curator_active = loan.lender_kind == crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE
+    let curator_active = loan.lender_kind == crate::state::claimed_seat::OWNER_KIND_SUB_VAULT
         && loan.curator_fee_bps_snapshot > 0;
     let cum_curator_fee = |cum_lender_gross: u128| -> Result<u128, ProgramError> {
         if !curator_active {
@@ -816,7 +816,7 @@ mod tests {
         let make = || -> LoanFixed {
             let mut l = fresh_loan();
 
-            l.lender_kind = crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
+            l.lender_kind = crate::state::claimed_seat::OWNER_KIND_SUB_VAULT;
             l.curator_fee_bps_snapshot = 137;
             l
         };
@@ -1047,7 +1047,7 @@ mod tests {
     fn bad_debt_close_claws_back_curator_fee() {
         let mut loan = fresh_loan();
 
-        loan.lender_kind = crate::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
+        loan.lender_kind = crate::state::claimed_seat::OWNER_KIND_SUB_VAULT;
         loan.curator_fee_bps_snapshot = 1_000;
         let m = loan.matures_at_unix;
         accrue_loan(&mut loan, m, TEST_GRACE).unwrap();

@@ -35,12 +35,12 @@ mod cases {
     // reads from the live bank); SBF-only.
     #[cfg(feature = "test-sbf")]
     mod bank_config_view;
-    // Every loan's lender is a vault risk profile, so claims go through
-    // the risk-profile claim path.
+    // Every loan's lender is a vault sub-vault, so claims go through
+    // the sub-vault claim path.
     #[cfg(feature = "test-sbf")]
-    mod claim_repayment_for_risk_profile;
+    mod claim_repayment_for_sub_vault;
     // `convert_p2pool_to_fixed`: the matcher
-    // (`match_p2pool_residual_against_asks`) crosses vault risk-profile
+    // (`match_p2pool_residual_against_asks`) crosses vault sub-vault
     // asks under the unbounded-vault-ask model, so the variable→fixed
     // refinance works.
     #[cfg(feature = "test-sbf")]
@@ -62,7 +62,7 @@ mod cases {
     #[cfg(feature = "test-sbf")]
     mod repay;
     #[cfg(feature = "test-sbf")]
-    mod sunset_risk_profile;
+    mod sunset_sub_vault;
     #[cfg(feature = "test-sbf")]
     mod vault_e2e;
     #[cfg(feature = "test-sbf")]

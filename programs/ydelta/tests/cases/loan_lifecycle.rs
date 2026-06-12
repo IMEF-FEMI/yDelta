@@ -36,7 +36,7 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -70,7 +70,7 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -80,7 +80,7 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
     fixture.assert_vault_idle_invariant(1).await;
 
     // Borrower repays full. Per the repay/claim split this closes the
-    // loan PDA in-place and applies all per-loan risk-profile decrements;
+    // loan PDA in-place and applies all per-loan sub-vault decrements;
     // claim is now a pure seat→vault sweep with no time gate.
     fixture
         .repay(&bob, 0, bob_usdc, 0, /*full_repay=*/ true)
@@ -90,7 +90,7 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
     fixture.assert_loan_conservation_holds(0).await;
     fixture.refresh_blockhash().await;
 
-    let profile_pre_claim = fixture.read_risk_profile(1).await;
+    let profile_pre_claim = fixture.read_sub_vault(1).await;
     let pre_drift =
         (profile_pre_claim.total_principal_atoms as i128 - lender_deposit_atoms as i128).abs();
     assert!(
@@ -103,13 +103,13 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 1)
+        .claim_repayment_for_sub_vault(&stranger, 1)
         .await
         .unwrap();
 
     // Vault profile recovered its principal plus realised lender
     // interest, and the active-loan tracking zeroed out.
-    let profile_post = fixture.read_risk_profile(1).await;
+    let profile_post = fixture.read_sub_vault(1).await;
     assert!(
         profile_post.total_principal_atoms + 2 >= lender_deposit_atoms,
         "profile total_principal {} fell below initial deposit {} after lifecycle",
@@ -155,7 +155,7 @@ async fn two_independent_loans_remain_disjoint() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -235,12 +235,12 @@ async fn two_independent_loans_remain_disjoint() {
 
     // Crank both.
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .crank_matched_loan_for_risk_profile(1)
+        .crank_matched_loan_for_sub_vault(1)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -259,7 +259,7 @@ async fn two_independent_loans_remain_disjoint() {
     fixture.assert_loan_conservation_holds(1).await;
     // Both loans share the same lender (vault profile 0); their
     // principals must sum to the profile's deployed_principal_atoms.
-    let profile_mid = fixture.read_risk_profile(1).await;
+    let profile_mid = fixture.read_sub_vault(1).await;
     assert_eq!(
         profile_mid.deployed_principal_atoms,
         loan0.principal_debt_atoms + loan1.principal_debt_atoms,
@@ -280,7 +280,7 @@ async fn two_independent_loans_remain_disjoint() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_risk_profile(&stranger, 1)
+        .claim_repayment_for_sub_vault(&stranger, 1)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -301,11 +301,11 @@ async fn two_independent_loans_remain_disjoint() {
     fixture.refresh_blockhash().await;
     fixture
         // Under the repay/claim split, both loans share the vault's
-        // single risk-profile seat (profile_id=0). The new claim is a
+        // single sub-vault seat (sub_vault_id=0). The new claim is a
         // seat sweep, not per-loan; the previous-call form
-        // .claim_repayment_for_risk_profile(&stranger, 1, …) is now
+        // .claim_repayment_for_sub_vault(&stranger, 1, …) is now
         // expressed as a second sweep on the same profile.
-        .claim_repayment_for_risk_profile(&stranger, 1)
+        .claim_repayment_for_sub_vault(&stranger, 1)
         .await
         .unwrap();
 
@@ -320,6 +320,6 @@ async fn two_independent_loans_remain_disjoint() {
     }
 
     // Profile fully settled.
-    let profile_final = fixture.read_risk_profile(1).await;
+    let profile_final = fixture.read_sub_vault(1).await;
     assert_eq!(profile_final.deployed_principal_atoms, 0);
 }

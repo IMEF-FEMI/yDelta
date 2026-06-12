@@ -96,19 +96,19 @@ pub fn accept_global_vault_admin_instruction(mint: &Pubkey, pending_admin: &Pubk
     }
 }
 
-/// Builds the `TransferCurator` instruction for the `profile_id` curator
+/// Builds the `TransferCurator` instruction for the `sub_vault_id` curator
 /// role on the vault keyed by `mint`. `current_curator` (signer) stamps
 /// `new_curator` into the profile's `pending_curator`.
 pub fn transfer_curator_instruction(
     mint: &Pubkey,
     current_curator: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
     new_curator: &Pubkey,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
     let mut data = YdeltaInstruction::TransferCurator.to_vec();
     TransferCuratorParams {
-        profile_id,
+        sub_vault_id,
         new_curator: *new_curator,
     }
     .serialize(&mut data)
@@ -124,17 +124,17 @@ pub fn transfer_curator_instruction(
     }
 }
 
-/// Builds the `AcceptCurator` instruction for the `profile_id` curator role
+/// Builds the `AcceptCurator` instruction for the `sub_vault_id` curator role
 /// on the vault keyed by `mint`. `pending_curator` (signer) finalizes the
 /// handoff.
 pub fn accept_curator_instruction(
     mint: &Pubkey,
     pending_curator: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
     let mut data = YdeltaInstruction::AcceptCurator.to_vec();
-    AcceptCuratorParams { profile_id }
+    AcceptCuratorParams { sub_vault_id }
         .serialize(&mut data)
         .unwrap();
     Instruction {

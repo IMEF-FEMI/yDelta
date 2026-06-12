@@ -4,7 +4,7 @@
 //! keeper's collateral token account. Supports partial settlement (must clear
 //! at least max(1% of outstanding, 1000 atoms)) and full settlement; full
 //! settlement performs the same close-out as `repay` for Fixed loans
-//! (lender seat credit, encumbrance + open_lend_count decrement, risk-profile
+//! (lender seat credit, encumbrance + open_lend_count decrement, sub-vault
 //! NAV/weighted-rate/pending-claim/curator-fee updates, loan PDA closed and
 //! rent refunded to the original cranker).
 
@@ -469,7 +469,7 @@ pub fn process_settle_matured_loan(
     if loan_type == LoanType::Fixed && fixed_credited_shares > 0 {
         let (
             lender_seat_index,
-            lender_profile_id,
+            lender_sub_vault_id,
             loan_principal,
             loan_lender_rate,
             loan_curator_fee_bps,
@@ -492,7 +492,7 @@ pub fn process_settle_matured_loan(
             let header: &LoanFixed = bytemuck::from_bytes(&loan_data[..LOAN_FIXED_SIZE]);
             (
                 header.lender_seat_index,
-                header.lender_profile_id,
+                header.lender_sub_vault_id,
                 header.principal_debt_atoms,
                 header.lender_rate_bps,
                 header.curator_fee_bps_snapshot,
@@ -560,31 +560,31 @@ pub fn process_settle_matured_loan(
             let (fixed_bytes, dynamic) =
                 vault_data.split_at_mut(crate::state::GLOBAL_VAULT_FIXED_SIZE);
             let header: &crate::state::vault::GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
-            let probe = crate::state::vault::RiskProfile::new_empty(
-                lender_profile_id,
+            let probe = crate::state::vault::SubVault::new_empty(
+                lender_sub_vault_id,
                 Pubkey::default(),
                 1,
                 1,
             );
             let profile_idx = {
-                let tree = crate::state::vault::RiskProfileTreeReadOnly::new(
+                let tree = crate::state::vault::SubVaultTreeReadOnly::new(
                     dynamic,
-                    header.risk_profiles_root_index,
+                    header.sub_vaults_root_index,
                     hypertree::NIL,
                 );
-                <crate::state::vault::RiskProfileTreeReadOnly as hypertree::HyperTreeReadOperations>::lookup_index(&tree, &probe)
+                <crate::state::vault::SubVaultTreeReadOnly as hypertree::HyperTreeReadOperations>::lookup_index(&tree, &probe)
             };
             require!(
                 profile_idx != hypertree::NIL,
-                YdeltaError::VaultProfileNotFound,
-                "settle_matured_loan: profile_id {} not found on global_vault",
-                lender_profile_id
+                YdeltaError::SubVaultNotFound,
+                "settle_matured_loan: sub_vault_id {} not found on global_vault",
+                lender_sub_vault_id
             )?;
-            let profile = crate::state::vault::get_mut_helper_risk_profile(dynamic, profile_idx)
+            let profile = crate::state::vault::get_mut_helper_sub_vault(dynamic, profile_idx)
                 .get_mut_value();
             let share_value_fp48 =
                 crate::state::vault::read_bank_asset_share_value_fp48(debt_bank.info)?;
-            crate::state::vault::accrue_risk_profile(profile, now, share_value_fp48)?;
+            crate::state::vault::accrue_sub_vault(profile, now, share_value_fp48)?;
 
             let weighted_delta: u128 = (loan_principal as u128)
                 .checked_mul(loan_lender_rate as u128)

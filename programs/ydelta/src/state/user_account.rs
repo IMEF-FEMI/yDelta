@@ -1,7 +1,7 @@
 //! Per-user account that mirrors what the wallet has touched across the
 //! protocol. The header is followed by a free-list-backed dynamic region
 //! that holds three node types: `VaultPosition` (the user's shares in a
-//! `GlobalVault` risk profile), `MarketPosition` (a cached view of the
+//! `GlobalVault` sub-vault), `MarketPosition` (a cached view of the
 //! user's market seat balances), and `UserLoanRef` (an open-loan
 //! pointer). All three are payload-size identical so they share the
 //! same free list.
@@ -146,7 +146,7 @@ const_assert_eq!(
     USER_ACCOUNT_FREE_LIST_BLOCK_SIZE
 );
 
-/// User's slice of a single risk profile inside a `GlobalVault`. Mirrors
+/// User's slice of a single sub-vault inside a `GlobalVault`. Mirrors
 /// the depositor seat held inside the vault account so off-chain UIs can
 /// read shares without loading the vault.
 #[repr(C)]
@@ -154,8 +154,8 @@ const_assert_eq!(
 pub struct VaultPosition {
     /// Global vault pubkey this position is inside.
     pub vault: Pubkey,
-    /// Risk profile id within the vault.
-    pub profile_id: u8,
+    /// Sub-vault id within the vault.
+    pub sub_vault_id: u8,
     _pad0: [u8; 15],
     /// User's share balance in the profile.
     pub shares: u128,
@@ -177,7 +177,7 @@ const_assert_eq!(size_of::<VaultPosition>() % 8, 0);
 impl Ord for VaultPosition {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.vault.cmp(&other.vault) {
-            std::cmp::Ordering::Equal => self.profile_id.cmp(&other.profile_id),
+            std::cmp::Ordering::Equal => self.sub_vault_id.cmp(&other.sub_vault_id),
             ord => ord,
         }
     }
@@ -189,7 +189,7 @@ impl PartialOrd for VaultPosition {
 }
 impl PartialEq for VaultPosition {
     fn eq(&self, other: &Self) -> bool {
-        self.vault == other.vault && self.profile_id == other.profile_id
+        self.vault == other.vault && self.sub_vault_id == other.sub_vault_id
     }
 }
 impl Eq for VaultPosition {}
@@ -201,18 +201,18 @@ impl std::fmt::Display for VaultPosition {
         write!(
             f,
             "VaultPosition({},{})={}",
-            self.vault, self.profile_id, shares
+            self.vault, self.sub_vault_id, shares
         )
     }
 }
 
 impl VaultPosition {
     /// Build a position with identity fields set and balance fields
-    /// zeroed; equality only checks `(vault, profile_id)`.
-    pub fn new_empty(vault: Pubkey, profile_id: u8) -> Self {
+    /// zeroed; equality only checks `(vault, sub_vault_id)`.
+    pub fn new_empty(vault: Pubkey, sub_vault_id: u8) -> Self {
         Self {
             vault,
-            profile_id,
+            sub_vault_id,
             ..Default::default()
         }
     }
@@ -317,8 +317,8 @@ pub struct UserLoanRef {
     pub role: u8,
     /// One of the [`CounterpartyKind`] variants.
     pub counterparty_kind: u8,
-    /// Counterparty's risk-profile id when applicable.
-    pub counterparty_profile_id: u8,
+    /// Counterparty's sub-vault id when applicable.
+    pub counterparty_sub_vault_id: u8,
     _padding: [u8; 19],
 
     _reserved: [u64; 4],
@@ -366,7 +366,7 @@ pub enum LoanRole {
 pub enum CounterpartyKind {
     /// Counterparty is another user wallet.
     UserWallet = 0,
-    /// Counterparty is a risk profile inside a `GlobalVault`.
+    /// Counterparty is a sub-vault inside a `GlobalVault`.
     GlobalVault = 1,
 }
 
@@ -508,16 +508,16 @@ pub fn upsert_market_position(
     Ok(order_index)
 }
 
-/// Inserts a `VaultPosition` for `(vault, profile_id)` if absent;
+/// Inserts a `VaultPosition` for `(vault, sub_vault_id)` if absent;
 /// returns the existing node index on hit. Bumps
 /// `vault_position_count` on insert.
 pub fn upsert_vault_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
     vault: Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Result<DataIndex, ProgramError> {
-    let probe = VaultPosition::new_empty(vault, profile_id);
+    let probe = VaultPosition::new_empty(vault, sub_vault_id);
     let existing_idx: DataIndex = {
         let tree = VaultPositionTreeReadOnly::new(dynamic, fixed.vault_positions_root_index, NIL);
         tree.lookup_index(&probe)
@@ -545,15 +545,15 @@ pub fn upsert_vault_position(
     Ok(order_index)
 }
 
-/// Removes the `VaultPosition` for `(vault, profile_id)` and returns the
+/// Removes the `VaultPosition` for `(vault, sub_vault_id)` and returns the
 /// freed node index, or `NIL` when not present.
 pub fn remove_vault_position(
     fixed: &mut UserAccountFixed,
     dynamic: &mut [u8],
     vault: Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Result<DataIndex, ProgramError> {
-    let probe = VaultPosition::new_empty(vault, profile_id);
+    let probe = VaultPosition::new_empty(vault, sub_vault_id);
     let idx: DataIndex = {
         let tree = VaultPositionTreeReadOnly::new(dynamic, fixed.vault_positions_root_index, NIL);
         tree.lookup_index(&probe)
@@ -639,7 +639,7 @@ pub fn insert_open_loan(
     market: Pubkey,
     role: LoanRole,
     counterparty_kind: CounterpartyKind,
-    counterparty_profile_id: u8,
+    counterparty_sub_vault_id: u8,
     principal_atoms: u64,
     rate_bps: u16,
     started_at_unix: i64,
@@ -672,7 +672,7 @@ pub fn insert_open_loan(
         rate_bps,
         role: role as u8,
         counterparty_kind: counterparty_kind as u8,
-        counterparty_profile_id,
+        counterparty_sub_vault_id,
         _padding: [0; 19],
         _reserved: [0; 4],
     };

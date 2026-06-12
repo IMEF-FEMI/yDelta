@@ -30,25 +30,25 @@ use solana_sdk::{
 
 use ydelta::program::instruction_builders::{
     claim_curator_fee_instruction::claim_curator_fee_instruction,
-    claim_repayment_for_risk_profile_instruction::claim_repayment_for_risk_profile_instruction,
+    claim_repayment_for_sub_vault_instruction::claim_repayment_for_sub_vault_instruction,
     claim_seat_instruction::claim_seat_instruction,
     create_market_instructions::create_market_instructions,
-    create_risk_profile_instruction::create_risk_profile_instruction,
+    create_sub_vault_instruction::create_sub_vault_instruction,
     create_vault_instruction::create_vault_instruction,
     deposit_instruction::deposit_instruction,
     global_vault_deposit_instruction::global_vault_deposit_instruction,
     global_vault_withdraw_instruction::global_vault_withdraw_instruction,
     liquidate_loan_instruction::liquidate_loan_instruction,
-    place_order_for_risk_profile_instruction::place_order_for_risk_profile_instruction,
+    place_order_for_sub_vault_instruction::place_order_for_sub_vault_instruction,
     place_order_instruction::place_order_instruction,
     process_matched_loan_instruction::{process_matched_loan_instruction, VaultSettleAddrs},
     repay_instruction::repay_instruction,
     settle_matured_loan_instruction::settle_matured_loan_instruction,
-    update_risk_profile_instruction::update_risk_profile_instruction,
+    update_sub_vault_instruction::update_sub_vault_instruction,
     withdraw_instruction::withdraw_instruction,
 };
 use ydelta::program::processor::create_market::CreateMarketParams;
-use ydelta::state::claimed_seat::OWNER_KIND_RISK_PROFILE;
+use ydelta::state::claimed_seat::OWNER_KIND_SUB_VAULT;
 use ydelta::state::market::{
     get_helper_seat, get_mut_helper_seat, MarketFixed, MatchedLoan, MatchedLoanTreeReadOnly,
 };
@@ -69,7 +69,7 @@ pub struct MarketFixture {
     pub market: Keypair,
     /// Optional secondary market on the same `(USDC, wSOL)` pair, lazily
     /// stood up by `create_second_market()`. The vault is per-mint, so
-    /// a single risk_profile can claim seats in both markets and earn
+    /// a single sub_vault can claim seats in both markets and earn
     /// yield from each — which is exactly what the multi-market test
     /// asserts. Same banks, same oracles; only the orderbook PDAs and
     /// per-market integration accounts differ.
@@ -133,7 +133,7 @@ impl MarketFixture {
     }
 
     /// Stand up a second `(USDC, wSOL)` market on this fixture. Used by
-    /// the multi-market risk-profile test that asserts a profile in two
+    /// the multi-market sub-vault test that asserts a profile in two
     /// markets earns the SUM of both lender interests. After calling,
     /// `second_market_pubkey()` returns the second market's address.
     pub async fn create_second_market(&self) {
@@ -797,11 +797,11 @@ impl MarketFixture {
         self.process(ix, &[]).await
     }
 
-    /// Cranker promote for a risk-profile-funded MatchedLoan. Threads
+    /// Cranker promote for a sub-vault-funded MatchedLoan. Threads
     /// the trailing vault-settle accounts so `do_vault_settle` can run
     /// the 3-CPI atom migration (vault.integration → global_vault_staging →
     /// market_debt_vault → market.lender_integration_account).
-    pub async fn crank_matched_loan_for_risk_profile(
+    pub async fn crank_matched_loan_for_sub_vault(
         &self,
         sequence: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
@@ -845,23 +845,23 @@ impl MarketFixture {
         self.process(ix, &[]).await
     }
 
-    /// Permissionless cranker — drains a fully-repaid risk-profile loan
+    /// Permissionless cranker — drains a fully-repaid sub-vault loan
     /// from `market.lender_integration_account` back into the
     /// GlobalVault's marginfi account, decrements per-market exposure
     /// usage, sweeps protocol-fee shares onto the market accumulator,
     /// Stateless seat sweeper — pulls all pending claim shares from the
-    /// vault's risk-profile market seat into the vault's integration
+    /// vault's sub-vault market seat into the vault's integration
     /// account. Per the repay/claim split, this NEVER touches the loan
     /// PDA. Caller is the signer; pass any keypair.
     ///
     /// Note: signature changed from `sequence: u64, cranker_refund` to
-    /// `risk_profile_id: u8`. The loan PDA is closed by repay/liquidate/
+    /// `sub_vault_id: u8`. The loan PDA is closed by repay/liquidate/
     /// settle now, so the per-loan address is irrelevant — claim keys
-    /// on the seat lookup by `(market, vault, risk_profile_id)`.
-    pub async fn claim_repayment_for_risk_profile(
+    /// on the seat lookup by `(market, vault, sub_vault_id)`.
+    pub async fn claim_repayment_for_sub_vault(
         &self,
         cranker: &Keypair,
-        risk_profile_id: u8,
+        sub_vault_id: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
         let market_pk = self.market.pubkey();
@@ -871,10 +871,10 @@ impl MarketFixture {
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
             &marginfi_mocks::ID,
         );
-        let ix = claim_repayment_for_risk_profile_instruction(
+        let ix = claim_repayment_for_sub_vault_instruction(
             &cranker.pubkey(),
             &market_pk,
-            risk_profile_id,
+            sub_vault_id,
             &gv,
             &mainnet::usdc_mint(),
             &mainnet::usdc_bank(),
@@ -893,9 +893,9 @@ impl MarketFixture {
         self.process_ixs(&[cu, ix], &[&kp]).await
     }
 
-    /// Variant of `crank_matched_loan_for_risk_profile` for an
+    /// Variant of `crank_matched_loan_for_sub_vault` for an
     /// arbitrary market. Used by the multi-market test.
-    pub async fn crank_matched_loan_for_risk_profile_in_market(
+    pub async fn crank_matched_loan_for_sub_vault_in_market(
         &self,
         market_pk: Pubkey,
         sequence: u64,
@@ -939,13 +939,13 @@ impl MarketFixture {
         self.process(ix, &[]).await
     }
 
-    /// Variant of `claim_repayment_for_risk_profile` for an arbitrary
+    /// Variant of `claim_repayment_for_sub_vault` for an arbitrary
     /// market.
-    pub async fn claim_repayment_for_risk_profile_in_market(
+    pub async fn claim_repayment_for_sub_vault_in_market(
         &self,
         cranker: &Keypair,
         market_pk: Pubkey,
-        risk_profile_id: u8,
+        sub_vault_id: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
         let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
@@ -954,10 +954,10 @@ impl MarketFixture {
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
             &marginfi_mocks::ID,
         );
-        let ix = claim_repayment_for_risk_profile_instruction(
+        let ix = claim_repayment_for_sub_vault_instruction(
             &cranker.pubkey(),
             &market_pk,
-            risk_profile_id,
+            sub_vault_id,
             &gv,
             &mainnet::usdc_mint(),
             &mainnet::usdc_bank(),
@@ -1443,19 +1443,19 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Admin creates a risk profile on the USDC vault. The
-    /// `profile_id` is assigned by the program (vault's monotonic
-    /// `next_profile_id` counter); off-chain tests that need to know
+    /// Admin creates a sub-vault on the USDC vault. The
+    /// `sub_vault_id` is assigned by the program (vault's monotonic
+    /// `next_sub_vault_id` counter); off-chain tests that need to know
     /// which id was assigned should read the
-    /// `RiskProfileCreatedLog` event or pre-snapshot the counter.
-    pub async fn create_risk_profile(
+    /// `SubVaultCreatedLog` event or pre-snapshot the counter.
+    pub async fn create_sub_vault(
         &self,
         admin: &Keypair,
         curator: Pubkey,
         max_ltv_bps: Option<u16>,
         max_term_seconds: u32,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = create_risk_profile_instruction(
+        let ix = create_sub_vault_instruction(
             &mainnet::usdc_mint(),
             &admin.pubkey(),
             &curator,
@@ -1471,7 +1471,7 @@ impl MarketFixture {
         &self,
         depositor: &Keypair,
         depositor_token: Pubkey,
-        profile_id: u8,
+        sub_vault_id: u8,
         amount_atoms: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = global_vault_deposit_instruction(
@@ -1483,7 +1483,7 @@ impl MarketFixture {
             &mainnet::usdc_bank(),
             &mainnet::usdc_liquidity_vault(),
             &marginfi_mocks::ID,
-            profile_id,
+            sub_vault_id,
             amount_atoms,
         );
         let kp = depositor.insecure_clone();
@@ -1495,7 +1495,7 @@ impl MarketFixture {
         &self,
         depositor: &Keypair,
         depositor_token: Pubkey,
-        profile_id: u8,
+        sub_vault_id: u8,
         shares_to_burn: u128,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
@@ -1510,25 +1510,25 @@ impl MarketFixture {
             &mainnet::usdc_liquidity_vault(),
             &bank_lva,
             &marginfi_mocks::ID,
-            profile_id,
+            sub_vault_id,
             shares_to_burn,
         );
         let kp = depositor.insecure_clone();
         self.process(ix, &[&kp]).await
     }
 
-    /// Vault-admin updates a risk_profile's mutable policy fields.
-    pub async fn update_risk_profile(
+    /// Vault-admin updates a sub_vault's mutable policy fields.
+    pub async fn update_sub_vault(
         &self,
         admin: &Keypair,
-        profile_id: u8,
+        sub_vault_id: u8,
         new_max_ltv_bps: Option<u16>,
         new_max_term_seconds: Option<u32>,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = update_risk_profile_instruction(
+        let ix = update_sub_vault_instruction(
             &mainnet::usdc_mint(),
             &admin.pubkey(),
-            profile_id,
+            sub_vault_id,
             new_max_ltv_bps,
             new_max_term_seconds,
         );
@@ -1536,23 +1536,23 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Variant of `place_order_for_risk_profile` for an arbitrary
+    /// Variant of `place_order_for_sub_vault` for an arbitrary
     /// market. Used by the multi-market test.
-    pub async fn place_order_for_risk_profile_in_market(
+    pub async fn place_order_for_sub_vault_in_market(
         &self,
         curator: &Keypair,
-        profile_id: u8,
+        sub_vault_id: u8,
         market_pk: Pubkey,
         rate_bps: u16,
         term_seconds: u32,
         flags: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = place_order_for_risk_profile_instruction(
+        let ix = place_order_for_sub_vault_instruction(
             &mainnet::usdc_mint(),
             &market_pk,
             &self.payer.pubkey(),
             &curator.pubkey(),
-            profile_id,
+            sub_vault_id,
             rate_bps,
             term_seconds,
             flags,
@@ -1561,24 +1561,24 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Curator place_order_for_risk_profile. Risk-profile orders are non-expiring
-    /// — only the curator can remove them via cancel_order_for_risk_profile.
+    /// Curator place_order_for_sub_vault. Risk-profile orders are non-expiring
+    /// — only the curator can remove them via cancel_order_for_sub_vault.
     /// `self.payer` is used as the ix's fee_payer (covers tx fee + any
     /// rent for vault node-block expansion); curator only signs.
-    pub async fn place_order_for_risk_profile(
+    pub async fn place_order_for_sub_vault(
         &self,
         curator: &Keypair,
-        profile_id: u8,
+        sub_vault_id: u8,
         rate_bps: u16,
         term_seconds: u32,
         flags: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = place_order_for_risk_profile_instruction(
+        let ix = place_order_for_sub_vault_instruction(
             &mainnet::usdc_mint(),
             &self.market.pubkey(),
             &self.payer.pubkey(),
             &curator.pubkey(),
-            profile_id,
+            sub_vault_id,
             rate_bps,
             term_seconds,
             flags,
@@ -1588,11 +1588,11 @@ impl MarketFixture {
     }
 
     /// Convenience helper for the quote-only lender flow. Sets up a
-    /// vault risk-profile that rests an unbounded ask on the market:
+    /// vault sub-vault that rests an unbounded ask on the market:
     ///   1. `create_vault` (idempotent — skipped if already created)
-    ///   2. `create_risk_profile`
+    ///   2. `create_sub_vault`
     ///   3. `global_vault_deposit` (funds the profile's idle pool)
-    ///   4. `place_order_for_risk_profile` (unbounded ask at rate/term)
+    ///   4. `place_order_for_sub_vault` (unbounded ask at rate/term)
     ///
     /// The depositor's debt-token account is created/funded with the
     /// deposit amount automatically. Returns the depositor's token
@@ -1603,7 +1603,7 @@ impl MarketFixture {
         admin: &Keypair,
         depositor: &Keypair,
         curator: &Keypair,
-        profile_id: u8,
+        sub_vault_id: u8,
         max_ltv_bps: Option<u16>,
         rate_bps: u16,
         term_seconds: u32,
@@ -1622,25 +1622,25 @@ impl MarketFixture {
         // safe to call after an explicit create_vault.
         let _ = self.create_vault(admin).await;
         self.refresh_blockhash().await;
-        // `profile_id` is now assigned by the program; the caller's
+        // `sub_vault_id` is now assigned by the program; the caller's
         // expectation is preserved by the monotonic counter — Nth
         // create on a fresh vault returns id N-1. Downstream calls in
-        // this helper use the caller's `profile_id`; if it ever
+        // this helper use the caller's `sub_vault_id`; if it ever
         // disagrees with the on-chain assignment the
-        // `global_vault_deposit` / `place_order_for_risk_profile` calls
-        // below will fail with `VaultProfileNotFound`, surfacing the
+        // `global_vault_deposit` / `place_order_for_sub_vault` calls
+        // below will fail with `SubVaultNotFound`, surfacing the
         // mismatch loudly.
-        self.create_risk_profile(admin, curator.pubkey(), max_ltv_bps, term_seconds)
+        self.create_sub_vault(admin, curator.pubkey(), max_ltv_bps, term_seconds)
             .await
-            .expect("create_risk_profile");
+            .expect("create_sub_vault");
         self.refresh_blockhash().await;
-        self.global_vault_deposit(depositor, depositor_token, profile_id, deposit_atoms)
+        self.global_vault_deposit(depositor, depositor_token, sub_vault_id, deposit_atoms)
             .await
             .expect("global_vault_deposit");
         self.refresh_blockhash().await;
-        self.place_order_for_risk_profile(curator, profile_id, rate_bps, term_seconds, 0)
+        self.place_order_for_sub_vault(curator, sub_vault_id, rate_bps, term_seconds, 0)
             .await
-            .expect("place_order_for_risk_profile");
+            .expect("place_order_for_sub_vault");
         depositor_token
     }
 
@@ -1649,7 +1649,7 @@ impl MarketFixture {
         &self,
         curator: &Keypair,
         curator_token: Pubkey,
-        profile_id: u8,
+        sub_vault_id: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
         let ix = claim_curator_fee_instruction(
@@ -1663,7 +1663,7 @@ impl MarketFixture {
             &spl_token::id(),
             &marginfi_mocks::ID,
             &mainnet::marginfi_group(),
-            profile_id,
+            sub_vault_id,
         );
         let kp = curator.insecure_clone();
         self.process(ix, &[&kp]).await
@@ -1677,23 +1677,23 @@ impl MarketFixture {
         *bytemuck::from_bytes(&data[..size])
     }
 
-    /// Read the vault's `RiskProfile` for the given profile_id.
-    pub async fn read_risk_profile(&self, profile_id: u8) -> ydelta::state::vault::RiskProfile {
+    /// Read the vault's `SubVault` for the given sub_vault_id.
+    pub async fn read_sub_vault(&self, sub_vault_id: u8) -> ydelta::state::vault::SubVault {
         let (global_vault_pda, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
         let data = self.account_data(global_vault_pda).await;
         let size = std::mem::size_of::<ydelta::state::vault::GlobalVaultFixed>();
         let header: &ydelta::state::vault::GlobalVaultFixed = bytemuck::from_bytes(&data[..size]);
         let dynamic = &data[size..];
-        let tree = ydelta::state::vault::RiskProfileTreeReadOnly::new(
+        let tree = ydelta::state::vault::SubVaultTreeReadOnly::new(
             dynamic,
-            header.risk_profiles_root_index,
+            header.sub_vaults_root_index,
             NIL,
         );
         let probe =
-            ydelta::state::vault::RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+            ydelta::state::vault::SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
         let idx = tree.lookup_index(&probe);
-        assert_ne!(idx, NIL, "no risk profile {}", profile_id);
-        *ydelta::state::vault::get_helper_risk_profile(dynamic, idx).get_value()
+        assert_ne!(idx, NIL, "no sub-vault {}", sub_vault_id);
+        *ydelta::state::vault::get_helper_sub_vault(dynamic, idx).get_value()
     }
 
     /// Read the trader's seat from the market account.
@@ -1709,12 +1709,12 @@ impl MarketFixture {
         *get_helper_seat(dynamic, idx).get_value()
     }
 
-    /// Read a risk-profile-owned `ClaimedSeat` keyed by
-    /// `(global_vault_pubkey, OWNER_KIND_RISK_PROFILE, profile_id)`.
+    /// Read a sub-vault-owned `ClaimedSeat` keyed by
+    /// `(global_vault_pubkey, OWNER_KIND_SUB_VAULT, sub_vault_id)`.
     pub async fn read_vault_seat(
         &self,
         vault: &Pubkey,
-        profile_id: u8,
+        sub_vault_id: u8,
     ) -> ydelta::state::ClaimedSeat {
         let data = self.account_data(self.market.pubkey()).await;
         let fixed_size = std::mem::size_of::<MarketFixed>();
@@ -1722,12 +1722,12 @@ impl MarketFixture {
         let dynamic = &data[fixed_size..];
         let tree: RedBlackTreeReadOnly<ClaimedSeat> =
             RedBlackTreeReadOnly::new(dynamic, header.claimed_seats_root_index, NIL);
-        let probe = ClaimedSeat::new_empty(*vault, OWNER_KIND_RISK_PROFILE, profile_id);
+        let probe = ClaimedSeat::new_empty(*vault, OWNER_KIND_SUB_VAULT, sub_vault_id);
         let idx = tree.lookup_index(&probe);
         assert_ne!(
             idx, NIL,
-            "no vault seat for (vault={}, profile_id={})",
-            vault, profile_id
+            "no vault seat for (vault={}, sub_vault_id={})",
+            vault, sub_vault_id
         );
         *get_helper_seat(dynamic, idx).get_value()
     }
@@ -1785,20 +1785,20 @@ impl MarketFixture {
         );
     }
 
-    /// Assert the vault-idle invariant on a given risk profile:
+    /// Assert the vault-idle invariant on a given sub-vault:
     ///   `total_principal_atoms >= deployed_principal_atoms +
     ///    encumbered_in_orders_atoms`.
     /// This is what guarantees a depositor's withdrawable atoms are
     /// physically backed.
-    pub async fn assert_vault_idle_invariant(&self, profile_id: u8) {
-        let p = self.read_risk_profile(profile_id).await;
+    pub async fn assert_vault_idle_invariant(&self, sub_vault_id: u8) {
+        let p = self.read_sub_vault(sub_vault_id).await;
         let deployed_plus_encumbered: u128 =
             (p.deployed_principal_atoms as u128) + (p.encumbered_in_orders_atoms as u128);
         assert!(
             (p.total_principal_atoms as u128) >= deployed_plus_encumbered,
             "vault_idle invariant violated on profile {}: \
              total_principal({}) < deployed({}) + encumbered({}) = {}",
-            profile_id,
+            sub_vault_id,
             p.total_principal_atoms,
             p.deployed_principal_atoms,
             p.encumbered_in_orders_atoms,

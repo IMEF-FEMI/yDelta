@@ -1,12 +1,12 @@
 //! End-to-end test for the `ProcessMatchedLoan` cranker (quote-only).
 //!
 //! Flow:
-//! 1. A vault risk profile is funded and rests an unbounded ask.
+//! 1. A vault sub-vault is funded and rests an unbounded ask.
 //! 2. Bob (borrower) deposits collateral and crosses the ask with an
 //!    IOC bid → the matching engine inserts a `MatchedLoan` node.
 //! 3. Bob's seat shouldn't see the credit yet — that's the cranker's
 //!    job.
-//! 4. The risk-profile cranker (`process_matched_loan` with the
+//! 4. The sub-vault cranker (`process_matched_loan` with the
 //!    vault-settle accounts) promotes the queued match. Assert the
 //!    `LoanFixed` PDA exists with the expected fields, Bob's seat got
 //!    credited with `amount_to_shares(net_principal)`, the
@@ -63,7 +63,7 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -119,9 +119,9 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
     let bob_seat_pre = fixture.read_seat(&bob.pubkey()).await;
     assert_eq!(bob_seat_pre.debt_withdrawable_shares, 0);
 
-    // ─── Crank (vault-funded loan → risk-profile cranker).
+    // ─── Crank (vault-funded loan → sub-vault cranker).
     fixture
-        .crank_matched_loan_for_risk_profile(cranking_sequence)
+        .crank_matched_loan_for_sub_vault(cranking_sequence)
         .await
         .unwrap();
 
@@ -182,7 +182,7 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
     // Vault-idle invariant — vault profile's encumbered_in_orders
     // got drained into deployed_principal_atoms at crank time.
     fixture.assert_vault_idle_invariant(1).await;
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(
         profile.deployed_principal_atoms, principal_atoms,
         "promote must increment deployed_principal_atoms by the loan's principal"
@@ -216,7 +216,7 @@ async fn promote_matched_loan_keeps_borrower_and_fee_claims_backed() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -247,7 +247,7 @@ async fn promote_matched_loan_keeps_borrower_and_fee_claims_backed() {
     fixture.refresh_blockhash().await;
 
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
 
@@ -308,7 +308,7 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
             &admin,
             &depositor,
             &curator,
-            /*profile_id=*/ 1,
+            /*sub_vault_id=*/ 1,
             /*max_ltv_bps=*/ Some(8_000),
             /*rate_bps=*/ 600,
             /*term_seconds=*/ 30 * 86_400,
@@ -367,7 +367,7 @@ async fn curator_fee_snapshot_is_match_time_not_promotion_time() {
 
     // (5) Cranker promotes the queued match.
     fixture
-        .crank_matched_loan_for_risk_profile(0)
+        .crank_matched_loan_for_sub_vault(0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;

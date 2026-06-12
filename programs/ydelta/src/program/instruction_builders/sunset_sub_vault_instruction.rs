@@ -1,6 +1,6 @@
-//! Builds the `YdeltaInstruction::ResumeRiskProfile` instruction: vault-admin
-//! escape hatch that flips `profile.is_sunset = 0`, reversing a prior
-//! `SunsetRiskProfile`.
+//! Builds the `YdeltaInstruction::SunsetSubVault` instruction: vault-admin
+//! flips `profile.is_sunset = 1`, disabling new deposits / orders / matches
+//! while leaving withdrawals and curator cleanups enabled.
 
 use borsh::BorshSerialize;
 use solana_program::{
@@ -8,21 +8,21 @@ use solana_program::{
     pubkey::Pubkey,
 };
 
-use crate::program::processor::resume_risk_profile::ResumeRiskProfileParams;
+use crate::program::processor::sunset_sub_vault::SunsetSubVaultParams;
 use crate::program::YdeltaInstruction;
 use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
-/// Builds the `ResumeRiskProfile` instruction for the vault keyed by
-/// `mint`. `payer` (signer) must be the vault admin; targets `profile_id`.
-pub fn resume_risk_profile_instruction(
+/// Builds the `SunsetSubVault` instruction for the vault keyed by
+/// `mint`. `payer` (signer) must be the vault admin; targets `sub_vault_id`.
+pub fn sunset_sub_vault_instruction(
     mint: &Pubkey,
     payer: &Pubkey,
-    profile_id: u8,
+    sub_vault_id: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(mint);
-    let mut data = YdeltaInstruction::ResumeRiskProfile.to_vec();
-    ResumeRiskProfileParams { profile_id }
+    let mut data = YdeltaInstruction::SunsetSubVault.to_vec();
+    SunsetSubVaultParams { sub_vault_id }
         .serialize(&mut data)
         .unwrap();
     Instruction {

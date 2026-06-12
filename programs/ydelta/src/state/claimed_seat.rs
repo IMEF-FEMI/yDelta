@@ -1,7 +1,7 @@
 //! Per-trader seat that lives in a market's red-black tree. Holds the
 //! seat owner's withdrawable / encumbered balances on both axes (debt and
 //! collateral) plus counters for open lend and borrow positions. One seat
-//! per `(owner, owner_kind, risk_profile_id)` triple.
+//! per `(owner, owner_kind, sub_vault_id)` triple.
 
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -15,9 +15,9 @@ use super::constants::CLAIMED_SEAT_SIZE;
 
 /// `owner_kind` tag for seats owned by an end-user wallet.
 pub const OWNER_KIND_USER: u8 = 0;
-/// `owner_kind` tag for seats owned by a risk profile inside a
+/// `owner_kind` tag for seats owned by a sub-vault inside a
 /// `GlobalVault`. The `owner` field then stores the vault PDA.
-pub const OWNER_KIND_RISK_PROFILE: u8 = 1;
+pub const OWNER_KIND_SUB_VAULT: u8 = 1;
 
 /// Per-trader seat held in a market's claimed-seat red-black tree.
 /// Balance fields are I80F48-scaled (`real_shares × 2^48`) so they match
@@ -25,7 +25,7 @@ pub const OWNER_KIND_RISK_PROFILE: u8 = 1;
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct ClaimedSeat {
-    /// For user seats, the wallet pubkey; for risk-profile seats, the
+    /// For user seats, the wallet pubkey; for sub-vault seats, the
     /// global-vault pubkey.
     pub owner: Pubkey,
 
@@ -44,10 +44,10 @@ pub struct ClaimedSeat {
     /// Number of resting asks plus active loans this seat lends on.
     pub open_lend_count: u32,
 
-    /// One of [`OWNER_KIND_USER`] or [`OWNER_KIND_RISK_PROFILE`].
+    /// One of [`OWNER_KIND_USER`] or [`OWNER_KIND_SUB_VAULT`].
     pub owner_kind: u8,
-    /// 0 for user seats; the profile id for risk-profile seats.
-    pub risk_profile_id: u8,
+    /// 0 for user seats; the profile id for sub-vault seats.
+    pub sub_vault_id: u8,
 
     _padding: [u8; 6],
 
@@ -61,11 +61,11 @@ impl ClaimedSeat {
     /// Build a seat with all balance and counter fields zeroed. Used for
     /// both insert and tree-lookup probes; equality only checks the
     /// identity triple, not the balances.
-    pub fn new_empty(owner: Pubkey, owner_kind: u8, risk_profile_id: u8) -> Self {
+    pub fn new_empty(owner: Pubkey, owner_kind: u8, sub_vault_id: u8) -> Self {
         ClaimedSeat {
             owner,
             owner_kind,
-            risk_profile_id,
+            sub_vault_id,
             ..Default::default()
         }
     }
@@ -75,7 +75,7 @@ impl Ord for ClaimedSeat {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.owner_kind.cmp(&other.owner_kind) {
             Ordering::Equal => match self.owner.cmp(&other.owner) {
-                Ordering::Equal => self.risk_profile_id.cmp(&other.risk_profile_id),
+                Ordering::Equal => self.sub_vault_id.cmp(&other.sub_vault_id),
                 ord => ord,
             },
             ord => ord,
@@ -93,7 +93,7 @@ impl PartialEq for ClaimedSeat {
     fn eq(&self, other: &Self) -> bool {
         self.owner_kind == other.owner_kind
             && self.owner == other.owner
-            && self.risk_profile_id == other.risk_profile_id
+            && self.sub_vault_id == other.sub_vault_id
     }
 }
 
@@ -101,7 +101,7 @@ impl Eq for ClaimedSeat {}
 
 impl std::fmt::Display for ClaimedSeat {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}#{}", self.owner, self.risk_profile_id)
+        write!(f, "{}#{}", self.owner, self.sub_vault_id)
     }
 }
 
@@ -124,7 +124,7 @@ mod tests {
     fn ord_orders_by_owner_then_profile() {
         let pk = Pubkey::new_unique();
         let a = ClaimedSeat::new_empty(pk, OWNER_KIND_USER, 0);
-        let b = ClaimedSeat::new_empty(pk, OWNER_KIND_RISK_PROFILE, 5);
+        let b = ClaimedSeat::new_empty(pk, OWNER_KIND_SUB_VAULT, 5);
         assert!(a < b);
         assert_ne!(a, b);
     }

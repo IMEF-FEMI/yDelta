@@ -43,7 +43,7 @@ pub fn settle_matured_loan_instruction(
     repay_atoms_max: u64,
     cranker_refund: &Pubkey,
     // REQUIRED for Fixed loans (full-settle close-out updates the lender
-    // vault's risk profile + bumps pending_claim). MUST be `None` for
+    // vault's sub-vault + bumps pending_claim). MUST be `None` for
     // P2Pool settlements — the loader only consumes this slot for Fixed.
     global_vault: Option<&Pubkey>,
 ) -> Instruction {

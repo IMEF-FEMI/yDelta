@@ -20,9 +20,9 @@ use crate::state::user_account::{
     get_mut_helper_vault_position, upsert_vault_position, UserAccountFixed,
 };
 use crate::state::vault::{
-    accrue_risk_profile, get_mut_helper_risk_profile, get_mut_helper_risk_profile_depositor_seat,
-    upsert_risk_profile_depositor_seat, vault_expand_node_block, GlobalVaultFixed, RiskProfile,
-    RiskProfileTreeReadOnly, GLOBAL_VAULT_SIGNER_SEED,
+    accrue_sub_vault, get_mut_helper_sub_vault, get_mut_helper_sub_vault_depositor_seat,
+    upsert_sub_vault_depositor_seat, vault_expand_node_block, GlobalVaultFixed, SubVault,
+    SubVaultTreeReadOnly, GLOBAL_VAULT_SIGNER_SEED,
 };
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, USER_ACCOUNT_FIXED_SIZE, VAULT_NODE_BLOCK_SIZE};
 use crate::validation::loaders::GlobalVaultDepositContext;
@@ -32,14 +32,14 @@ use crate::validation::loaders::GlobalVaultDepositContext;
 pub struct GlobalVaultDepositParams {
     /// Atoms of the vault's mint to deposit. Must be `> 0`.
     pub amount_atoms: u64,
-    /// Identifies the destination risk profile.
-    pub profile_id: u8,
+    /// Identifies the destination sub-vault.
+    pub sub_vault_id: u8,
 }
 
-/// Deposit atoms into a risk profile and mint pro-rata shares. Accrues
+/// Deposit atoms into a sub-vault and mint pro-rata shares. Accrues
 /// the profile, computes shares against `total_assets_atoms`, updates
 /// the depositor seat + `UserAccountFixed` vault position, and emits
-/// `GlobalVaultDepositLog`. Errors with `VaultProfileSunset` when sunset.
+/// `GlobalVaultDepositLog`. Errors with `SubVaultSunset` when sunset.
 pub fn process_global_vault_deposit(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -152,30 +152,30 @@ pub fn process_global_vault_deposit(
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
-        let probe = RiskProfile::new_empty(params.profile_id, Pubkey::default(), 1, 1);
+        let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
         let profile_idx = {
-            let tree = RiskProfileTreeReadOnly::new(dynamic, header.risk_profiles_root_index, NIL);
+            let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
             profile_idx != NIL,
-            YdeltaError::VaultProfileNotFound,
-            "profile_id {} not found in vault",
-            params.profile_id
+            YdeltaError::SubVaultNotFound,
+            "sub_vault_id {} not found in vault",
+            params.sub_vault_id
         )?;
 
         let (shares, total_shares_after, total_assets_after, snapshot_supply, snapshot_delta) = {
-            let profile = get_mut_helper_risk_profile(dynamic, profile_idx).get_mut_value();
+            let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
             require!(
                 profile.is_sunset == 0,
-                YdeltaError::VaultProfileSunset,
-                "global_vault_deposit: profile_id {} is sunset; new deposits are rejected \
+                YdeltaError::SubVaultSunset,
+                "global_vault_deposit: sub_vault_id {} is sunset; new deposits are rejected \
                  during wind-down (existing depositors may still withdraw)",
-                params.profile_id
+                params.sub_vault_id
             )?;
             let share_value_fp48 =
                 crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info)?;
-            accrue_risk_profile(profile, now, share_value_fp48)?;
+            accrue_sub_vault(profile, now, share_value_fp48)?;
 
             let atoms_u128 = credited_atoms as u128;
             let shares: u128 = if profile.total_shares == 0 {
@@ -225,15 +225,15 @@ pub fn process_global_vault_deposit(
             )
         };
 
-        let seat_idx = upsert_risk_profile_depositor_seat(
+        let seat_idx = upsert_sub_vault_depositor_seat(
             header,
             dynamic,
             *payer.info.key,
-            params.profile_id,
+            params.sub_vault_id,
         )?;
         {
             let seat =
-                get_mut_helper_risk_profile_depositor_seat(dynamic, seat_idx).get_mut_value();
+                get_mut_helper_sub_vault_depositor_seat(dynamic, seat_idx).get_mut_value();
             seat.shares = seat
                 .shares
                 .checked_add(shares)
@@ -249,7 +249,7 @@ pub fn process_global_vault_deposit(
         let data: &mut RefMut<&mut [u8]> = &mut user_account_ai.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(USER_ACCOUNT_FIXED_SIZE);
         let fixed: &mut UserAccountFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        let pos_idx = upsert_vault_position(fixed, dynamic, vault_key, params.profile_id)?;
+        let pos_idx = upsert_vault_position(fixed, dynamic, vault_key, params.sub_vault_id)?;
         let pos_node = get_mut_helper_vault_position(dynamic, pos_idx);
         let pos = pos_node.get_mut_value();
         pos.shares = pos
@@ -267,7 +267,7 @@ pub fn process_global_vault_deposit(
         atoms_in: received_atoms,
         gain_atoms: 0,
         profile_total_assets_atoms: total_assets_after,
-        profile_id: params.profile_id,
+        sub_vault_id: params.sub_vault_id,
         _padding: [0; 7],
     })?;
 

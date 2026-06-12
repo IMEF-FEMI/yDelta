@@ -1,6 +1,6 @@
 //! Matching-engine mechanics for the quote-only book.
 //!
-//! The only resting orders are vault risk-profile asks; the taker is
+//! The only resting orders are vault sub-vault asks; the taker is
 //! always a borrower IOC bid. These
 //! tests pin the cross mechanics — best-ask-first ordering, the
 //! term-incompatible walk-past, partial fills, and the vault-side
@@ -14,7 +14,7 @@ use solana_sdk::signer::Signer;
 
 use crate::test_utils::{mainnet, MarketFixture};
 
-/// Spin up a vault with `n` risk profiles, each funded and resting one
+/// Spin up a vault with `n` sub-vaults, each funded and resting one
 /// open-ended ask at the supplied `(rate_bps, term_seconds, idle_atoms)`.
 /// Returns the borrower keypair after seeding its wSOL collateral seat.
 ///
@@ -38,11 +38,11 @@ async fn vault_with_asks(
     fixture.create_vault(&admin).await.unwrap();
 
     for (i, (rate_bps, term_seconds, idle_atoms)) in profile_specs.iter().enumerate() {
-        let profile_id = (i as u8) + 1;
+        let sub_vault_id = (i as u8) + 1;
         let curator = fixture.create_trader().await;
         fixture.refresh_blockhash().await;
         fixture
-            .create_risk_profile(
+            .create_sub_vault(
                 &admin,
                 curator.pubkey(),
                 /*max_ltv_bps=*/ Some(8_000),
@@ -52,14 +52,14 @@ async fn vault_with_asks(
             .unwrap();
         fixture.refresh_blockhash().await;
         fixture
-            .global_vault_deposit(&depositor, depositor_token, profile_id, *idle_atoms)
+            .global_vault_deposit(&depositor, depositor_token, sub_vault_id, *idle_atoms)
             .await
             .unwrap();
         fixture.refresh_blockhash().await;
         // No claim-seat step — the vault market-seat is auto-created on
-        // the curator's first place_order_for_risk_profile.
+        // the curator's first place_order_for_sub_vault.
         fixture
-            .place_order_for_risk_profile(&curator, profile_id, *rate_bps, *term_seconds, 0)
+            .place_order_for_sub_vault(&curator, sub_vault_id, *rate_bps, *term_seconds, 0)
             .await
             .unwrap();
     }
@@ -87,7 +87,7 @@ async fn vault_with_asks(
 }
 
 /// A borrower bid smaller than the vault ask leaves the ask resting and
-/// only encumbers the matched principal. The resting risk-profile ask
+/// only encumbers the matched principal. The resting sub-vault ask
 /// is never removed by the matching engine.
 #[tokio::test]
 async fn match_partial_fill_leaves_vault_ask_resting() {
@@ -118,11 +118,11 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
     assert_ne!(
         market.asks_best_index,
         hypertree::NIL,
-        "risk-profile ask must persist (only the curator removes it)"
+        "sub-vault ask must persist (only the curator removes it)"
     );
 
     // Vault encumbrance bumped by exactly the matched principal.
-    let profile = fixture.read_risk_profile(1).await;
+    let profile = fixture.read_sub_vault(1).await;
     assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
     // Borrower seat's collateral STAYS encumbered — it backs the open
     // loan and is released only at close. The single Fixed cross also
@@ -183,9 +183,9 @@ async fn match_picks_best_ask_first() {
     assert_eq!(market.matched_loan_sequence, 1, "one fill");
 
     // Only profile 1 (the 500bps ask) was encumbered.
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
-    let p2 = fixture.read_risk_profile(3).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
+    let p2 = fixture.read_sub_vault(3).await;
     assert_eq!(
         p1.encumbered_in_orders_atoms, 1_000_000,
         "best-priced (500bps) ask must be crossed first"
@@ -243,8 +243,8 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
         "exactly one fill (profile 1)"
     );
 
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
     assert_eq!(
         p0.encumbered_in_orders_atoms, 0,
         "term-incompatible best ask must be skipped"
@@ -304,8 +304,8 @@ async fn match_sweeps_multiple_vault_asks() {
     // idle-capped at its 50M − 1 reserve = 49_999_999; profile 1
     // absorbs the remainder.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    let p0 = fixture.read_risk_profile(1).await;
-    let p1 = fixture.read_risk_profile(2).await;
+    let p0 = fixture.read_sub_vault(1).await;
+    let p1 = fixture.read_sub_vault(2).await;
     let p0_expected: u64 = 49_999_999 - MARGINFI_ROUNDING_RESERVE_ATOMS;
     let p1_expected: u64 = 70_000_000 - p0_expected;
     assert_eq!(
