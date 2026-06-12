@@ -292,6 +292,9 @@ async fn sunset_skips_matching() {
         &depositor.pubkey(),
         &mainnet::usdc_bank(),
         &mainnet::marginfi_group(),
+        &mainnet::sol_bank(),
+        &[mainnet::usdc_oracle()],
+        &[mainnet::sol_oracle()],
         1,
         0,
     );

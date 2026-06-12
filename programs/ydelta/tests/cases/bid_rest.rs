@@ -147,3 +147,158 @@ async fn cancel_rejects_non_owner() {
         .await;
     assert!(result.is_err(), "non-owner cancel must be rejected");
 }
+
+/// v1 D7: a curator's ask placement TAKES — a bid resting against an
+/// empty book fills the moment a crossable ask arrives.
+#[tokio::test]
+async fn ask_placement_takes_resting_bid() {
+    let fixture = MarketFixture::new().await;
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let borrower = fixture.create_trader().await;
+
+    // Borrower rests first (empty book).
+    fixture.claim_seat(&borrower).await;
+    let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
+    fixture.put_wsol_token_account(borrower_wsol, borrower.pubkey(), 500_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&borrower, borrower_wsol, false, 50_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            3_000,
+            TERM,
+            1_000_000,
+            50_000_000,
+            RESIDUAL_MODE_REST,
+        )
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Curator funds + places — the placement's take pass crosses the
+    // resting bid in the same instruction.
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            1,
+            Some(8_000),
+            /*spread=*/ 100,
+            TERM,
+            100_000_000,
+        )
+        .await;
+
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(
+        market.matched_loan_sequence, 1,
+        "ask placement must take the crossable resting bid (v1 D7)"
+    );
+    assert_eq!(market.bids_root_index, NIL, "fully-consumed bid leaves the tree");
+    let sv = fixture.read_sub_vault(1).await;
+    assert_eq!(sv.encumbered_in_orders_atoms, 1_000_000);
+    assert_eq!(sv.open_loans_count, 1);
+    // The fill's collateral stays encumbered on the bidder's seat.
+    let seat = fixture.read_seat(&borrower.pubkey()).await;
+    assert!(seat.collateral_encumbered_shares > 0);
+    assert_eq!(seat.open_borrow_count, 1);
+}
+
+/// v1 D8 canonical: a crossed-at-rest book (bid rested while the ask's
+/// sub-vault had no idle) is resolved by the permissionless MatchCrank
+/// after a vault deposit replenishes idle — no order event in between.
+#[tokio::test]
+async fn crank_fills_after_idle_replenishment() {
+    let fixture = MarketFixture::new().await;
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let borrower = fixture.create_trader().await;
+    let keeper = fixture.create_trader().await;
+
+    // Ask rests with a tiny idle pool (1_000 atoms): the borrower's 1M
+    // bid partially fills and the remainder RESTS against the now
+    // idle-exhausted ask.
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            1,
+            Some(8_000),
+            /*spread=*/ 100,
+            TERM,
+            /*deposit_atoms=*/ 1_000,
+        )
+        .await;
+
+    // Borrower's bid skips the idle-exhausted ask and RESTS → book is
+    // crossed at rest (legal, v1 D8).
+    fixture.claim_seat(&borrower).await;
+    let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
+    fixture.put_wsol_token_account(borrower_wsol, borrower.pubkey(), 500_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&borrower, borrower_wsol, false, 50_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            3_000,
+            TERM,
+            1_000_000,
+            50_000_000,
+            RESIDUAL_MODE_REST,
+        )
+        .await
+        .unwrap();
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(
+        market.matched_loan_sequence, 1,
+        "the tiny idle partially fills; the remainder rests"
+    );
+    assert_ne!(market.bids_root_index, NIL, "residual bid rests (crossed-at-rest)");
+    assert_ne!(market.asks_root_index, NIL, "ask still rests");
+
+    // Idle replenishes via a VAULT event — no market order flow.
+    let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
+    fixture.put_token_account(
+        depositor_token,
+        crate::test_utils::mainnet::usdc_mint(),
+        depositor.pubkey(),
+        100_000_000,
+    );
+    fixture.refresh_blockhash().await;
+    fixture
+        .global_vault_deposit(&depositor, depositor_token, 1, 50_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Permissionless crank resolves the cross.
+    fixture.match_crank(&keeper, 16).await.expect("crank");
+
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(
+        market.matched_loan_sequence, 2,
+        "crank crosses the rested remainder once idle returns (v1 D8)"
+    );
+    assert_eq!(market.bids_root_index, NIL, "bid consumed");
+    // Partial fill at rest-time + crank fill = the full bid principal.
+    let sv = fixture.read_sub_vault(1).await;
+    assert_eq!(sv.encumbered_in_orders_atoms, 1_000_000);
+    assert_eq!(sv.open_loans_count, 2);
+}

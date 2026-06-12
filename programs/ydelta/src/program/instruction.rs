@@ -188,6 +188,12 @@ pub enum YdeltaInstruction {
     /// encumbered collateral at the stored snapshot and drops the
     /// `UserOrderRef`.
     CancelOrder = 42,
+
+    /// Permissionless match crank (v1 D7/D8): crosses resting bids
+    /// against resting sub-vault asks. Needed because crossability can
+    /// change without order flow (vault deposits, repayment claims,
+    /// oracle moves).
+    MatchCrank = 43,
 }
 
 impl YdeltaInstruction {
@@ -204,7 +210,7 @@ mod tests {
 
     #[test]
     fn instruction_tags_are_contiguous() {
-        let last_tag: u8 = 42;
+        let last_tag: u8 = 43;
         for i in 0..=255u8 {
             match YdeltaInstruction::try_from(i) {
                 Ok(ix) => {

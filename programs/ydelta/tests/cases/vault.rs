@@ -255,7 +255,7 @@ fn global_vault_withdraw_params_borsh_round_trip() {
 // ─────────────────── Group E — curator ixs ───────────────────
 
 #[test]
-fn place_order_for_sub_vault_ix_has_eight_accounts() {
+fn place_order_for_sub_vault_ix_has_eleven_accounts() {
     let bank = Pubkey::new_unique();
     let market = Pubkey::new_unique();
     let fee_payer = Keypair::new();
@@ -266,12 +266,16 @@ fn place_order_for_sub_vault_ix_has_eight_accounts() {
         &market,
         &fee_payer.pubkey(),
         &curator.pubkey(),
-        &Pubkey::new_unique(), // debt_bank
-        &Pubkey::new_unique(), // marginfi_group
+        &Pubkey::new_unique(),   // debt_bank
+        &Pubkey::new_unique(),   // marginfi_group
+        &Pubkey::new_unique(),   // collateral_bank (v1 D7 take path)
+        &[Pubkey::new_unique()], // debt oracle
+        &[Pubkey::new_unique()], // collateral oracle
         1,
         0,
     );
-    assert_eq!(ix.accounts.len(), 8);
+    // 9 fixed + 2 oracles = 11.
+    assert_eq!(ix.accounts.len(), 11);
 }
 
 #[test]
@@ -291,7 +295,7 @@ fn cancel_order_for_sub_vault_ix_has_six_accounts() {
 }
 
 #[test]
-fn update_order_for_sub_vault_ix_has_eight_accounts() {
+fn update_order_for_sub_vault_ix_has_eleven_accounts() {
     let bank = Pubkey::new_unique();
     let market = Pubkey::new_unique();
     let fee_payer = Keypair::new();
@@ -301,12 +305,15 @@ fn update_order_for_sub_vault_ix_has_eight_accounts() {
         &market,
         &fee_payer.pubkey(),
         &curator.pubkey(),
-        &Pubkey::new_unique(), // debt_bank
-        &Pubkey::new_unique(), // marginfi_group
+        &Pubkey::new_unique(),   // debt_bank
+        &Pubkey::new_unique(),   // marginfi_group
+        &Pubkey::new_unique(),   // collateral_bank (v1 D7 take path)
+        &[Pubkey::new_unique()], // debt oracle
+        &[Pubkey::new_unique()], // collateral oracle
         0,
         0,
     );
-    assert_eq!(ix.accounts.len(), 8);
+    assert_eq!(ix.accounts.len(), 11);
 }
 
 #[test]

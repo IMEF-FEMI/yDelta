@@ -57,6 +57,9 @@ pub fn process_place_order_for_sub_vault(
         market,
         debt_bank,
         marginfi_group,
+        collateral_bank,
+        debt_oracle_ais,
+        collateral_oracle_ais,
         _system_program,
     } = PlaceOrderForSubVaultContext::load(accounts)?;
 
@@ -64,7 +67,7 @@ pub fn process_place_order_for_sub_vault(
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    let (spread_bps, term_seconds): (u16, u32) = {
+    let (spread_bps, term_seconds, profile_max_ltv_bps, profile_curator_fee_bps): (u16, u32, u16, u16) = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
@@ -94,7 +97,12 @@ pub fn process_place_order_for_sub_vault(
             YdeltaError::VaultCuratorRequired,
             "place_order_for_sub_vault: signer is not profile.curator"
         )?;
-        (profile.spread_bps, profile.max_term_seconds)
+        (
+            profile.spread_bps,
+            profile.max_term_seconds,
+            profile.max_ltv_bps,
+            profile.curator_fee_bps,
+        )
     };
 
     // v1 D4: stored rate = live bank lending APR (ceil) + sub-vault
@@ -179,6 +187,38 @@ pub fn process_place_order_for_sub_vault(
         )?
     };
 
+    // v1 D7: the placement TAKES — fill crossable resting bids now that
+    // the ask's seat exists and the rate is known.
+    {
+        let seat_idx = {
+            let market_data = market.info.try_borrow_data()?;
+            let fixed_size = std::mem::size_of::<MarketFixed>();
+            let header: &MarketFixed = bytemuck::from_bytes(&market_data[..fixed_size]);
+            let dynamic = &market_data[fixed_size..];
+            let probe =
+                ClaimedSeat::new_empty(vault_key, OWNER_KIND_SUB_VAULT, params.sub_vault_id);
+            let tree = ClaimedSeatTreeReadOnly::new(dynamic, header.claimed_seats_root_index, NIL);
+            tree.lookup_index(&probe)
+        };
+        let _ = take_resting_bids(
+            &market,
+            vault.info,
+            &debt_bank,
+            &collateral_bank,
+            &debt_oracle_ais,
+            &collateral_oracle_ais,
+            &fee_payer,
+            seat_idx,
+            params.sub_vault_id,
+            rate_bps,
+            term_seconds,
+            profile_curator_fee_bps,
+            profile_max_ltv_bps,
+            now,
+            u32::MAX,
+        )?;
+    }
+
     let need_expand: bool = {
         let vault_data = vault.info.try_borrow_data()?;
         let header: &GlobalVaultFixed =
@@ -235,4 +275,109 @@ pub fn process_place_order_for_sub_vault(
     })?;
 
     Ok(())
+}
+
+/// Shared v1 D7 take pass: walk the bids tree and fill crossable resting
+/// bids against this sub-vault ask before it rests. Returns fills made.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn take_resting_bids<'a, 'info>(
+    market: &crate::validation::YdeltaAccountInfo<'a, 'info, MarketFixed>,
+    vault_ai: &'a solana_program::account_info::AccountInfo<'info>,
+    debt_bank: &crate::validation::MarginfiBankInfo<'a, 'info>,
+    collateral_bank: &crate::validation::MarginfiBankInfo<'a, 'info>,
+    debt_oracle_ais: &crate::validation::MarginfiOracleAis<'a, 'info>,
+    collateral_oracle_ais: &crate::validation::MarginfiOracleAis<'a, 'info>,
+    fee_payer: &crate::validation::Signer<'a, 'info>,
+    ask_seat_index: hypertree::DataIndex,
+    ask_sub_vault_id: u16,
+    ask_rate_bps: u16,
+    ask_term_seconds: u32,
+    ask_curator_fee_bps: u16,
+    profile_max_ltv_bps: u16,
+    now: i64,
+    max_fills: u32,
+) -> Result<crate::state::market_helpers::MatchRestingBidsResult, solana_program::program_error::ProgramError>
+{
+    use crate::protocol::marginfi::{wrapped_i80f48_to_u128, MarginfiV18Adapter};
+    use crate::protocol::LendingProtocol;
+
+    let market_key = *market.info.key;
+
+    // Anything crossable at all? Cheap pre-check avoids the oracle reads
+    // on the (common) empty-bids path.
+    let (bids_count, fee_floor_bps, origination_bps, ltv_buffer_bps, dmd, cmd) = {
+        let market_data = market.info.try_borrow_data()?;
+        let fixed_size = std::mem::size_of::<MarketFixed>();
+        let header: &MarketFixed = bytemuck::from_bytes(&market_data[..fixed_size]);
+        let dynamic = &market_data[fixed_size..];
+        (
+            crate::state::market_helpers::count_resting_bids(header, dynamic),
+            header.fee_config.protocol_fee_bps_floor,
+            header.fee_config.origination_bps,
+            header.fee_config.ltv_buffer_bps,
+            header.debt_mint_decimals,
+            header.collateral_mint_decimals,
+        )
+    };
+    if bids_count == 0 {
+        return Ok(Default::default());
+    }
+
+    // Each fill consumes one MatchedLoan block — budget for the worst
+    // case up front.
+    super::shared::expand_market_to_free_blocks(fee_payer.info, market, bids_count)?;
+
+    let debt_oracle_price_fp48 = crate::math::Fp48::from_raw(MarginfiV18Adapter.oracle_price(
+        &crate::validation::oracle_price_args(debt_bank.info, debt_oracle_ais),
+    )?);
+    let collateral_oracle_price_fp48 = crate::math::Fp48::from_raw(
+        MarginfiV18Adapter.oracle_price(&crate::validation::oracle_price_args(
+            collateral_bank.info,
+            collateral_oracle_ais,
+        ))?,
+    );
+    let (_d_asset, debt_liability_weight_init_raw) =
+        MarginfiV18Adapter.init_weight(&[debt_bank.info.clone()])?;
+    let (collateral_asset_weight_init_raw, _c_liab) =
+        MarginfiV18Adapter.init_weight(&[collateral_bank.info.clone()])?;
+    let lender_debt_snapshot_fp48 = {
+        let data = debt_bank.info.try_borrow_data()?;
+        let bank = marginfi_mocks::state::Bank::try_from_account_data(&data)
+            .map_err(|_| crate::program::YdeltaError::IncorrectAccount)?;
+        crate::math::Fp48::from_raw(wrapped_i80f48_to_u128(bank.asset_share_value)?)
+    };
+
+    let market_data: &mut std::cell::RefMut<&mut [u8]> =
+        &mut market.info.try_borrow_mut_data()?;
+    let da = super::shared::get_mut_dynamic_account::<MarketFixed>(market_data);
+    crate::state::market_helpers::match_resting_bids(
+        da.fixed,
+        da.dynamic,
+        crate::state::market_helpers::MatchRestingBidsArgs {
+            market_pubkey: market_key,
+            ask_seat_index,
+            ask_sub_vault_id,
+            ask_rate_bps,
+            ask_term_seconds,
+            ask_curator_fee_bps,
+            profile_max_ltv_bps,
+            fee_floor_bps,
+            origination_bps,
+            now_unix_ts: now,
+            lender_debt_share_price_snapshot_fp48: lender_debt_snapshot_fp48,
+            debt_oracle_price_fp48,
+            collateral_oracle_price_fp48,
+            debt_liability_weight_init_fp48: crate::math::Fp48::from_raw(
+                debt_liability_weight_init_raw,
+            ),
+            collateral_asset_weight_init_fp48: crate::math::Fp48::from_raw(
+                collateral_asset_weight_init_raw,
+            ),
+            ltv_buffer_bps,
+            debt_mint_decimals: dmd,
+            collateral_mint_decimals: cmd,
+            max_fills,
+        },
+        vault_ai,
+    )
 }

@@ -26,6 +26,9 @@ pub fn update_order_for_sub_vault_instruction(
     curator: &Pubkey,
     debt_bank: &Pubkey,
     marginfi_group: &Pubkey,
+    collateral_bank: &Pubkey,
+    debt_oracles: &[Pubkey],
+    collateral_oracles: &[Pubkey],
     sub_vault_id: u16,
     new_flags: u8,
 ) -> Instruction {
@@ -37,9 +40,7 @@ pub fn update_order_for_sub_vault_instruction(
     }
     .serialize(&mut data)
     .unwrap();
-    Instruction {
-        program_id: crate::id(),
-        accounts: vec![
+    let mut accounts = vec![
             AccountMeta::new(*fee_payer, true),
             AccountMeta::new_readonly(*curator, true),
             AccountMeta::new_readonly(global_config_pda().0, false),
@@ -47,8 +48,18 @@ pub fn update_order_for_sub_vault_instruction(
             AccountMeta::new(*market, false),
             AccountMeta::new_readonly(*debt_bank, false),
             AccountMeta::new_readonly(*marginfi_group, false),
-            AccountMeta::new_readonly(system_program::id(), false),
-        ],
+            AccountMeta::new_readonly(*collateral_bank, false),
+        ];
+    for o in debt_oracles {
+        accounts.push(AccountMeta::new_readonly(*o, false));
+    }
+    for o in collateral_oracles {
+        accounts.push(AccountMeta::new_readonly(*o, false));
+    }
+    accounts.push(AccountMeta::new_readonly(system_program::id(), false));
+    Instruction {
+        program_id: crate::id(),
+        accounts,
         data,
     }
 }

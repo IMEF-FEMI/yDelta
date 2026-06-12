@@ -360,6 +360,17 @@ pub struct PlaceOrderForSubVaultLog {
 }
 impl_discriminant!(PlaceOrderForSubVaultLog);
 
+/// Emitted by the permissionless `MatchCrank` (v1 D7/D8).
+#[repr(C)]
+#[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
+pub struct MatchCrankLog {
+    pub market: Pubkey,
+    pub cranker: Pubkey,
+    pub fills: u32,
+    pub _pad0: [u8; 4],
+}
+impl_discriminant!(MatchCrankLog);
+
 /// Emitted when a borrower cancels their resting bid (v1 D6).
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]

@@ -1802,3 +1802,348 @@ pub fn match_p2pool_residual_against_asks(
         crosses,
     })
 }
+
+/// Inputs to [`match_resting_bids`] — the v1 D6/D7 ask-side take path:
+/// a sub-vault ask (placement, re-sync, or the permissionless crank)
+/// walks the bids tree and fills resting borrower bids.
+pub struct MatchRestingBidsArgs {
+    /// Market the take runs against.
+    pub market_pubkey: Pubkey,
+    /// The taking ask's sub-vault seat index.
+    pub ask_seat_index: DataIndex,
+    /// The taking ask's sub-vault id.
+    pub ask_sub_vault_id: u16,
+    /// The ask's stored rate (live bank APR + spread).
+    pub ask_rate_bps: u16,
+    /// The ask's term capacity (`sub_vault.max_term_seconds`).
+    pub ask_term_seconds: u32,
+    /// Sub-vault's curator fee, stamped on each fill (v1 D3b).
+    pub ask_curator_fee_bps: u16,
+    /// Sub-vault's origination LTV cap (v1 D17 single gate, phase 5).
+    pub profile_max_ltv_bps: u16,
+    /// Market protocol-fee floor applied to the borrower rate.
+    pub fee_floor_bps: u16,
+    /// Market origination fee in bps.
+    pub origination_bps: u16,
+    /// Now-timestamp (expiry pruning + match stamps).
+    pub now_unix_ts: i64,
+    /// Debt-bank share-price snapshot stamped on each `MatchedLoan`.
+    pub lender_debt_share_price_snapshot_fp48: crate::math::Fp48,
+
+    /// LTV gate inputs (same sources as [`MatchArgs`]).
+    pub debt_oracle_price_fp48: crate::math::Fp48,
+    /// Collateral oracle price.
+    pub collateral_oracle_price_fp48: crate::math::Fp48,
+    /// Marginfi `liability_weight_init` for the debt bank.
+    pub debt_liability_weight_init_fp48: crate::math::Fp48,
+    /// Marginfi `asset_weight_init` for the collateral bank.
+    pub collateral_asset_weight_init_fp48: crate::math::Fp48,
+    /// Market LTV top-up buffer in bps.
+    pub ltv_buffer_bps: u16,
+    /// Debt mint decimals.
+    pub debt_mint_decimals: u8,
+    /// Collateral mint decimals.
+    pub collateral_mint_decimals: u8,
+
+    /// Fill budget; the scan stops once this many fills land.
+    pub max_fills: u32,
+}
+
+/// Output of [`match_resting_bids`].
+#[derive(Default, Clone, Copy)]
+pub struct MatchRestingBidsResult {
+    /// Principal filled against resting bids.
+    pub total_filled_principal: u64,
+    /// Fills produced.
+    pub num_fills: u32,
+    /// Expired bids pruned during the scan (v1 D10).
+    pub num_pruned: u32,
+}
+
+/// Walks the BIDS tree best-down (highest rate first) and fills resting
+/// borrower bids against a sub-vault ask (v1 D6/D7). Per-bid gates:
+/// expiry (prune, v1 D10) → self-cross (skip) → rate cross → term
+/// (`bid.term ≤ ask.term`) → sub-vault idle (cap; break when exhausted)
+/// → LTV at live oracle prices (skip) → reserve fill on the sub-vault →
+/// mint a `MatchedLoan`. Partially-filled bids shrink proportionally;
+/// fully-consumed bids leave the tree (their `UserOrderRef` is lazily
+/// dropped by the owner's next ix).
+pub fn match_resting_bids(
+    fixed: &mut MarketFixed,
+    dynamic: &mut [u8],
+    args: MatchRestingBidsArgs,
+    vault_ai: &solana_program::account_info::AccountInfo<'_>,
+) -> Result<MatchRestingBidsResult, ProgramError> {
+    let mut result = MatchRestingBidsResult::default();
+    let mut current_bid_index: DataIndex = fixed.bids_best_index;
+
+    while is_not_nil!(current_bid_index) && result.num_fills < args.max_fills {
+        let bid: RestingOrder = *get_helper_order(dynamic, current_bid_index).get_value();
+        // Capture the successor BEFORE any mutation/removal of `current`.
+        let next_bid_index: DataIndex = {
+            let tree: super::market::BooksideReadOnly = super::market::BooksideReadOnly::new(
+                dynamic,
+                fixed.bids_root_index,
+                fixed.bids_best_index,
+            );
+            tree.get_next_lower_index::<RestingOrder>(current_bid_index)
+        };
+
+        // v1 D10: prune expired bids — release the bidder's collateral
+        // at the order's stored snapshot and free the block.
+        if bid.is_expired(args.now_unix_ts) {
+            let snapshot = bid.share_price_snapshot();
+            unencumber_for_order(
+                dynamic,
+                bid.trader_seat_index,
+                Side::Bid,
+                atoms_to_shares_at_snapshot(bid.principal_atoms, snapshot)?,
+                atoms_to_shares_at_snapshot(bid.collateral_atoms, snapshot)?,
+            )?;
+            remove_order_from_tree_and_free(fixed, dynamic, current_bid_index);
+            emit_stack(crate::logs::OrderExpiredLog {
+                market: args.market_pubkey,
+                owner_seat_index: bid.trader_seat_index,
+                side: Side::Bid as u8,
+                _padding: [0; 3],
+                sequence: bid.sequence_number,
+            })?;
+            result.num_pruned = result.num_pruned.saturating_add(1);
+            current_bid_index = next_bid_index;
+            continue;
+        }
+
+        if bid.trader_seat_index == args.ask_seat_index {
+            current_bid_index = next_bid_index;
+            continue;
+        }
+
+        // Bids descend from the best (highest) rate: once one is below
+        // the ask, none can cross.
+        if bid.rate_bps < args.ask_rate_bps {
+            break;
+        }
+        if bid.term_seconds > args.ask_term_seconds {
+            current_bid_index = next_bid_index;
+            continue;
+        }
+
+        // Idle capacity, read live from the vault (same as match_order).
+        let profile_idle: u64 = {
+            let vault_data = vault_ai.try_borrow_data()?;
+            let (fixed_bytes, vault_dyn) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
+            let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
+            let probe = SubVault::new_empty(args.ask_sub_vault_id, Pubkey::default(), 1, 1);
+            let tree =
+                SubVaultTreeReadOnly::new(vault_dyn, header.sub_vaults_root_index, NIL);
+            let idx = tree.lookup_index(&probe);
+            if idx == NIL {
+                0
+            } else {
+                let p = get_helper_sub_vault(vault_dyn, idx).get_value();
+                if p.is_sunset != 0 {
+                    0
+                } else {
+                    p.total_principal_atoms
+                        .saturating_sub(p.deployed_principal_atoms)
+                        .saturating_sub(p.encumbered_in_orders_atoms)
+                        .saturating_sub(MARGINFI_ROUNDING_RESERVE_ATOMS)
+                }
+            }
+        };
+        if profile_idle == 0 {
+            // The taking ask has no more capacity — stop.
+            break;
+        }
+
+        let fill: u64 = bid.principal_atoms.min(profile_idle);
+        let full_consumption: bool = fill == bid.principal_atoms;
+        let consumed_collateral: u64 = if full_consumption {
+            bid.collateral_atoms
+        } else {
+            crate::math::mul_div_u64(bid.collateral_atoms, fill, bid.principal_atoms, false)?
+        };
+
+        // LTV gates at live oracle prices — a failing bid is skipped
+        // (its collateral may satisfy a looser ask later).
+        {
+            let required_collateral =
+                crate::state::ltv::get_required_quote_collateral_to_back_debt(
+                    fill,
+                    args.debt_oracle_price_fp48,
+                    args.collateral_oracle_price_fp48,
+                    args.debt_liability_weight_init_fp48,
+                    args.collateral_asset_weight_init_fp48,
+                    args.ltv_buffer_bps,
+                    args.debt_mint_decimals,
+                    args.collateral_mint_decimals,
+                )?;
+            if consumed_collateral < required_collateral {
+                current_bid_index = next_bid_index;
+                continue;
+            }
+            if args.profile_max_ltv_bps > 0 {
+                let collateral_asset_weight_fp48 =
+                    crate::math::to_scaled(args.profile_max_ltv_bps as u128)? / 10_000u128;
+                let required_at_profile_cap =
+                    crate::state::ltv::get_required_quote_collateral_to_back_debt(
+                        fill,
+                        args.debt_oracle_price_fp48,
+                        args.collateral_oracle_price_fp48,
+                        crate::math::Fp48::ONE,
+                        crate::math::Fp48::from_raw(collateral_asset_weight_fp48),
+                        0,
+                        args.debt_mint_decimals,
+                        args.collateral_mint_decimals,
+                    )?;
+                if consumed_collateral < required_at_profile_cap {
+                    current_bid_index = next_bid_index;
+                    continue;
+                }
+            }
+        }
+
+        // Reserve the fill on the sub-vault (encumbered + loan counter).
+        {
+            let mut vault_data = vault_ai.try_borrow_mut_data()?;
+            let (fixed_bytes, vault_dyn) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
+            let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
+            let probe = SubVault::new_empty(args.ask_sub_vault_id, Pubkey::default(), 1, 1);
+            let tree =
+                SubVaultTreeReadOnly::new(vault_dyn, header.sub_vaults_root_index, NIL);
+            let idx = tree.lookup_index(&probe);
+            if idx != NIL {
+                let p = get_mut_helper_sub_vault(vault_dyn, idx).get_mut_value();
+                p.encumbered_in_orders_atoms = p
+                    .encumbered_in_orders_atoms
+                    .checked_add(fill)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+                p.open_loans_count = p
+                    .open_loans_count
+                    .checked_add(1)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+            }
+        }
+
+        // Rate stamping — identical to match_order (path-independent,
+        // v1 §4.3).
+        let floored_lender_rate: u32 =
+            (args.ask_rate_bps as u32) + (args.fee_floor_bps as u32);
+        require!(
+            floored_lender_rate <= u16::MAX as u32,
+            YdeltaError::InvalidArgument,
+            "ask_rate {} + fee_floor {} exceeds u16::MAX",
+            args.ask_rate_bps,
+            args.fee_floor_bps
+        )?;
+        let borrower_rate = bid.rate_bps.max(floored_lender_rate as u16);
+        let origination_atoms = crate::math::mul_div_u64(
+            fill,
+            args.origination_bps as u64,
+            crate::state::loan::BPS_PER_UNIT as u64,
+            false,
+        )?;
+
+        let sequence = fixed.matched_loan_sequence;
+        let mut node: MatchedLoan = Default::default();
+        node.sequence = sequence;
+        node.principal_atoms = fill;
+        node.origination_atoms = origination_atoms;
+        node.collateral_atoms = consumed_collateral;
+        node.matched_at_unix = args.now_unix_ts;
+        node.lender_seat_index = args.ask_seat_index;
+        node.borrower_seat_index = bid.trader_seat_index;
+        node.term_seconds = bid.term_seconds;
+        node.borrower_rate_bps = borrower_rate;
+        node.lender_rate_bps = args.ask_rate_bps;
+        node.loan_type = 0;
+        node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
+        node.curator_fee_bps_snapshot = args.ask_curator_fee_bps;
+        node.lender_debt_share_price_snapshot_fp48 =
+            args.lender_debt_share_price_snapshot_fp48;
+        node.borrower_collateral_share_price_snapshot_fp48 = bid.share_price_snapshot();
+
+        let node_index = get_free_address_on_market_fixed_for_matched_loan(fixed, dynamic);
+        require!(
+            is_not_nil!(node_index),
+            ProgramError::AccountDataTooSmall,
+            "No free block for MatchedLoan — expand market"
+        )?;
+        let mut matched_tree =
+            MatchedLoanTree::new(dynamic, fixed.matched_loans_root_index, NIL);
+        matched_tree.insert(node_index, node);
+        fixed.matched_loans_root_index = matched_tree.get_root_index();
+        drop(matched_tree);
+
+        emit_stack(MatchedLoanCreatedLog {
+            market: args.market_pubkey,
+            loan_pda: Pubkey::default(),
+            sequence,
+            lender_seat_index: args.ask_seat_index,
+            borrower_seat_index: bid.trader_seat_index,
+            principal_atoms: fill,
+            collateral_atoms: consumed_collateral,
+            borrower_rate_bps: borrower_rate,
+            lender_rate_bps: args.ask_rate_bps,
+            term_seconds: bid.term_seconds,
+            matched_at_unix: args.now_unix_ts,
+            loan_type: 0,
+            flags: crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER,
+            _padding: [0; 6],
+        })?;
+
+        fixed.matched_loan_sequence = fixed
+            .matched_loan_sequence
+            .checked_add(1)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+
+        {
+            let seat = get_mut_helper_seat(dynamic, bid.trader_seat_index).get_mut_value();
+            seat.open_borrow_count = seat
+                .open_borrow_count
+                .checked_add(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
+        {
+            let seat = get_mut_helper_seat(dynamic, args.ask_seat_index).get_mut_value();
+            seat.open_lend_count = seat
+                .open_lend_count
+                .checked_add(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
+
+        // Shrink or consume the bid. Consumed collateral STAYS encumbered
+        // (it backs the open loan; released at close from the loan's
+        // stamp, which equals the bid's snapshot).
+        if full_consumption {
+            remove_order_from_tree_and_free(fixed, dynamic, current_bid_index);
+        } else {
+            let order = crate::state::market::get_mut_helper_order(dynamic, current_bid_index)
+                .get_mut_value();
+            order.reduce(fill)?;
+            order.collateral_atoms = order
+                .collateral_atoms
+                .checked_sub(consumed_collateral)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
+
+        result.total_filled_principal = result
+            .total_filled_principal
+            .checked_add(fill)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+        result.num_fills = result.num_fills.saturating_add(1);
+        current_bid_index = next_bid_index;
+    }
+
+    Ok(result)
+}
+
+/// Counts live resting bids (block-budgeting for the take paths).
+pub fn count_resting_bids(fixed: &MarketFixed, dynamic: &[u8]) -> usize {
+    let tree = RedBlackTreeReadOnly::<RestingOrder>::new(
+        dynamic,
+        fixed.bids_root_index,
+        fixed.bids_best_index,
+    );
+    tree.iter::<RestingOrder>().count()
+}
