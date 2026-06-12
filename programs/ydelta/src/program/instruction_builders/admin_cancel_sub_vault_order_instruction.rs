@@ -18,12 +18,12 @@ use crate::state::vault::global_vault_pda;
 /// vault admin; targets `sub_vault_id`'s resting ask on `market` for the
 /// vault keyed by `mint`.
 pub fn admin_cancel_sub_vault_order_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     market: &Pubkey,
     payer: &Pubkey,
     sub_vault_id: u16,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::AdminCancelSubVaultOrder.to_vec();
     AdminCancelSubVaultOrderParams { sub_vault_id }
         .serialize(&mut data)

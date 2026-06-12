@@ -717,7 +717,7 @@ impl MarketFixture {
     ) -> Result<(), solana_program_test::BanksClientError> {
         let loan = self.read_loan_in(market_pk, sequence).await;
         let cranker_refund = loan.created_by;
-        let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
+        let gv_pk = global_vault_pda(&mainnet::usdc_bank()).0;
         let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
             Some(&gv_pk)
         } else {
@@ -807,7 +807,7 @@ impl MarketFixture {
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
         let market_pk = self.market.pubkey();
-        let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
+        let (gv, _) = global_vault_pda(&mainnet::usdc_bank());
         let (gv_signer, _) = global_vault_signer_pda(&gv);
         let (gv_staging, _) = global_vault_staging_pda(&gv);
         let (gv_integration, _) = global_vault_integration_account_pda(&gv);
@@ -865,7 +865,7 @@ impl MarketFixture {
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
         let market_pk = self.market.pubkey();
-        let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
+        let (gv, _) = global_vault_pda(&mainnet::usdc_bank());
         let (lender_mfi, _) = get_lender_integration_account_address(&market_pk);
         let (debt_bank_lva, _) = solana_program::pubkey::Pubkey::find_program_address(
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
@@ -901,7 +901,7 @@ impl MarketFixture {
         sequence: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
-        let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
+        let (gv, _) = global_vault_pda(&mainnet::usdc_bank());
         let (gv_signer, _) = global_vault_signer_pda(&gv);
         let (gv_staging, _) = global_vault_staging_pda(&gv);
         let (gv_integration, _) = global_vault_integration_account_pda(&gv);
@@ -948,7 +948,7 @@ impl MarketFixture {
         sub_vault_id: u16,
     ) -> Result<(), solana_program_test::BanksClientError> {
         self.refresh_oracle_freshness().await;
-        let (gv, _) = global_vault_pda(&mainnet::usdc_mint());
+        let (gv, _) = global_vault_pda(&mainnet::usdc_bank());
         let (lender_mfi, _) = get_lender_integration_account_address(&market_pk);
         let (debt_bank_lva, _) = solana_program::pubkey::Pubkey::find_program_address(
             &[b"liquidity_vault_auth", mainnet::usdc_bank().as_ref()],
@@ -1004,7 +1004,7 @@ impl MarketFixture {
     ) -> Result<(), solana_program_test::BanksClientError> {
         let loan = self.read_loan(sequence).await;
         let cranker_refund = loan.created_by;
-        let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
+        let gv_pk = global_vault_pda(&mainnet::usdc_bank()).0;
         let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
             Some(&gv_pk)
         } else {
@@ -1054,7 +1054,7 @@ impl MarketFixture {
             &marginfi_mocks::ID,
         );
         let _ = debt_bank_lva;
-        let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
+        let gv_pk = global_vault_pda(&mainnet::usdc_bank()).0;
         let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
             Some(&gv_pk)
         } else {
@@ -1110,7 +1110,7 @@ impl MarketFixture {
             &[b"liquidity_vault_auth", mainnet::sol_bank().as_ref()],
             &marginfi_mocks::ID,
         );
-        let gv_pk = global_vault_pda(&mainnet::usdc_mint()).0;
+        let gv_pk = global_vault_pda(&mainnet::usdc_bank()).0;
         let global_vault: Option<&Pubkey> = if loan.loan_type == ydelta::state::loan::LoanType::Fixed as u8 {
             Some(&gv_pk)
         } else {
@@ -1393,6 +1393,7 @@ impl MarketFixture {
         // Step 1: protocol_admin creates the vault (becomes initial
         // global_vault_admin = self.payer).
         let create_ix = create_vault_instruction(
+            &mainnet::usdc_bank(),
             &mainnet::usdc_mint(),
             &self.payer.pubkey(),
             &mainnet::marginfi_group(),
@@ -1408,7 +1409,7 @@ impl MarketFixture {
         // Step 2: protocol_admin initiates transfer to the test's admin.
         let transfer_ix =
             ydelta::program::instruction_builders::admin_transfer_instructions::transfer_global_vault_admin_instruction(
-                &mainnet::usdc_mint(),
+                &mainnet::usdc_bank(),
                 &self.payer.pubkey(),
                 &admin.pubkey(),
             );
@@ -1419,7 +1420,7 @@ impl MarketFixture {
         // Step 3: test's admin accepts.
         let accept_ix =
             ydelta::program::instruction_builders::admin_transfer_instructions::accept_global_vault_admin_instruction(
-                &mainnet::usdc_mint(),
+                &mainnet::usdc_bank(),
                 &admin.pubkey(),
             );
         let admin_kp = admin.insecure_clone();
@@ -1432,7 +1433,7 @@ impl MarketFixture {
         admin: &Keypair,
         paused: bool,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let (vault_pk, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
+        let (vault_pk, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_bank());
         let ix =
             ydelta::program::instruction_builders::set_vault_pause_instruction::set_vault_pause_instruction(
                 &vault_pk,
@@ -1456,7 +1457,7 @@ impl MarketFixture {
         max_term_seconds: u32,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = create_sub_vault_instruction(
-            &mainnet::usdc_mint(),
+            &mainnet::usdc_bank(),
             &admin.pubkey(),
             &curator,
             max_ltv_bps,
@@ -1475,6 +1476,7 @@ impl MarketFixture {
         amount_atoms: u64,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = global_vault_deposit_instruction(
+            &mainnet::usdc_bank(),
             &mainnet::usdc_mint(),
             &depositor.pubkey(),
             &depositor_token,
@@ -1500,6 +1502,7 @@ impl MarketFixture {
     ) -> Result<(), solana_program_test::BanksClientError> {
         let bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
         let ix = global_vault_withdraw_instruction(
+            &mainnet::usdc_bank(),
             &mainnet::usdc_mint(),
             &depositor.pubkey(),
             &depositor_token,
@@ -1526,7 +1529,7 @@ impl MarketFixture {
         new_max_term_seconds: Option<u32>,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = update_sub_vault_instruction(
-            &mainnet::usdc_mint(),
+            &mainnet::usdc_bank(),
             &admin.pubkey(),
             sub_vault_id,
             new_max_ltv_bps,
@@ -1548,7 +1551,7 @@ impl MarketFixture {
         flags: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = place_order_for_sub_vault_instruction(
-            &mainnet::usdc_mint(),
+            &mainnet::usdc_bank(),
             &market_pk,
             &self.payer.pubkey(),
             &curator.pubkey(),
@@ -1574,7 +1577,7 @@ impl MarketFixture {
         flags: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = place_order_for_sub_vault_instruction(
-            &mainnet::usdc_mint(),
+            &mainnet::usdc_bank(),
             &self.market.pubkey(),
             &self.payer.pubkey(),
             &curator.pubkey(),
@@ -1653,6 +1656,7 @@ impl MarketFixture {
     ) -> Result<(), solana_program_test::BanksClientError> {
         let bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
         let ix = claim_curator_fee_instruction(
+            &mainnet::usdc_bank(),
             &mainnet::usdc_mint(),
             &curator.pubkey(),
             &curator_token,
@@ -1671,7 +1675,7 @@ impl MarketFixture {
 
     /// Read the per-mint `GlobalVaultFixed` header.
     pub async fn read_vault_fixed(&self) -> ydelta::state::vault::GlobalVaultFixed {
-        let (global_vault_pda, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
+        let (global_vault_pda, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_bank());
         let data = self.account_data(global_vault_pda).await;
         let size = std::mem::size_of::<ydelta::state::vault::GlobalVaultFixed>();
         *bytemuck::from_bytes(&data[..size])
@@ -1679,7 +1683,7 @@ impl MarketFixture {
 
     /// Read the vault's `SubVault` for the given sub_vault_id.
     pub async fn read_sub_vault(&self, sub_vault_id: u16) -> ydelta::state::vault::SubVault {
-        let (global_vault_pda, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
+        let (global_vault_pda, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_bank());
         let data = self.account_data(global_vault_pda).await;
         let size = std::mem::size_of::<ydelta::state::vault::GlobalVaultFixed>();
         let header: &ydelta::state::vault::GlobalVaultFixed = bytemuck::from_bytes(&data[..size]);

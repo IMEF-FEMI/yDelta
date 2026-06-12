@@ -25,6 +25,7 @@ use crate::state::vault::{
 /// the I80F48-raw share count to redeem.
 #[allow(clippy::too_many_arguments)]
 pub fn global_vault_withdraw_instruction(
+    bank: &Pubkey,
     mint: &Pubkey,
     depositor: &Pubkey,
     depositor_token: &Pubkey,
@@ -38,7 +39,7 @@ pub fn global_vault_withdraw_instruction(
     sub_vault_id: u16,
     shares_to_burn: u128,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let (global_vault_signer, _) = global_vault_signer_pda(&vault);
     let (global_vault_staging, _) = global_vault_staging_pda(&vault);
     let (integration_account, _) = global_vault_integration_account_pda(&vault);

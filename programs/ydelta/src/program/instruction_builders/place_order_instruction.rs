@@ -93,7 +93,7 @@ pub fn place_order_instruction(
         AccountMeta::new(market_debt_vault, false),
     ]);
 
-    let (vault_pk, _) = crate::state::vault::global_vault_pda(debt_mint);
+    let (vault_pk, _) = crate::state::vault::global_vault_pda(debt_bank);
     accounts.push(AccountMeta::new(vault_pk, false));
     Instruction {
         program_id: crate::id(),

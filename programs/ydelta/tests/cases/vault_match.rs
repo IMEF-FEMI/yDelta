@@ -572,7 +572,7 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
         )
         .await;
 
-    let vault_pk = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint()).0;
+    let vault_pk = ydelta::state::vault::global_vault_pda(&mainnet::usdc_bank()).0;
     let seat = fixture.read_vault_seat(&vault_pk, 1).await;
     assert_eq!(seat.open_lend_count, 1, "one resting ask");
 
@@ -633,7 +633,7 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
     );
 
     let cancel_ix = cancel_order_for_sub_vault_instruction(
-        &mainnet::usdc_mint(),
+        &mainnet::usdc_bank(),
         &fixture.market.pubkey(),
         &admin.pubkey(),
         &curator.pubkey(),

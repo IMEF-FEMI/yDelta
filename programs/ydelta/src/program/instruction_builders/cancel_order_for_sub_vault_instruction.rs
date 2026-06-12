@@ -17,13 +17,13 @@ use crate::state::vault::global_vault_pda;
 /// `fee_payer` covers tx fees. Removes the `sub_vault_id` resting ask on
 /// `market` for the vault keyed by `mint`.
 pub fn cancel_order_for_sub_vault_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
     sub_vault_id: u16,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::CancelOrderForSubVault.to_vec();
     CancelOrderForSubVaultParams { sub_vault_id }
         .serialize(&mut data)

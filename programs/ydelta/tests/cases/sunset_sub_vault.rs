@@ -25,7 +25,7 @@ async fn setup_vault_with_profile(
 }
 
 async fn sunset(fixture: &MarketFixture, admin: &solana_sdk::signature::Keypair, sub_vault_id: u16) {
-    let ix = sunset_sub_vault_instruction(&mainnet::usdc_mint(), &admin.pubkey(), sub_vault_id);
+    let ix = sunset_sub_vault_instruction(&mainnet::usdc_bank(), &admin.pubkey(), sub_vault_id);
     fixture.process(ix, &[admin]).await.unwrap();
     fixture.refresh_blockhash().await;
 }
@@ -127,7 +127,7 @@ async fn sunset_allows_curator_cancel() {
     sunset(&fixture, &admin, 1).await;
 
     let cancel_ix = cancel_order_for_sub_vault_instruction(
-        &mainnet::usdc_mint(),
+        &mainnet::usdc_bank(),
         &fixture.market.pubkey(),
         &admin.pubkey(),
         &curator.pubkey(),
@@ -162,7 +162,7 @@ async fn resume_restores_active_state() {
     fixture.refresh_blockhash().await;
 
     let resume_ix =
-        resume_sub_vault_instruction(&mainnet::usdc_mint(), &admin.pubkey(), 1);
+        resume_sub_vault_instruction(&mainnet::usdc_bank(), &admin.pubkey(), 1);
     fixture.process(resume_ix, &[&admin]).await.unwrap();
     fixture.refresh_blockhash().await;
 
@@ -186,7 +186,7 @@ async fn admin_cancel_requires_sunset() {
     fixture.refresh_blockhash().await;
 
     let admin_cancel_ix = admin_cancel_sub_vault_order_instruction(
-        &mainnet::usdc_mint(),
+        &mainnet::usdc_bank(),
         &fixture.market.pubkey(),
         &admin.pubkey(),
         1,
@@ -210,7 +210,7 @@ async fn admin_cancel_works_during_sunset() {
     sunset(&fixture, &admin, 1).await;
 
     let admin_cancel_ix = admin_cancel_sub_vault_order_instruction(
-        &mainnet::usdc_mint(),
+        &mainnet::usdc_bank(),
         &fixture.market.pubkey(),
         &admin.pubkey(),
         1,
@@ -228,7 +228,7 @@ async fn remove_requires_sunset() {
     let curator = fixture.create_trader().await;
     setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
 
-    let remove_ix = remove_sub_vault_instruction(&mainnet::usdc_mint(), &admin.pubkey(), 1);
+    let remove_ix = remove_sub_vault_instruction(&mainnet::usdc_bank(), &admin.pubkey(), 1);
     let result = fixture.process(remove_ix, &[&admin]).await;
     crate::assert_custom_error!(result, YdeltaError::SubVaultNotSunset);
 }
@@ -241,7 +241,7 @@ async fn remove_succeeds_after_sunset() {
     setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
     sunset(&fixture, &admin, 1).await;
 
-    let remove_ix = remove_sub_vault_instruction(&mainnet::usdc_mint(), &admin.pubkey(), 1);
+    let remove_ix = remove_sub_vault_instruction(&mainnet::usdc_bank(), &admin.pubkey(), 1);
     fixture
         .process(remove_ix, &[&admin])
         .await
@@ -276,7 +276,7 @@ async fn sunset_skips_matching() {
         .unwrap();
     fixture.refresh_blockhash().await;
     let curator_ix = place_order_for_sub_vault_instruction(
-        &mainnet::usdc_mint(),
+        &mainnet::usdc_bank(),
         &fixture.market.pubkey(),
         &fixture.payer.pubkey(),
         &depositor.pubkey(),

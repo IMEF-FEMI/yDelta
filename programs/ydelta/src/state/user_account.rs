@@ -71,7 +71,13 @@ pub struct UserAccountFixed {
     pub version: u8,
     _padding: [u8; 2],
 
-    _reserved: [u64; 7],
+    /// Root of the [`UserOrderRef`] tree (resting bids across markets;
+    /// v1 D6 — maintained by the user place/cancel/update-bid paths).
+    pub open_orders_root_index: DataIndex,
+    /// Number of live `UserOrderRef` nodes.
+    pub user_order_count: u32,
+
+    _reserved: [u64; 6],
 }
 const_assert_eq!(size_of::<UserAccountFixed>(), USER_ACCOUNT_FIXED_SIZE);
 const_assert_eq!(size_of::<UserAccountFixed>() % 8, 0);
@@ -94,7 +100,9 @@ impl UserAccountFixed {
             bump,
             version: crate::state::constants::ACCOUNT_LAYOUT_VERSION,
             _padding: [0; 2],
-            _reserved: [0; 7],
+            open_orders_root_index: NIL,
+            user_order_count: 0,
+            _reserved: [0; 6],
         }
     }
 
@@ -326,6 +334,172 @@ pub struct UserLoanRef {
 const_assert_eq!(size_of::<UserLoanRef>(), USER_LOAN_REF_SIZE);
 const_assert_eq!(size_of::<UserLoanRef>() % 8, 0);
 
+/// Pointer to a resting bid the user has on a market (v1 D6). Lets the
+/// UI enumerate the user's open orders without scanning every market.
+/// Maintained by the user place/cancel/update-bid paths; pruned lazily
+/// when a bid is consumed, cancelled, or expired-pruned.
+#[repr(C)]
+#[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
+pub struct UserOrderRef {
+    /// Market the bid rests on.
+    pub market: Pubkey,
+    /// Per-market order sequence assigned at rest time; with `market`
+    /// this is the unique key.
+    pub order_sequence: u64,
+    /// Outstanding principal of the resting bid.
+    pub principal_atoms: u64,
+    /// Unix-ts the bid was placed.
+    pub placed_at_unix: i64,
+    /// Bid term in seconds.
+    pub term_seconds: u32,
+    /// Bid rate in bps.
+    pub rate_bps: u16,
+    /// Always `Side::Bid` in v1 (users only rest bids).
+    pub side: u8,
+    _pad0: [u8; 1],
+
+    _reserved: [u64; 10],
+}
+const_assert_eq!(size_of::<UserOrderRef>(), super::constants::USER_ORDER_REF_SIZE);
+const_assert_eq!(size_of::<UserOrderRef>() % 8, 0);
+
+impl UserOrderRef {
+    /// Probe with identity fields set, for tree lookups.
+    pub fn probe(market: Pubkey, order_sequence: u64) -> Self {
+        Self {
+            market,
+            order_sequence,
+            ..Default::default()
+        }
+    }
+}
+
+impl Ord for UserOrderRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.market.cmp(&other.market) {
+            std::cmp::Ordering::Equal => self.order_sequence.cmp(&other.order_sequence),
+            ord => ord,
+        }
+    }
+}
+impl PartialOrd for UserOrderRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for UserOrderRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.market == other.market && self.order_sequence == other.order_sequence
+    }
+}
+impl Eq for UserOrderRef {}
+impl Get for UserOrderRef {}
+
+impl std::fmt::Display for UserOrderRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "UserOrderRef({}, seq={})",
+            self.market, self.order_sequence
+        )
+    }
+}
+
+/// Mutable view of the user open-order tree.
+pub type UserOrderTree<'a> = RedBlackTree<'a, UserOrderRef>;
+/// Read-only view of the user open-order tree.
+pub type UserOrderTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, UserOrderRef>;
+
+/// Returns a shared reference to the `UserOrderRef` node at `index`.
+pub fn get_helper_user_order(data: &[u8], index: DataIndex) -> &RBNode<UserOrderRef> {
+    get_helper::<RBNode<UserOrderRef>>(data, index)
+}
+/// Returns a mutable reference to the `UserOrderRef` node at `index`.
+pub fn get_mut_helper_user_order(data: &mut [u8], index: DataIndex) -> &mut RBNode<UserOrderRef> {
+    get_mut_helper::<RBNode<UserOrderRef>>(data, index)
+}
+
+/// Inserts a `UserOrderRef` for `(market, order_sequence)`. Returns the
+/// existing node index on hit; bumps `user_order_count` on insert.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_user_order(
+    fixed: &mut UserAccountFixed,
+    dynamic: &mut [u8],
+    market: Pubkey,
+    order_sequence: u64,
+    side: u8,
+    rate_bps: u16,
+    term_seconds: u32,
+    principal_atoms: u64,
+    placed_at_unix: i64,
+) -> Result<DataIndex, ProgramError> {
+    let probe = UserOrderRef::probe(market, order_sequence);
+    let existing_idx: DataIndex = {
+        let tree = UserOrderTreeReadOnly::new(dynamic, fixed.open_orders_root_index, NIL);
+        tree.lookup_index(&probe)
+    };
+    if existing_idx != NIL {
+        return Ok(existing_idx);
+    }
+
+    let order_index = get_free_address_on_user_account_fixed(fixed, dynamic);
+    require!(
+        order_index != NIL,
+        ProgramError::AccountDataTooSmall,
+        "No free block for UserOrderRef — expand user_account"
+    )?;
+    let new_ref = UserOrderRef {
+        market,
+        order_sequence,
+        principal_atoms,
+        placed_at_unix,
+        term_seconds,
+        rate_bps,
+        side,
+        _pad0: [0; 1],
+        _reserved: [0; 10],
+    };
+    let mut tree = UserOrderTree::new(dynamic, fixed.open_orders_root_index, NIL);
+    tree.insert(order_index, new_ref);
+    fixed.open_orders_root_index = tree.get_root_index();
+    drop(tree);
+
+    fixed.user_order_count = fixed
+        .user_order_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    Ok(order_index)
+}
+
+/// Removes the `UserOrderRef` for `(market, order_sequence)` and returns
+/// the freed node index, or `NIL` when not present.
+pub fn remove_user_order(
+    fixed: &mut UserAccountFixed,
+    dynamic: &mut [u8],
+    market: Pubkey,
+    order_sequence: u64,
+) -> Result<DataIndex, ProgramError> {
+    let probe = UserOrderRef::probe(market, order_sequence);
+    let idx: DataIndex = {
+        let tree = UserOrderTreeReadOnly::new(dynamic, fixed.open_orders_root_index, NIL);
+        tree.lookup_index(&probe)
+    };
+    if idx == NIL {
+        return Ok(NIL);
+    }
+    let mut tree = UserOrderTree::new(dynamic, fixed.open_orders_root_index, NIL);
+    tree.remove_by_index(idx);
+    fixed.open_orders_root_index = tree.get_root_index();
+    drop(tree);
+
+    fixed.user_order_count = fixed
+        .user_order_count
+        .checked_sub(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    release_address_on_user_account_fixed(fixed, dynamic, idx);
+    Ok(idx)
+}
+
 impl Ord for UserLoanRef {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.loan.cmp(&other.loan)
@@ -429,6 +603,7 @@ const _CHECK_USER_ACCOUNT_BLOCK_PAYLOAD: () = {
     assert!(VAULT_POSITION_SIZE == USER_ACCOUNT_BLOCK_PAYLOAD_SIZE);
     assert!(MARKET_POSITION_SIZE == USER_ACCOUNT_BLOCK_PAYLOAD_SIZE);
     assert!(USER_LOAN_REF_SIZE == USER_ACCOUNT_BLOCK_PAYLOAD_SIZE);
+    assert!(super::constants::USER_ORDER_REF_SIZE == USER_ACCOUNT_BLOCK_PAYLOAD_SIZE);
 };
 
 /// Pops a free block from the user-account dynamic region, returning

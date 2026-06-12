@@ -62,9 +62,10 @@ pub fn process_create_vault(
     let vault_bytes = vault_key.to_bytes();
 
     let rent: Rent = Rent::get()?;
-    let mint_bytes = mint_key.to_bytes();
+    // v1 D1: the vault PDA is keyed by the marginfi bank, not the mint.
+    let bank_bytes = lending_pool.info.key.to_bytes();
     let vault_bump_arr = [vault_bump];
-    let vault_seeds: &[&[u8]] = &[VAULT_SEED, &mint_bytes, &vault_bump_arr];
+    let vault_seeds: &[&[u8]] = &[VAULT_SEED, &bank_bytes, &vault_bump_arr];
     create_pda_resilient(
         payer.info,
         &vault,

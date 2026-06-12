@@ -159,7 +159,7 @@ async fn two_profiles_rest_asks_in_same_market() {
 
     // Both vault seats exist with distinct (vault, sub_vault_id) keys —
     // read_vault_seat panics if either is missing.
-    let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
+    let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_bank());
     let seat0 = fixture.read_vault_seat(&gv, 1).await;
     let seat1 = fixture.read_vault_seat(&gv, 2).await;
     assert_eq!(seat0.sub_vault_id, 1);

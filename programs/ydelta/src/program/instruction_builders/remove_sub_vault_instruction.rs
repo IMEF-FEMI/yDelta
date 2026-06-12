@@ -17,11 +17,11 @@ use crate::state::vault::global_vault_pda;
 /// `mint`. `payer` (signer) must be the vault admin; the target
 /// `sub_vault_id` must already have `is_sunset == 1`.
 pub fn remove_sub_vault_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     payer: &Pubkey,
     sub_vault_id: u16,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
 
     let mut data = YdeltaInstruction::RemoveSubVault.to_vec();
     RemoveSubVaultParams { sub_vault_id }

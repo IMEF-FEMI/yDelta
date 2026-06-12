@@ -22,6 +22,7 @@ use crate::state::vault::{
 /// token variants.
 #[allow(clippy::too_many_arguments)]
 pub fn create_vault_instruction(
+    bank: &Pubkey,
     mint: &Pubkey,
     payer: &Pubkey,
     marginfi_group: &Pubkey,
@@ -30,7 +31,7 @@ pub fn create_vault_instruction(
     token_program: &Pubkey,
     token_program_22: &Pubkey,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let (global_vault_signer, _) = global_vault_signer_pda(&vault);
     let (integration_account, _) = global_vault_integration_account_pda(&vault);
     let (global_vault_staging, _) = global_vault_staging_pda(&vault);

@@ -806,12 +806,13 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
                 } else {
                     let typed_vault =
                         YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(ai)?;
-                    let (expected_vault, _) = crate::state::vault::global_vault_pda(&debt_mint_pk);
+                    let (expected_vault, _) =
+                        crate::state::vault::global_vault_pda(&debt_lending_pool);
                     require!(
                         *ai.key == expected_vault,
                         YdeltaError::IncorrectAccount,
                         "vault PDA does not match expected derivation \
-                         from market.debt_mint"
+                         from market.debt_lending_pool (v1 D1: bank-keyed)"
                     )?;
 
                     require_vault_not_paused(&typed_vault)?;
@@ -1044,11 +1045,13 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
     let mint_key = *mint_ai.key;
     let mint = MintAccountInfo::new(mint_ai)?;
 
-    let (expected_global_vault_pda, _) = crate::state::vault::global_vault_pda(&mint_key);
+    let (expected_global_vault_pda, _) =
+        crate::state::vault::global_vault_pda(debt_bank_ai.key);
     require!(
         vault_key == expected_global_vault_pda,
         YdeltaError::IncorrectAccount,
-        "vault PDA does not match expected derivation from loan.debt_mint"
+        "vault PDA does not match expected derivation from the debt bank \
+         (v1 D1: bank-keyed)"
     )?;
 
     let expected_marginfi_group: Pubkey = {
@@ -2151,11 +2154,12 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
         let marginfi_program = MarginfiProgram::new(next_account_info(account_iter)?)?;
         let system_program = Program::new(next_account_info(account_iter)?, &system_program::id())?;
 
-        let (expected_vault, vault_bump) = crate::state::vault::global_vault_pda(mint.info.key);
+        let (expected_vault, vault_bump) =
+            crate::state::vault::global_vault_pda(lending_pool_ai.key);
         require!(
             *vault_ai.key == expected_vault,
             YdeltaError::IncorrectAccount,
-            "vault does not match [b\"vault\", mint]"
+            "vault does not match [b\"vault\", bank] (v1 D1: bank-keyed)"
         )?;
         let (expected_signer, global_vault_signer_bump) =
             crate::state::vault::global_vault_signer_pda(&expected_vault);
@@ -2182,7 +2186,7 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
         require!(
             vault_ai.data_is_empty(),
             YdeltaError::IncorrectAccount,
-            "vault PDA already exists; one GlobalVault per mint"
+            "vault PDA already exists; one GlobalVault per bank"
         )?;
         require!(
             integration_account_ai.data_is_empty(),
@@ -3101,6 +3105,18 @@ pub(crate) fn require_vault_mint_matches_market(
     vault: &YdeltaAccountInfo<'_, '_, crate::state::vault::GlobalVaultFixed>,
     market: &YdeltaAccountInfo<'_, '_, MarketFixed>,
 ) -> Result<(), ProgramError> {
+    // v1 D1: the structural identity is the BANK — a vault can only fund
+    // markets whose debt bank is the vault's bank (settlement CPIs assume
+    // one bank on both legs). The mint check stays as defense-in-depth.
+    let vault_bank = vault.get_fixed()?.lending_pool;
+    let market_debt_bank = market.get_fixed()?.debt_lending_pool;
+    require!(
+        vault_bank == market_debt_bank,
+        YdeltaError::VaultWrongMint,
+        "vault.lending_pool ({}) does not match market.debt_lending_pool ({})",
+        vault_bank,
+        market_debt_bank
+    )?;
     let vault_mint = vault.get_fixed()?.mint;
     let market_debt_mint = market.get_fixed()?.debt_mint;
     require!(
@@ -3479,11 +3495,13 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
         let global_vault =
             YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(global_vault_ai)?;
         require_vault_not_paused(&global_vault)?;
-        let (expected_global_vault, _) = crate::state::vault::global_vault_pda(&debt_mint_pk);
+        let (expected_global_vault, _) =
+            crate::state::vault::global_vault_pda(&debt_lending_pool);
         require!(
             *global_vault_ai.key == expected_global_vault,
             YdeltaError::IncorrectAccount,
-            "global_vault PDA does not match expected derivation from market.debt_mint"
+            "global_vault PDA does not match expected derivation from \
+             market.debt_lending_pool (v1 D1: bank-keyed)"
         )?;
 
         let (vault_integration_pk, vault_signer_bump, vault_lending_pool) = {
