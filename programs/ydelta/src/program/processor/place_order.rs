@@ -118,6 +118,13 @@ pub fn process_place_order(
     let market_key = *market.info.key;
     let now = get_now_unix_ts()?;
 
+    // v1 D5: live bank lending APR (ceil bps) — the per-fill ask floor.
+    let ask_floor_rate_bps: u16 =
+        crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
+            debt_bank.info,
+            marginfi_group.info,
+        )?;
+
     let pre_borrow_liability_shares: u128 =
         read_debt_bank_liability_shares(borrower_marginfi_account.info, debt_bank.info.key)?;
 
@@ -151,6 +158,7 @@ pub fn process_place_order(
                 debt_liability_weight_init_fp48,
                 collateral_asset_weight_init_fp48,
                 enforce_ltv: true,
+                ask_floor_rate_bps,
             },
             vault_account,
         )?

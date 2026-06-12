@@ -79,6 +79,14 @@ pub fn process_convert_p2pool_to_fixed(
     } = ctx;
 
     let market_key = *market.info.key;
+
+    // v1 D5: live bank lending APR (ceil bps) — the per-fill ask floor
+    // for the refinance scan.
+    let ask_floor_rate_bps: u16 =
+        crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
+            debt_bank.info,
+            marginfi_group.info,
+        )?;
     let global_vault_key = *global_vault.info.key;
     let now_unix_ts: i64 = Clock::get()?.unix_timestamp;
 
@@ -239,6 +247,7 @@ pub fn process_convert_p2pool_to_fixed(
                 ltv_buffer_bps,
                 debt_mint_decimals,
                 collateral_mint_decimals,
+                ask_floor_rate_bps,
             },
             Some(global_vault.info),
         )?

@@ -19,8 +19,6 @@
 use solana_program::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 
-use ydelta::program::instruction_builders::set_fee_config_instruction::set_fee_config_instruction;
-use ydelta::program::processor::set_fee_config::SetFeeConfigParams;
 use ydelta::state::Side;
 
 use crate::test_utils::{mainnet, MarketFixture};
@@ -34,7 +32,7 @@ const PRINCIPAL_ATOMS: u64 = 1_000_000;
 // (~0.05 SOL) clears the init-weight requirement comfortably.
 const COLLATERAL_ATOMS: u64 = 50_000_000;
 const VAULT_RATE_BPS: u16 = 500;
-const BORROWER_RATE_BPS: u16 = 800;
+const BORROWER_RATE_BPS: u16 = 3_000;
 const TERM_SECONDS: u32 = 30 * 86_400;
 
 /// Drive the full happy path through to the matched-loan promote.
@@ -79,10 +77,12 @@ async fn setup_through_promote_with_fee(
     fixture.refresh_blockhash().await;
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
+    // v1 D4: VAULT_RATE_BPS is the sub-vault's SPREAD over the live
+    // bank APR, set at creation (placement is parameterless).
     fixture
         .create_pool_sub_vault_full(
             curator.pubkey(),
-            /*spread_bps=*/ 0,
+            /*spread_bps=*/ VAULT_RATE_BPS,
             /*max_ltv_bps=*/ 8_000,
             /*liquidation_ltv_bps=*/ 9_000,
             TERM_SECONDS,
@@ -466,7 +466,9 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     //   ≈ 4_109 atoms.
     const SECONDS_PER_YEAR: u128 = 365 * 24 * 60 * 60;
     let expected_lender_interest: u128 =
-        PRINCIPAL_ATOMS as u128 * VAULT_RATE_BPS as u128 * TERM_SECONDS as u128
+        PRINCIPAL_ATOMS as u128
+            * (VAULT_RATE_BPS + mainnet::USDC_LIVE_LENDING_APR_BPS) as u128
+            * TERM_SECONDS as u128
             / (10_000u128 * SECONDS_PER_YEAR);
     assert!(
         expected_lender_interest > 1_000,
@@ -581,7 +583,9 @@ async fn claim_reconciles_total_assets_to_realized_interest() {
 
     const SECONDS_PER_YEAR: u128 = 365 * 24 * 60 * 60;
     let realized_interest: u128 =
-        PRINCIPAL_ATOMS as u128 * VAULT_RATE_BPS as u128 * TERM_SECONDS as u128
+        PRINCIPAL_ATOMS as u128
+            * (VAULT_RATE_BPS + mainnet::USDC_LIVE_LENDING_APR_BPS) as u128
+            * TERM_SECONDS as u128
             / (10_000u128 * SECONDS_PER_YEAR);
 
     let profile_post = fixture.read_sub_vault(PROFILE_ID).await;
@@ -709,7 +713,9 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
     //   curator_take    = lender_interest × 1000 / 10_000
     const SECONDS_PER_YEAR: u128 = 365 * 24 * 60 * 60;
     let expected_lender_interest: u128 =
-        PRINCIPAL_ATOMS as u128 * VAULT_RATE_BPS as u128 * TERM_SECONDS as u128
+        PRINCIPAL_ATOMS as u128
+            * (VAULT_RATE_BPS + mainnet::USDC_LIVE_LENDING_APR_BPS) as u128
+            * TERM_SECONDS as u128
             / (10_000u128 * SECONDS_PER_YEAR);
     let expected_curator_take: u128 = expected_lender_interest * 1_000 / 10_000;
     assert!(
@@ -951,7 +957,9 @@ async fn sub_vault_earns_yield_from_two_markets() {
     let profile_final = fixture.read_sub_vault(PROFILE_ID).await;
     const SECONDS_PER_YEAR: u128 = 365 * 24 * 60 * 60;
     let single_loan_lender_interest: u128 =
-        PRINCIPAL_ATOMS as u128 * VAULT_RATE_BPS as u128 * TERM_SECONDS as u128
+        PRINCIPAL_ATOMS as u128
+            * (VAULT_RATE_BPS + mainnet::USDC_LIVE_LENDING_APR_BPS) as u128
+            * TERM_SECONDS as u128
             / (10_000u128 * SECONDS_PER_YEAR);
     let expected_two_loan_yield: u128 = 2 * single_loan_lender_interest;
     let observed_gain: u128 = profile_final

@@ -62,6 +62,8 @@ mod cases {
     #[cfg(feature = "test-sbf")]
     mod repay;
     #[cfg(feature = "test-sbf")]
+    mod rate_floor;
+    #[cfg(feature = "test-sbf")]
     mod sunset_sub_vault;
     #[cfg(feature = "test-sbf")]
     mod vault_e2e;

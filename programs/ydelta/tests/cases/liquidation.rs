@@ -97,7 +97,7 @@ async fn setup_vault_funded_loan(
             &bob,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             term_seconds,
             principal,
             collateral,

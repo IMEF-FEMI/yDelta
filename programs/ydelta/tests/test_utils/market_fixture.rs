@@ -46,6 +46,7 @@ use ydelta::program::instruction_builders::{
     process_matched_loan_instruction::{process_matched_loan_instruction, VaultSettleAddrs},
     repay_instruction::repay_instruction,
     settle_matured_loan_instruction::settle_matured_loan_instruction,
+    update_order_for_sub_vault_instruction::update_order_for_sub_vault_instruction,
     update_sub_vault_instruction::update_sub_vault_instruction,
     withdraw_instruction::withdraw_instruction,
 };
@@ -1192,6 +1193,29 @@ impl MarketFixture {
     /// fp18 decimal scale) on a Switchboard-pull oracle. Used by
     /// liquidation tests to crash the collateral oracle below the
     /// maint-LTV threshold without rebuilding the fixture.
+    /// Scale the USDC bank's `total_liability_shares` by
+    /// `num / den` — pushes utilization (and therefore the live lending
+    /// APR / v1 D5 ask floor) up or down for floor tests.
+    pub async fn scale_usdc_bank_liabilities(&self, num: u64, den: u64) {
+        // Bank layout: 8-byte discriminator + body;
+        // total_liability_shares (I80F48) at body offset 248.
+        const OFFSET: usize = 8 + 248;
+        let address = mainnet::usdc_bank();
+        let mut ctx: RefMut<ProgramTestContext> = self.context.borrow_mut();
+        let mut account = ctx
+            .banks_client
+            .get_account(address)
+            .await
+            .unwrap()
+            .expect("usdc bank fixture loaded");
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&account.data[OFFSET..OFFSET + 16]);
+        let v = i128::from_le_bytes(buf);
+        let scaled = v / (den as i128) * (num as i128);
+        account.data[OFFSET..OFFSET + 16].copy_from_slice(&scaled.to_le_bytes());
+        ctx.set_account(&address, &account.into());
+    }
+
     pub async fn set_swb_oracle_price_atoms(&self, address: Pubkey, value_fp18: i128) {
         // Layout: 8-byte discriminator + body. Inside body:
         // CurrentResult.value at offset 2256 → account-data offset 2264.
@@ -1603,13 +1627,17 @@ impl MarketFixture {
 
     /// Variant of `place_order_for_sub_vault` for an arbitrary
     /// market. Used by the multi-market test.
+    /// v1 D4: rate/term are DERIVED on-chain (bank APR + sub-vault
+    /// spread; sub-vault max term). The `_rate_bps`/`_term_seconds`
+    /// params are retained for call-site compatibility but ignored —
+    /// set the spread/term at sub-vault creation instead.
     pub async fn place_order_for_sub_vault_in_market(
         &self,
         curator: &Keypair,
         sub_vault_id: u16,
         market_pk: Pubkey,
-        rate_bps: u16,
-        term_seconds: u32,
+        _rate_bps: u16,
+        _term_seconds: u32,
         flags: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
         let ix = place_order_for_sub_vault_instruction(
@@ -1617,9 +1645,9 @@ impl MarketFixture {
             &market_pk,
             &self.payer.pubkey(),
             &curator.pubkey(),
+            &mainnet::usdc_bank(),
+            &mainnet::marginfi_group(),
             sub_vault_id,
-            rate_bps,
-            term_seconds,
             flags,
         );
         let kp = curator.insecure_clone();
@@ -1638,18 +1666,58 @@ impl MarketFixture {
         term_seconds: u32,
         flags: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = place_order_for_sub_vault_instruction(
+        self.place_order_for_sub_vault_in_market(
+            curator,
+            sub_vault_id,
+            self.market.pubkey(),
+            rate_bps,
+            term_seconds,
+            flags,
+        )
+        .await
+    }
+
+    /// Curator's parameterless re-sync of their resting ask on the
+    /// fixture market (v1 D4): cancel-and-replace at the live bank APR
+    /// + sub-vault spread / max term.
+    pub async fn update_order_for_sub_vault(
+        &self,
+        curator: &Keypair,
+        sub_vault_id: u16,
+    ) -> Result<(), solana_program_test::BanksClientError> {
+        let ix = update_order_for_sub_vault_instruction(
             &mainnet::usdc_bank(),
             &self.market.pubkey(),
             &self.payer.pubkey(),
             &curator.pubkey(),
+            &mainnet::usdc_bank(),
+            &mainnet::marginfi_group(),
             sub_vault_id,
-            rate_bps,
-            term_seconds,
-            flags,
+            /*new_flags=*/ 0,
         );
         let kp = curator.insecure_clone();
         self.process(ix, &[&kp]).await
+    }
+
+    /// Read the best (lowest-rate) resting ask's stored rate from the
+    /// market's bookside, or None when the book is empty. Tests use this
+    /// to derive crossing bids under the v1 D4 spread model.
+    pub async fn best_ask_rate_bps(&self) -> Option<u16> {
+        let data = self.account_data(self.market.pubkey()).await;
+        let fixed_size = std::mem::size_of::<MarketFixed>();
+        let header: &MarketFixed = bytemuck::from_bytes(&data[..fixed_size]);
+        let dynamic = &data[fixed_size..];
+        let tree: RedBlackTreeReadOnly<ydelta::state::RestingOrder> =
+            RedBlackTreeReadOnly::new(dynamic, header.asks_root_index, header.asks_best_index);
+        let best = tree.get_max_index();
+        if best == NIL {
+            return None;
+        }
+        Some(
+            ydelta::state::market::get_helper_order(dynamic, best)
+                .get_value()
+                .rate_bps,
+        )
     }
 
     /// Convenience helper for the quote-only lender flow. Sets up a
@@ -1695,9 +1763,20 @@ impl MarketFixture {
         // `global_vault_deposit` / `place_order_for_sub_vault` calls
         // below will fail with `SubVaultNotFound`, surfacing the
         // mismatch loudly.
-        self.create_sub_vault(admin, curator.pubkey(), max_ltv_bps, term_seconds)
-            .await
-            .expect("create_sub_vault");
+        // v1 D4: the old per-order `rate_bps` is the sub-vault's SPREAD
+        // over the live bank APR, set at creation.
+        let _ = admin;
+        let ltv = max_ltv_bps.expect("v1: max_ltv_bps is required");
+        self.create_pool_sub_vault_full(
+            curator.pubkey(),
+            /*spread_bps=*/ rate_bps,
+            ltv,
+            /*liquidation_ltv_bps=*/ ltv.saturating_add(1_000).min(10_000),
+            term_seconds,
+            /*curator_fee_bps=*/ 0,
+        )
+        .await
+        .expect("create_pool_sub_vault");
         self.refresh_blockhash().await;
         self.global_vault_deposit(depositor, depositor_token, sub_vault_id, deposit_atoms)
             .await

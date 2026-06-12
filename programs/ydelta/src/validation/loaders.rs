@@ -2753,6 +2753,75 @@ impl<'a, 'info> CancelOrderForSubVaultContext<'a, 'info> {
     }
 }
 
+/// Account context for `PlaceOrderForSubVault` / `UpdateOrderForSubVault`
+/// (v1 D4): the curator context plus the market's DEBT BANK + marginfi
+/// group, needed to compute the stored ask rate as
+/// `live lending APR (ceil bps) + sub_vault.spread_bps`.
+pub(crate) struct PlaceOrderForSubVaultContext<'a, 'info> {
+    pub fee_payer: Signer<'a, 'info>,
+    pub curator: Signer<'a, 'info>,
+    pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
+    pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
+    pub debt_bank: MarginfiBankInfo<'a, 'info>,
+    pub marginfi_group: MarginfiGroupInfo<'a, 'info>,
+    pub _system_program: Program<'a, 'info>,
+}
+
+impl<'a, 'info> PlaceOrderForSubVaultContext<'a, 'info> {
+    pub fn load(accounts: &'a [AccountInfo<'info>]) -> Result<Self, ProgramError> {
+        let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
+
+        let fee_payer = Signer::new_payer(next_account_info(account_iter)?)?;
+        let curator = Signer::new(next_account_info(account_iter)?)?;
+        let _ = load_global_config(account_iter)?;
+        let vault = YdeltaAccountInfo::<crate::state::vault::GlobalVaultFixed>::new(
+            next_account_info(account_iter)?,
+        )?;
+
+        require_vault_not_paused(&vault)?;
+        let market = YdeltaAccountInfo::<MarketFixed>::new(next_account_info(account_iter)?)?;
+        require_market_not_paused(&market)?;
+
+        let (debt_lending_pool, expected_marginfi_group) = {
+            let m = market.get_fixed()?;
+            (m.debt_lending_pool, m.marginfi_group)
+        };
+        let debt_bank_ai = next_account_info(account_iter)?;
+        require!(
+            *debt_bank_ai.key == debt_lending_pool,
+            YdeltaError::IncorrectAccount,
+            "debt_bank does not match market.debt_lending_pool"
+        )?;
+        let group_ai = next_account_info(account_iter)?;
+        require!(
+            *group_ai.key == expected_marginfi_group,
+            YdeltaError::IncorrectAccount,
+            "marginfi_group does not match MarketFixed.marginfi_group"
+        )?;
+        let debt_bank = MarginfiBankInfo::new_with_expected_group(
+            debt_bank_ai,
+            &marginfi_mocks::ID,
+            group_ai.key,
+        )?;
+        let marginfi_group = MarginfiGroupInfo::new(group_ai, &marginfi_mocks::ID)?;
+
+        let _system_program =
+            Program::new(next_account_info(account_iter)?, &system_program::id())?;
+
+        require_vault_mint_matches_market(&vault, &market)?;
+
+        Ok(Self {
+            fee_payer,
+            curator,
+            vault,
+            market,
+            debt_bank,
+            marginfi_group,
+            _system_program,
+        })
+    }
+}
+
 /// Permissionless sub-vault mutation context: payer + global-config
 /// pause gate + vault (pause-gated) + system program. Used by
 /// `CreatePrivateSubVault` (anyone may open a Private sub-vault, v1 D2)

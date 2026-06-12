@@ -290,9 +290,9 @@ async fn sunset_skips_matching() {
         &fixture.market.pubkey(),
         &fixture.payer.pubkey(),
         &depositor.pubkey(),
+        &mainnet::usdc_bank(),
+        &mainnet::marginfi_group(),
         1,
-        500,
-        30 * 86_400,
         0,
     );
     fixture

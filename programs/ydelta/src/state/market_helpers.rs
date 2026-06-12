@@ -377,6 +377,11 @@ pub struct MatchArgs {
     /// When `true`, gate each fill on the LTV requirement; otherwise
     /// match without an oracle check.
     pub enforce_ltv: bool,
+
+    /// Live marginfi lending APR in bps (ceil), computed once per ix by
+    /// the processor. Asks whose stored rate is below this are skipped
+    /// (v1 D5 fill-time floor). 0 disables the floor (degenerate bank).
+    pub ask_floor_rate_bps: u16,
 }
 
 /// Output of a single [`match_order`] / [`match_borrower_bid`] call.
@@ -435,6 +440,22 @@ pub fn match_order(
         let maker: RestingOrder = *get_helper_order(dynamic, current_maker_index).get_value();
 
         if maker.is_expired(args.now_unix_ts) {
+            current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+            continue;
+        }
+
+        // v1 D5 fill-time floor: a stale ask below the live bank rate
+        // never fills — skip and surface for the curator's re-sync.
+        if maker.rate_bps < args.ask_floor_rate_bps {
+            let maker_seat = get_helper_seat(dynamic, maker.trader_seat_index).get_value();
+            emit_stack(crate::logs::AskSkippedBelowFloorLog {
+                market: args.market_pubkey,
+                sub_vault_id: maker_seat.sub_vault_id,
+                ask_rate_bps: maker.rate_bps,
+                floor_bps: args.ask_floor_rate_bps,
+                _pad0: [0; 2],
+                order_sequence: maker.sequence_number,
+            })?;
             current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
             continue;
         }
@@ -924,6 +945,9 @@ pub struct PlaceOrderArgs {
 
     /// Gate match fills on the LTV requirement.
     pub enforce_ltv: bool,
+
+    /// Live marginfi lending APR in bps (ceil) — the v1 D5 ask floor.
+    pub ask_floor_rate_bps: u16,
 }
 
 /// Inputs to [`rest_vault_ask`].
@@ -1051,6 +1075,7 @@ pub fn match_borrower_bid(
             debt_liability_weight_init_fp48: args.debt_liability_weight_init_fp48,
             collateral_asset_weight_init_fp48: args.collateral_asset_weight_init_fp48,
             enforce_ltv: args.enforce_ltv,
+            ask_floor_rate_bps: args.ask_floor_rate_bps,
         },
         vault_ai,
     )?;
@@ -1364,6 +1389,9 @@ pub struct MatchP2PoolRefinanceArgs {
 
     /// Collateral mint decimals.
     pub collateral_mint_decimals: u8,
+
+    /// Live marginfi lending APR in bps (ceil) — the v1 D5 ask floor.
+    pub ask_floor_rate_bps: u16,
 }
 
 /// One fill produced by [`match_p2pool_residual_against_asks`]; the
@@ -1417,6 +1445,21 @@ pub fn match_p2pool_residual_against_asks(
         let maker: RestingOrder = *get_helper_order(dynamic, current_maker_index).get_value();
 
         if maker.is_expired(args.now_unix_ts) {
+            current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+            continue;
+        }
+
+        // v1 D5 fill-time floor (same as match_order).
+        if maker.rate_bps < args.ask_floor_rate_bps {
+            let maker_seat = get_helper_seat(dynamic, maker.trader_seat_index).get_value();
+            emit_stack(crate::logs::AskSkippedBelowFloorLog {
+                market: args.market_pubkey,
+                sub_vault_id: maker_seat.sub_vault_id,
+                ask_rate_bps: maker.rate_bps,
+                floor_bps: args.ask_floor_rate_bps,
+                _pad0: [0; 2],
+                order_sequence: maker.sequence_number,
+            })?;
             current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
             continue;
         }

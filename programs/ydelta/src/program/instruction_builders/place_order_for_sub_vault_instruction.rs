@@ -15,26 +15,25 @@ use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
 /// Builds the `PlaceOrderForSubVault` instruction. `curator` must sign;
-/// `fee_payer` covers tx fees. Posts an unbounded ask for `sub_vault_id` on
-/// `market`, charging `rate_bps` (basis points) for a max term of
-/// `term_seconds` (seconds). `flags` carries the order option bitmask.
+/// `fee_payer` covers tx fees. v1 D4: takes NO rate or term — the
+/// processor computes `live bank lending APR + sub_vault.spread_bps`
+/// and uses `sub_vault.max_term_seconds`; `debt_bank` + `marginfi_group`
+/// must match the market header. `flags` carries the order bitmask.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_for_sub_vault_instruction(
     bank: &Pubkey,
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
+    debt_bank: &Pubkey,
+    marginfi_group: &Pubkey,
     sub_vault_id: u16,
-    rate_bps: u16,
-    term_seconds: u32,
     flags: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::PlaceOrderForSubVault.to_vec();
     PlaceOrderForSubVaultParams {
         sub_vault_id,
-        rate_bps,
-        term_seconds,
         flags,
     }
     .serialize(&mut data)
@@ -47,6 +46,8 @@ pub fn place_order_for_sub_vault_instruction(
             AccountMeta::new_readonly(global_config_pda().0, false),
             AccountMeta::new(vault, false),
             AccountMeta::new(*market, false),
+            AccountMeta::new_readonly(*debt_bank, false),
+            AccountMeta::new_readonly(*marginfi_group, false),
             AccountMeta::new_readonly(system_program::id(), false),
         ],
         data,

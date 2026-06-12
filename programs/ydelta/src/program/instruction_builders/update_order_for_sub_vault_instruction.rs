@@ -24,17 +24,15 @@ pub fn update_order_for_sub_vault_instruction(
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
+    debt_bank: &Pubkey,
+    marginfi_group: &Pubkey,
     sub_vault_id: u16,
-    new_rate_bps: u16,
-    new_term_seconds: u32,
     new_flags: u8,
 ) -> Instruction {
     let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::UpdateOrderForSubVault.to_vec();
     UpdateOrderForSubVaultParams {
         sub_vault_id,
-        new_rate_bps,
-        new_term_seconds,
         new_flags,
     }
     .serialize(&mut data)
@@ -47,6 +45,8 @@ pub fn update_order_for_sub_vault_instruction(
             AccountMeta::new_readonly(global_config_pda().0, false),
             AccountMeta::new(vault, false),
             AccountMeta::new(*market, false),
+            AccountMeta::new_readonly(*debt_bank, false),
+            AccountMeta::new_readonly(*marginfi_group, false),
             AccountMeta::new_readonly(system_program::id(), false),
         ],
         data,

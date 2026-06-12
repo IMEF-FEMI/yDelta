@@ -39,6 +39,12 @@ pub mod mainnet {
             .parse()
             .unwrap()
     }
+    /// Live USDC-bank lending APR (ceil bps) computed by
+    /// `current_lending_apr_bps_ceil` from the FROZEN
+    /// `marginfi_usdc_bank.json` snapshot (utilization ≈ 0.7933 on the
+    /// seven-point curve). Stable for as long as the fixture file is.
+    pub const USDC_LIVE_LENDING_APR_BPS: u16 = 526;
+
     pub fn usdc_bank() -> Pubkey {
         "2s37akK2eyBbp8DZgCm7RtsaEz8eJP3Nxd4urLHQv7yB"
             .parse()

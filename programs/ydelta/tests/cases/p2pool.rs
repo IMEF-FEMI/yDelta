@@ -74,7 +74,7 @@ async fn bid_unfilled_residual_p2pool_borrows() {
             &bob,
             Side::Bid,
             OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal_atoms,
             collateral_atoms,
@@ -179,7 +179,7 @@ async fn ob_only_blocks_p2pool_borrow_path() {
             &bob,
             Side::Bid,
             OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal_atoms,
             collateral_atoms,
@@ -269,7 +269,7 @@ async fn bid_partial_match_residual_p2pool_borrows() {
             &bob,
             ydelta::state::Side::Bid,
             ydelta::state::OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             bid_principal,
             collateral_atoms,
@@ -315,8 +315,9 @@ async fn bid_partial_match_residual_p2pool_borrows() {
         "Fixed loan principal == vault idle minus marginfi rounding reserve"
     );
     assert_eq!(
-        loan_fixed.lender_rate_bps, 600,
-        "Fixed loan adopts ask rate"
+        loan_fixed.lender_rate_bps,
+        600 + mainnet::USDC_LIVE_LENDING_APR_BPS,
+        "Fixed loan adopts the stored ask rate (spread + live APR, v1 D4)"
     );
 
     // Loan 1: P2Pool for the residual, marginfi-backed.
@@ -394,7 +395,7 @@ async fn open_p2pool_loan_for_repay(
             &bob,
             Side::Bid,
             OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             principal_atoms,
             collateral_atoms,
@@ -565,7 +566,7 @@ async fn p2pool_multiple_loans_each_close_independently() {
                 &bob,
                 Side::Bid,
                 OrderType::Limit,
-                800,
+                3_000,
                 30 * 86_400,
                 principal_atoms,
                 collateral_each,
@@ -729,7 +730,7 @@ async fn sibling_p2pool_loan_decay_does_not_liquidate_safe_loan() {
             &bob,
             Side::Bid,
             OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             a_principal,
             a_collateral,
@@ -749,7 +750,7 @@ async fn sibling_p2pool_loan_decay_does_not_liquidate_safe_loan() {
             &bob,
             Side::Bid,
             OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             b_principal,
             b_collateral,
@@ -944,7 +945,7 @@ async fn p2pool_borrow_keeps_collateral_committed() {
             &bob,
             Side::Bid,
             OrderType::Limit,
-            800,
+            3_000,
             30 * 86_400,
             /*principal_atoms=*/ 100,
             /*collateral_atoms=*/ 5_000,

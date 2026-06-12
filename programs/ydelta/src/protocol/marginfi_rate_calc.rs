@@ -466,6 +466,45 @@ pub fn calc_projected_asset_share_value_fp48(
     calc_accrued_share_value_fp48(lending_apr_fp48, dt, asv_fp48)
 }
 
+/// Current marginfi LENDING (supply) APR for `bank`, in basis points,
+/// rounded UP (v1 D4/D5). This is the floor under every sub-vault ask:
+/// placement stores `bank_apr_bps + spread_bps` in the order, and the
+/// matching engine skips any ask whose stored rate has fallen below the
+/// live value. Ceil on both ends means an ask placed in the same slot
+/// can never fail its own floor.
+///
+/// Returns 0 when the bank has zero assets or zero liabilities
+/// (utilization undefined — marginfi pays no supply interest there, so
+/// the floor is genuinely 0).
+pub fn current_lending_apr_bps_ceil(
+    bank_info: &AccountInfo,
+    group_info: &AccountInfo,
+) -> Result<u16, ProgramError> {
+    let asv_fp48 = read_bank_asset_share_value_fp48(bank_info)?;
+    let lsv_fp48 = read_bank_liability_share_value_fp48(bank_info)?;
+    let total_asset_shares_fp48 = read_bank_total_asset_shares_fp48(bank_info)?;
+    let total_liability_shares_fp48 = read_bank_total_liability_shares_fp48(bank_info)?;
+    let total_assets_fp48 = mul_scale(total_asset_shares_fp48, asv_fp48)?;
+    let total_liabilities_fp48 = mul_scale(total_liability_shares_fp48, lsv_fp48)?;
+    if total_assets_fp48 == 0 || total_liabilities_fp48 == 0 {
+        return Ok(0);
+    }
+    let utilization_fp48 = div_scale(total_liabilities_fp48, total_assets_fp48)?;
+
+    let cfg = read_bank_interest_rate_config(bank_info)?;
+    let program_fees = read_group_program_fees(group_info)?;
+    let (lending_apr_fp48, _borrowing_apr_fp48) =
+        calc_interest_rate_fp48(utilization_fp48, &cfg, &program_fees)?;
+
+    // apr (fp48) × 10_000 → bps, ceil; must fit u16 (a >655% supply APR
+    // is treated as a hard error rather than silently clamped).
+    let bps_fp48 = lending_apr_fp48
+        .checked_mul(10_000)
+        .ok_or(crate::program::YdeltaError::MathOverflow)?;
+    let bps = crate::math::from_scaled_ceil(bps_fp48)?;
+    u16::try_from(bps).map_err(|_| crate::program::YdeltaError::MathOverflow.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
