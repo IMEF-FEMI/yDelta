@@ -42,7 +42,7 @@ pub fn process_cancel_order_for_sub_vault(
 ) -> ProgramResult {
     let params = CancelOrderForSubVaultParams::try_from_slice(data)?;
     let CancelOrderForSubVaultContext {
-        fee_payer: _,
+        _fee_payer: _,
         curator,
         vault,
         market,

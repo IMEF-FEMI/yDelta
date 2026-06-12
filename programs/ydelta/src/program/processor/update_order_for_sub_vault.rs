@@ -57,6 +57,9 @@ pub fn process_update_order_for_sub_vault(
         market,
         debt_bank,
         marginfi_group,
+        collateral_bank,
+        debt_oracle_ais,
+        collateral_oracle_ais,
         _system_program,
     } = PlaceOrderForSubVaultContext::load(accounts)?;
 
@@ -66,6 +69,8 @@ pub fn process_update_order_for_sub_vault(
 
     let sub_vault_spread_bps: u16;
     let sub_vault_term_seconds: u32;
+    let sub_vault_max_ltv_bps: u16;
+    let sub_vault_curator_fee_bps: u16;
     let old_order_sequence: u64 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
@@ -98,6 +103,8 @@ pub fn process_update_order_for_sub_vault(
         )?;
         sub_vault_spread_bps = profile.spread_bps;
         sub_vault_term_seconds = profile.max_term_seconds;
+        sub_vault_max_ltv_bps = profile.max_ltv_bps;
+        sub_vault_curator_fee_bps = profile.curator_fee_bps;
 
         let order_probe = SubVaultOrderRef::probe(market_key, params.sub_vault_id);
         let order_idx = {
@@ -225,6 +232,26 @@ pub fn process_update_order_for_sub_vault(
             now,
         )?;
     }
+
+    // v1 D7: the re-sync TAKES — a repriced ask sweeps newly-crossable
+    // resting bids in the same instruction.
+    let _ = crate::program::processor::place_order_for_sub_vault::take_resting_bids(
+        &market,
+        vault.info,
+        &debt_bank,
+        &collateral_bank,
+        &debt_oracle_ais,
+        &collateral_oracle_ais,
+        &fee_payer,
+        taker_seat_index,
+        params.sub_vault_id,
+        new_rate_bps,
+        new_term_seconds,
+        sub_vault_curator_fee_bps,
+        sub_vault_max_ltv_bps,
+        now,
+        u32::MAX,
+    )?;
 
     emit_stack(CancelOrderForSubVaultLog {
         global_vault: vault_key,

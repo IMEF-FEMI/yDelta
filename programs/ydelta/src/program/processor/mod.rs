@@ -23,6 +23,7 @@ pub mod global_config_admin;
 pub mod global_vault_deposit;
 pub mod global_vault_withdraw;
 pub mod liquidate_loan;
+pub mod match_crank;
 pub mod place_order;
 pub mod place_order_for_sub_vault;
 pub mod process_matched_loan;

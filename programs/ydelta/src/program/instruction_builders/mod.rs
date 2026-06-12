@@ -21,6 +21,7 @@ pub mod global_config_admin_instructions;
 pub mod global_vault_deposit_instruction;
 pub mod global_vault_withdraw_instruction;
 pub mod liquidate_loan_instruction;
+pub mod match_crank_instruction;
 pub mod place_order_for_sub_vault_instruction;
 pub mod place_order_instruction;
 pub mod process_matched_loan_instruction;

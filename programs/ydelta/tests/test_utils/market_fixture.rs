@@ -1642,6 +1642,9 @@ impl MarketFixture {
         _term_seconds: u32,
         flags: u8,
     ) -> Result<(), solana_program_test::BanksClientError> {
+        // The v1 D7 take path reads both oracles at placement — refresh
+        // their timestamps so the staleness gate passes.
+        self.refresh_oracle_freshness().await;
         let ix = place_order_for_sub_vault_instruction(
             &mainnet::usdc_bank(),
             &market_pk,
@@ -1649,6 +1652,9 @@ impl MarketFixture {
             &curator.pubkey(),
             &mainnet::usdc_bank(),
             &mainnet::marginfi_group(),
+            &mainnet::sol_bank(),
+            &[mainnet::usdc_oracle()],
+            &[mainnet::sol_oracle()],
             sub_vault_id,
             flags,
         );
@@ -1679,6 +1685,28 @@ impl MarketFixture {
         .await
     }
 
+    /// Permissionless `MatchCrank` (v1 D7/D8) on the fixture market.
+    pub async fn match_crank(
+        &self,
+        cranker: &Keypair,
+        max_fills: u32,
+    ) -> Result<(), solana_program_test::BanksClientError> {
+        self.refresh_oracle_freshness().await;
+        let ix = ydelta::program::instruction_builders::match_crank_instruction::match_crank_instruction(
+            &mainnet::usdc_bank(),
+            &self.market.pubkey(),
+            &cranker.pubkey(),
+            &mainnet::usdc_bank(),
+            &mainnet::marginfi_group(),
+            &mainnet::sol_bank(),
+            &[mainnet::usdc_oracle()],
+            &[mainnet::sol_oracle()],
+            max_fills,
+        );
+        let kp = cranker.insecure_clone();
+        self.process(ix, &[&kp]).await
+    }
+
     /// Curator's parameterless re-sync of their resting ask on the
     /// fixture market (v1 D4): cancel-and-replace at the live bank APR
     /// + sub-vault spread / max term.
@@ -1687,6 +1715,7 @@ impl MarketFixture {
         curator: &Keypair,
         sub_vault_id: u16,
     ) -> Result<(), solana_program_test::BanksClientError> {
+        self.refresh_oracle_freshness().await;
         let ix = update_order_for_sub_vault_instruction(
             &mainnet::usdc_bank(),
             &self.market.pubkey(),
@@ -1694,6 +1723,9 @@ impl MarketFixture {
             &curator.pubkey(),
             &mainnet::usdc_bank(),
             &mainnet::marginfi_group(),
+            &mainnet::sol_bank(),
+            &[mainnet::usdc_oracle()],
+            &[mainnet::sol_oracle()],
             sub_vault_id,
             /*new_flags=*/ 0,
         );
