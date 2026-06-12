@@ -607,6 +607,11 @@ pub fn process_settle_matured_loan(
                 .deployed_principal_atoms
                 .checked_sub(loan_principal)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
+            // v1 D16: retire the open-loan counter stamped at fill.
+            profile.open_loans_count = profile
+                .open_loans_count
+                .checked_sub(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
 
             let loan_lifetime: u128 = (now.saturating_sub(loan_started_at)).max(0) as u128;
             let yield_denom: u128 = (crate::state::loan::BPS_PER_UNIT as u128)

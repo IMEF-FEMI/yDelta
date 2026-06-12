@@ -470,6 +470,7 @@ pub fn match_order(
 
         let mut profile_max_ltv_bps: u16 = 0;
         let mut profile_max_term_seconds: u32 = 0;
+        let mut profile_curator_fee_bps: u16 = 0;
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             require!(
@@ -504,6 +505,7 @@ pub fn match_order(
                     } else {
                         profile_max_ltv_bps = p.max_ltv_bps;
                         profile_max_term_seconds = p.max_term_seconds;
+                        profile_curator_fee_bps = p.curator_fee_bps;
                         p.total_principal_atoms
                             .saturating_sub(p.deployed_principal_atoms)
                             .saturating_sub(p.encumbered_in_orders_atoms)
@@ -599,6 +601,12 @@ pub fn match_order(
                     .encumbered_in_orders_atoms
                     .checked_add(matched_principal)
                     .ok_or(ProgramError::ArithmeticOverflow)?;
+                // v1 D16: one fill = one open loan on this sub-vault;
+                // retired by the full-close paths.
+                p.open_loans_count = p
+                    .open_loans_count
+                    .checked_add(1)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
             }
         }
 
@@ -647,7 +655,9 @@ pub fn match_order(
         node.lender_rate_bps = lender_rate;
         node.loan_type = 0;
         node.flags = vault_flag;
-        node.curator_fee_bps_snapshot = fixed.fee_config.curator_fee_bps;
+        // v1 D3b: the curator fee lives on the sub-vault, snapshotted at
+        // match so later changes never touch open loans.
+        node.curator_fee_bps_snapshot = profile_curator_fee_bps;
         node.lender_debt_share_price_snapshot_fp48 = lender_debt_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 = borrower_collateral_snapshot;
         let node_index = get_free_address_on_market_fixed_for_matched_loan(fixed, dynamic);
@@ -1089,10 +1099,9 @@ pub fn match_borrower_bid(
             node.lender_rate_bps = args.rate_bps;
             node.loan_type = 1;
             node.borrower_marginfi_borrow_shares = 0;
-            // P2Pool residual has no curator-fee path (no vault lender),
-            // but snapshot anyway so the field has a well-defined source
-            // and process_matched_loan can read it uniformly.
-            node.curator_fee_bps_snapshot = fixed.fee_config.curator_fee_bps;
+            // P2Pool residual has no vault lender and therefore no
+            // curator fee (v1 D3b: fees are per-sub-vault).
+            node.curator_fee_bps_snapshot = 0;
 
             node.borrower_collateral_share_price_snapshot_fp48 = snapshot;
 
@@ -1433,6 +1442,7 @@ pub fn match_p2pool_residual_against_asks(
         let lender_sub_vault_id: u16;
 
         let mut profile_max_ltv_bps: u16 = 0;
+        let mut profile_curator_fee_bps: u16 = 0;
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             require!(
@@ -1466,6 +1476,7 @@ pub fn match_p2pool_residual_against_asks(
                         0
                     } else {
                         profile_max_ltv_bps = p.max_ltv_bps;
+                        profile_curator_fee_bps = p.curator_fee_bps;
                         p.total_principal_atoms
                             .saturating_sub(p.deployed_principal_atoms)
                             .saturating_sub(p.encumbered_in_orders_atoms)
@@ -1543,6 +1554,11 @@ pub fn match_p2pool_residual_against_asks(
                         .encumbered_in_orders_atoms
                         .checked_add(matched_principal)
                         .ok_or(ProgramError::ArithmeticOverflow)?;
+                    // v1 D16: one cross = one open loan on this sub-vault.
+                    p.open_loans_count = p
+                        .open_loans_count
+                        .checked_add(1)
+                        .ok_or(ProgramError::ArithmeticOverflow)?;
                 }
             }
         }
@@ -1585,7 +1601,7 @@ pub fn match_p2pool_residual_against_asks(
 
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_PRESETTLED
             | crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
-        node.curator_fee_bps_snapshot = fixed.fee_config.curator_fee_bps;
+        node.curator_fee_bps_snapshot = profile_curator_fee_bps;
         node.lender_debt_share_price_snapshot_fp48 = maker_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 =
             args.borrower_collateral_share_price_snapshot_fp48;

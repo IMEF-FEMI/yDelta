@@ -49,6 +49,21 @@ async fn setup_through_promote(
     solana_sdk::signature::Keypair,
     Pubkey,
 ) {
+    setup_through_promote_with_fee(fixture, 0).await
+}
+
+/// Same as [`setup_through_promote`] but stamps `curator_fee_bps` on the
+/// Pool sub-vault at creation (v1 D3b — the fee lives on the sub-vault).
+async fn setup_through_promote_with_fee(
+    fixture: &MarketFixture,
+    curator_fee_bps: u16,
+) -> (
+    solana_sdk::signature::Keypair,
+    solana_sdk::signature::Keypair,
+    solana_sdk::signature::Keypair,
+    solana_sdk::signature::Keypair,
+    Pubkey,
+) {
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
@@ -65,7 +80,14 @@ async fn setup_through_promote(
     fixture.create_vault(&admin).await.unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .create_sub_vault(&admin, curator.pubkey(), Some(8_000), TERM_SECONDS)
+        .create_pool_sub_vault_full(
+            curator.pubkey(),
+            /*spread_bps=*/ 0,
+            /*max_ltv_bps=*/ 8_000,
+            /*liquidation_ltv_bps=*/ 9_000,
+            TERM_SECONDS,
+            curator_fee_bps,
+        )
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -651,21 +673,10 @@ async fn claim_reconciles_total_assets_to_realized_interest() {
 async fn curator_accrues_and_claims_fee_end_to_end() {
     let fixture = MarketFixture::new().await;
 
-    // ── Set curator_fee_bps = 1000 (10%) BEFORE matching, so the
-    //    promotion stamps the snapshot at this rate. ──
-    let mut fee_params = SetFeeConfigParams::default();
-    fee_params.curator_fee_bps = Some(1_000);
-    let cfg_ix = set_fee_config_instruction(
-        &fixture.market.pubkey(),
-        &fixture.payer.pubkey(),
-        fee_params,
-    );
-    let payer_kp = fixture.payer.insecure_clone();
-    fixture.process(cfg_ix, &[&payer_kp]).await.unwrap();
-    fixture.refresh_blockhash().await;
-
+    // ── v1 D3b: curator_fee_bps = 1000 (10%) is stamped on the Pool
+    //    sub-vault at creation; promotion snapshots it onto the loan. ──
     let (_admin, _depositor, curator, borrower, borrower_usdc) =
-        setup_through_promote(&fixture).await;
+        setup_through_promote_with_fee(&fixture, 1_000).await;
 
     // (1) Promotion stamped curator_fee_bps_snapshot from market config.
     let loan_post_promote = fixture.read_loan(0).await;

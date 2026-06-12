@@ -23,9 +23,8 @@ use super::constants::{MARKET_FIXED_DISCRIMINANT, MARKET_FIXED_SIZE, MARKET_FREE
 use super::dynamic_account::{DerefOrBorrow, DynamicAccount};
 use super::resting_order::RestingOrder;
 
-/// Per-market fee and risk parameters. The market admin updates these via
-/// `SetFeeConfig`; matched loans snapshot `curator_fee_bps` at match
-/// time so changes never retroactively alter open loans.
+/// Per-market fee and risk parameters, updated by the market admin via
+/// `SetFeeConfig`. The curator fee moved to the sub-vault in v1 (D3b).
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct FeeConfig {
@@ -35,9 +34,6 @@ pub struct FeeConfig {
     pub origination_bps: u16,
     /// Reserved curator split parameter.
     pub curator_split_bps: u16,
-    /// Curator management fee in bps applied to gross lender interest
-    /// when the lender is a sub-vault.
-    pub curator_fee_bps: u16,
     /// Liquidator-keeper bonus in bps.
     pub liquidation_keeper_bps: u16,
     /// Protocol slice of a liquidation in bps.
@@ -46,7 +42,7 @@ pub struct FeeConfig {
     /// Extra over-collateralization required at match time (in bps over
     /// the bare LTV requirement).
     pub ltv_buffer_bps: u16,
-    _padding_for_u32: [u8; 2],
+    _padding_for_u32: [u8; 4],
 
     /// Grace window in seconds added to `matures_at` before settle and
     /// maturity-liquidation become reachable.
@@ -68,11 +64,10 @@ impl Default for FeeConfig {
             protocol_fee_bps_floor: 0,
             origination_bps: 0,
             curator_split_bps: 0,
-            curator_fee_bps: 0,
             liquidation_keeper_bps: 0,
             liquidation_protocol_bps: 0,
             ltv_buffer_bps: DEFAULT_LTV_BUFFER_BPS,
-            _padding_for_u32: [0; 2],
+            _padding_for_u32: [0; 4],
             grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
             _padding_tail: [0; 4],
         }

@@ -33,7 +33,6 @@ pub struct SetFeeConfigParams {
     /// Split (bps) of interest paid to the curator.
     pub curator_split_bps: Option<u16>,
     /// Curator fee in bps applied to a profile's deployed principal at match.
-    pub curator_fee_bps: Option<u16>,
     /// Liquidation keeper bonus in bps of repaid principal.
     pub liquidation_keeper_bps: Option<u16>,
     /// Liquidation share in bps of repaid principal that accrues to protocol.

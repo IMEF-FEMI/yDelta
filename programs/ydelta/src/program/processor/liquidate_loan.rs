@@ -641,6 +641,11 @@ pub fn process_liquidate_loan(
                 .deployed_principal_atoms
                 .checked_sub(loan_principal)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
+            // v1 D16: retire the open-loan counter stamped at fill.
+            profile.open_loans_count = profile
+                .open_loans_count
+                .checked_sub(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
 
             // Realized-vs-estimated reconciliation (same as repay).
             let loan_lifetime: u128 = (now.saturating_sub(loan_started_at)).max(0) as u128;

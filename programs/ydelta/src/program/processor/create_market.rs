@@ -40,7 +40,6 @@ pub struct CreateMarketParams {
     /// Curator's share of origination fee, in bps of `origination_bps`.
     pub curator_split_bps: Option<u16>,
     /// Curator's share of interest yield, in bps of accrued interest.
-    pub curator_fee_bps: Option<u16>,
     /// Liquidation keeper bonus, in bps of repaid debt value.
     pub liquidation_keeper_bps: Option<u16>,
     /// Protocol's share of liquidation proceeds, in bps of repaid debt.
@@ -57,7 +56,6 @@ impl From<&CreateMarketParams> for crate::program::processor::set_fee_config::Se
             protocol_fee_bps_floor: p.protocol_fee_bps_floor,
             origination_bps: p.origination_bps,
             curator_split_bps: p.curator_split_bps,
-            curator_fee_bps: p.curator_fee_bps,
             liquidation_keeper_bps: p.liquidation_keeper_bps,
             liquidation_protocol_bps: p.liquidation_protocol_bps,
             ltv_buffer_bps: p.ltv_buffer_bps,
