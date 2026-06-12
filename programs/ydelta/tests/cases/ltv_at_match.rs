@@ -220,7 +220,7 @@ async fn match_rejected_with_undercollateralized_bid() {
             principal_atoms,
             collateral_atoms,
             // OB_ONLY so the rejection isn't masked by the P2Pool fallback.
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await;
     assert_custom_error!(result, YdeltaError::CollateralBelowMatchLTV);

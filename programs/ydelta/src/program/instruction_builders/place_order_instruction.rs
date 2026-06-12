@@ -23,8 +23,9 @@ use crate::validation::{
 /// Builds the `PlaceOrder` instruction. `payer` (signer) is the borrower.
 /// `rate_bps` is the max acceptable rate (basis points); `term_seconds` the
 /// requested term; `principal_atoms` the borrow size and `collateral_atoms`
-/// the collateral pledge (both in token atoms). `flags` carries the IOC /
-/// OB_ONLY bitmask; `seat_index_hint` skips the seat-tree lookup.
+/// the collateral pledge (both in token atoms). `residual_mode` picks the
+/// unfilled-residual path (v1 D6: P2Pool fallback / rest / drop) and
+/// `last_valid_unix_ts` the rested bid's expiry (0 = never); `seat_index_hint` skips the seat-tree lookup.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_instruction(
     market: &Pubkey,
@@ -44,7 +45,8 @@ pub fn place_order_instruction(
     term_seconds: u32,
     principal_atoms: u64,
     collateral_atoms: u64,
-    flags: u8,
+    residual_mode: u8,
+    last_valid_unix_ts: i64,
     seat_index_hint: Option<DataIndex>,
 ) -> Instruction {
     let marginfi_account = get_borrower_integration_account_address(market).0;
@@ -55,7 +57,8 @@ pub fn place_order_instruction(
     let mut data = YdeltaInstruction::PlaceOrder.to_vec();
     PlaceOrderParams {
         seat_index_hint,
-        flags,
+        residual_mode,
+        last_valid_unix_ts,
         rate_bps,
         term_seconds,
         principal_atoms,

@@ -183,6 +183,11 @@ pub enum YdeltaInstruction {
     /// Permissionless: create a single-owner Private sub-vault — the
     /// signer becomes curator and sole depositor; fee is 0 (v1 D2).
     CreatePrivateSubVault = 41,
+
+    /// Borrower cancels their resting bid (v1 D6): releases the bid's
+    /// encumbered collateral at the stored snapshot and drops the
+    /// `UserOrderRef`.
+    CancelOrder = 42,
 }
 
 impl YdeltaInstruction {
@@ -199,7 +204,7 @@ mod tests {
 
     #[test]
     fn instruction_tags_are_contiguous() {
-        let last_tag: u8 = 41;
+        let last_tag: u8 = 42;
         for i in 0..=255u8 {
             match YdeltaInstruction::try_from(i) {
                 Ok(ix) => {

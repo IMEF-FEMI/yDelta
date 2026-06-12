@@ -643,7 +643,7 @@ impl TestFixture {
         // `OB_ONLY` so the residual goes to `Drop` instead of
         // triggering the P2Pool fallback. Tests that explicitly want
         // P2Pool live under `MarketFixture`.
-        let flags = ydelta::state::market_helpers::FLAG_OB_ONLY;
+        let flags = ydelta::state::market_helpers::RESIDUAL_MODE_DROP;
         let ix = place_order_instruction(
             &self.market.pubkey(),
             &signer.pubkey(),
@@ -662,7 +662,8 @@ impl TestFixture {
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            flags,
+            flags, // residual_mode (v1 D6)
+            0,     // last_valid_unix_ts
             None,
         );
         let kp = signer.insecure_clone();

@@ -206,7 +206,20 @@ impl RestingOrder {
 
 impl Ord for RestingOrder {
     fn cmp(&self, other: &Self) -> Ordering {
-        let rate_cmp = other.rate_bps.cmp(&self.rate_bps);
+        // Bids and asks live in separate trees (Manifest pattern); a
+        // cross-side comparison is a tree-corruption bug, not a valid
+        // ordering question.
+        debug_assert!(
+            self.side == other.side,
+            "RestingOrder::cmp across sides (bid tree vs ask tree)"
+        );
+        let rate_cmp = if self.side == Side::Bid as u8 {
+            // Bid tree: max-index = HIGHEST rate (borrower paying most).
+            self.rate_bps.cmp(&other.rate_bps)
+        } else {
+            // Ask tree: max-index = LOWEST rate (cheapest lender).
+            other.rate_bps.cmp(&self.rate_bps)
+        };
         match rate_cmp {
             Ordering::Equal => other.sequence_number.cmp(&self.sequence_number),
             ord => ord,
@@ -304,17 +317,18 @@ mod tests {
     }
 
     #[test]
-    fn eq_and_cmp_agree_for_all_field_permutations() {
+    fn eq_and_cmp_agree_for_all_field_permutations_per_side() {
+        // v1 D6: bids and asks live in separate trees, so the Eq/Ord
+        // contract only needs to hold WITHIN a side.
         let trader_seats: &[u32] = &[0, 1];
         let seqs: &[u64] = &[10, 20];
         let rates: &[u16] = &[600, 800];
-        let sides = [Side::Ask, Side::Bid];
 
-        let mut orders = Vec::new();
-        for &seat in trader_seats {
-            for &seq in seqs {
-                for &rate in rates {
-                    for side in sides {
+        for side in [Side::Ask, Side::Bid] {
+            let mut orders = Vec::new();
+            for &seat in trader_seats {
+                for &seq in seqs {
+                    for &rate in rates {
                         orders.push(RestingOrder::new_primary(
                             seat,
                             seq,
@@ -331,22 +345,33 @@ mod tests {
                     }
                 }
             }
-        }
 
-        for (i, a) in orders.iter().enumerate() {
-            for (j, b) in orders.iter().enumerate() {
-                let eq = a == b;
-                let cmp_eq = a.cmp(b) == Ordering::Equal;
-                assert_eq!(
-                    eq, cmp_eq,
-                    "Eq/Ord contract violated: orders[{i}]={a} vs orders[{j}]={b} \
-                     — a == b is {eq} but cmp == Equal is {cmp_eq}",
-                );
-                // Also pin reflexivity: every order compares equal to itself.
-                if i == j {
-                    assert!(eq && cmp_eq, "reflexivity broken for orders[{i}]={a}");
+            for (i, a) in orders.iter().enumerate() {
+                for (j, b) in orders.iter().enumerate() {
+                    let eq = a == b;
+                    let cmp_eq = a.cmp(b) == Ordering::Equal;
+                    assert_eq!(
+                        eq, cmp_eq,
+                        "Eq/Ord contract violated: orders[{i}]={a} vs orders[{j}]={b} \
+                         — a == b is {eq} but cmp == Equal is {cmp_eq}",
+                    );
+                    if i == j {
+                        assert!(eq && cmp_eq, "reflexivity broken for orders[{i}]={a}");
+                    }
                 }
             }
         }
+    }
+
+    #[test]
+    fn bid_tree_puts_best_at_max_index() {
+        // Best bid = HIGHEST rate; FIFO breaks ties (older = better).
+        let low = order(Side::Bid, 600, 0);
+        let high = order(Side::Bid, 800, 1);
+        assert!(high > low, "highest-rate bid is the best");
+
+        let same_rate_first = order(Side::Bid, 700, 0);
+        let same_rate_later = order(Side::Bid, 700, 1);
+        assert!(same_rate_first > same_rate_later, "FIFO breaks ties");
     }
 }

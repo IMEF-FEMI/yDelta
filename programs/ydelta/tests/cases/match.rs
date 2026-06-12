@@ -292,7 +292,7 @@ async fn match_sweeps_multiple_vault_asks() {
             // 70_000_000 USDC atoms ($70) of debt; post ~3 SOL of wSOL
             // collateral — comfortably over the requirement.
             3_000_000_000,
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await
         .unwrap();
@@ -376,7 +376,7 @@ async fn match_multi_cross_full_fill_freezes_no_collateral_dust() {
             // OB_ONLY so the bid fully fills against the book (no P2Pool
             // residual) — this is the `remaining_principal == 0` branch
             // the dust-sweep fix targets.
-            ydelta::state::market_helpers::FLAG_OB_ONLY,
+            ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await
         .unwrap();
