@@ -48,6 +48,7 @@ fn create_vault_ix_has_thirteen_accounts() {
     let token_program_22 = Pubkey::new_unique();
 
     let ix = create_vault_instruction(
+        &Pubkey::new_unique(), // bank (v1: vault keyed by bank)
         &mint,
         &payer.pubkey(),
         &marginfi_group,
@@ -97,18 +98,18 @@ fn create_sub_vault_params_borsh_round_trip() {
 }
 
 #[test]
-fn global_vault_pda_seeds_distinguish_mints() {
-    let mint_a = Pubkey::new_unique();
-    let mint_b = Pubkey::new_unique();
-    let (vault_a, _) = global_vault_pda(&mint_a);
-    let (vault_b, _) = global_vault_pda(&mint_b);
+fn global_vault_pda_seeds_distinguish_banks() {
+    let bank_a = Pubkey::new_unique();
+    let bank_b = Pubkey::new_unique();
+    let (vault_a, _) = global_vault_pda(&bank_a);
+    let (vault_b, _) = global_vault_pda(&bank_b);
     assert_ne!(vault_a, vault_b);
 }
 
 #[test]
 fn vault_signer_and_integration_pdas_distinct() {
-    let mint = Pubkey::new_unique();
-    let (vault, _) = global_vault_pda(&mint);
+    let bank = Pubkey::new_unique();
+    let (vault, _) = global_vault_pda(&bank);
     let (signer, _) = global_vault_signer_pda(&vault);
     let (integration, _) = global_vault_integration_account_pda(&vault);
     assert_ne!(signer, integration, "two vault-side PDAs must differ");
@@ -119,10 +120,12 @@ fn vault_signer_and_integration_pdas_distinct() {
 #[test]
 fn create_vault_ix_pda_derivation_is_consistent() {
     // Sanity: the ix builder embeds the same vault PDA the loader
-    // expects for `[b"vault", mint]`.
+    // expects for `[b"vault", bank]` (v1 D1: bank-keyed).
+    let bank = Pubkey::new_unique();
     let mint = Pubkey::new_unique();
     let payer = Keypair::new();
     let ix = create_vault_instruction(
+        &bank,
         &mint,
         &payer.pubkey(),
         &Pubkey::new_unique(),
@@ -131,11 +134,11 @@ fn create_vault_ix_pda_derivation_is_consistent() {
         &Pubkey::new_unique(),
         &Pubkey::new_unique(),
     );
-    let (expected_vault, _) = global_vault_pda(&mint);
+    let (expected_vault, _) = global_vault_pda(&bank);
     // accounts[0] = payer, [1] = global_config, [2] = vault.
     assert_eq!(
         ix.accounts[2].pubkey, expected_vault,
-        "vault account in ix matches global_vault_pda(mint)"
+        "vault account in ix matches global_vault_pda(bank)"
     );
 }
 
@@ -144,6 +147,7 @@ fn global_vault_deposit_ix_has_fourteen_accounts() {
     let mint = Pubkey::new_unique();
     let depositor = Keypair::new();
     let ix = global_vault_deposit_instruction(
+        &Pubkey::new_unique(), // bank (v1: vault keyed by bank)
         &mint,
         &depositor.pubkey(),
         &Pubkey::new_unique(), // depositor_token
@@ -170,6 +174,7 @@ fn global_vault_withdraw_ix_has_sixteen_accounts() {
     let mint = Pubkey::new_unique();
     let depositor = Keypair::new();
     let ix = global_vault_withdraw_instruction(
+        &Pubkey::new_unique(), // bank (v1: vault keyed by bank)
         &mint,
         &depositor.pubkey(),
         &Pubkey::new_unique(), // depositor_token
@@ -319,6 +324,7 @@ fn claim_curator_fee_ix_has_fourteen_accounts() {
     let mint = Pubkey::new_unique();
     let payer = Keypair::new();
     let ix = claim_curator_fee_instruction(
+        &Pubkey::new_unique(), // bank (v1: vault keyed by bank)
         &mint,
         &payer.pubkey(),
         &Pubkey::new_unique(),

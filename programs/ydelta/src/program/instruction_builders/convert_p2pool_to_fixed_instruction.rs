@@ -70,7 +70,7 @@ pub fn convert_p2pool_to_fixed_instruction(
     for o in collateral_oracles {
         accounts.push(AccountMeta::new_readonly(*o, false));
     }
-    let (global_vault, _) = crate::state::vault::global_vault_pda(debt_mint);
+    let (global_vault, _) = crate::state::vault::global_vault_pda(debt_bank);
     let (global_vault_signer, _) = crate::state::vault::global_vault_signer_pda(&global_vault);
     let (global_vault_integration_account, _) =
         crate::state::vault::global_vault_integration_account_pda(&global_vault);

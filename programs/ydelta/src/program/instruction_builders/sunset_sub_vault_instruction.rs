@@ -16,11 +16,11 @@ use crate::state::vault::global_vault_pda;
 /// Builds the `SunsetSubVault` instruction for the vault keyed by
 /// `mint`. `payer` (signer) must be the vault admin; targets `sub_vault_id`.
 pub fn sunset_sub_vault_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     payer: &Pubkey,
     sub_vault_id: u16,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::SunsetSubVault.to_vec();
     SunsetSubVaultParams { sub_vault_id }
         .serialize(&mut data)

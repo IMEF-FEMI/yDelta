@@ -1,4 +1,4 @@
-//! `GlobalVaultFixed` is the per-mint lending vault account. Its dynamic
+//! `GlobalVaultFixed` is the per-marginfi-bank lending vault account. Its dynamic
 //! tail holds two tree regions: a profile region (`SubVault` nodes)
 //! and a node region (`SubVaultDepositorSeat` and
 //! `SubVaultOrderRef` nodes), each backed by its own free list. A
@@ -26,7 +26,9 @@ use super::constants::{
     VAULT_NODE_BLOCK_SIZE, VAULT_ORDER_REF_SIZE,
 };
 
-/// PDA seed prefix for the per-mint `GlobalVault` account.
+/// PDA seed prefix for the per-bank `GlobalVault` account (v1 D1:
+/// vaults are keyed by marginfi bank, not mint — the idle MTM and all
+/// share accounting are only meaningful against one bank).
 pub const VAULT_SEED: &[u8] = b"vault";
 
 /// PDA seed prefix for the global vault's signer PDA (the marginfi CPI
@@ -39,9 +41,11 @@ pub const VAULT_INTEGRATION_SEED: &[u8] = b"vault_integration";
 /// PDA seed prefix for the vault's transient SPL staging account.
 pub const VAULT_STAGING_SEED: &[u8] = b"global_vault_staging";
 
-/// Derives the global vault PDA and bump for `mint`.
-pub fn global_vault_pda(mint: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[VAULT_SEED, mint.as_ref()], &crate::id())
+/// Derives the global vault PDA and bump for the marginfi `bank`
+/// (v1 D1: `[b"vault", bank]`; the mint is cached from `bank.mint` at
+/// creation).
+pub fn global_vault_pda(bank: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[VAULT_SEED, bank.as_ref()], &crate::id())
 }
 
 /// Derives the global vault signer PDA and bump for `vault`.

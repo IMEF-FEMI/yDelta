@@ -21,13 +21,13 @@ use crate::state::vault::global_vault_pda;
 /// marginfi-auto sentinel was removed, v1 D17). `max_term_seconds` caps
 /// loan term in seconds.
 pub fn create_sub_vault_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     payer: &Pubkey,
     curator: &Pubkey,
     max_ltv_bps: Option<u16>,
     max_term_seconds: u32,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
 
     let mut data = YdeltaInstruction::CreateSubVault.to_vec();
     CreateSubVaultParams {

@@ -20,7 +20,7 @@ use crate::state::vault::global_vault_pda;
 /// `term_seconds` (seconds). `flags` carries the order option bitmask.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_for_sub_vault_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
@@ -29,7 +29,7 @@ pub fn place_order_for_sub_vault_instruction(
     term_seconds: u32,
     flags: u8,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::PlaceOrderForSubVault.to_vec();
     PlaceOrderForSubVaultParams {
         sub_vault_id,

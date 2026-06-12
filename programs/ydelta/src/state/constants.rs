@@ -66,6 +66,8 @@ pub const VAULT_POSITION_SIZE: usize = USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
 pub const MARKET_POSITION_SIZE: usize = USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
 /// Payload byte size of a [`super::user_account::UserLoanRef`].
 pub const USER_LOAN_REF_SIZE: usize = USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
+/// Payload byte size of a [`super::user_account::UserOrderRef`] (v1 D6).
+pub const USER_ORDER_REF_SIZE: usize = USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
 
 /// Byte size of [`super::vault::GlobalVaultFixed`].
 pub const GLOBAL_VAULT_FIXED_SIZE: usize = 320;

@@ -183,7 +183,7 @@ async fn first_place_order_auto_creates_vault_seat() {
 
     // The vault seat keyed by (global_vault, OWNER_KIND_SUB_VAULT, 0)
     // exists — read_vault_seat panics if it is missing.
-    let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint());
+    let (gv, _) = ydelta::state::vault::global_vault_pda(&mainnet::usdc_bank());
     let _seat = fixture.read_vault_seat(&gv, 1).await;
 
     // The resting sub-vault ask is on book.
@@ -291,7 +291,7 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     fixture.refresh_blockhash().await;
     let transfer_ix =
         ydelta::program::instruction_builders::admin_transfer_instructions::transfer_global_vault_admin_instruction(
-            &mainnet::usdc_mint(),
+            &mainnet::usdc_bank(),
             &admin.pubkey(),
             &new_admin.pubkey(),
         );
@@ -303,7 +303,7 @@ async fn paused_vault_rejects_state_mutations_but_allows_admin_recovery() {
     fixture.refresh_blockhash().await;
     let accept_ix =
         ydelta::program::instruction_builders::admin_transfer_instructions::accept_global_vault_admin_instruction(
-            &mainnet::usdc_mint(),
+            &mainnet::usdc_bank(),
             &new_admin.pubkey(),
         );
     fixture

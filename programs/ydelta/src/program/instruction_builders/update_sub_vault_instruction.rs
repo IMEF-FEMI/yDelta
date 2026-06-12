@@ -20,13 +20,13 @@ use crate::state::vault::global_vault_pda;
 /// overrides the max term in seconds when `Some`. `None` fields are left
 /// unchanged.
 pub fn update_sub_vault_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     payer: &Pubkey,
     sub_vault_id: u16,
     new_max_ltv_bps: Option<u16>,
     new_max_term_seconds: Option<u32>,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
 
     let mut data = YdeltaInstruction::UpdateSubVault.to_vec();
     UpdateSubVaultParams {

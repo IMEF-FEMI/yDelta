@@ -25,6 +25,7 @@ use crate::state::vault::{
 /// `SubVault`; `amount_atoms` is the deposit in token atoms.
 #[allow(clippy::too_many_arguments)]
 pub fn global_vault_deposit_instruction(
+    bank: &Pubkey,
     mint: &Pubkey,
     depositor: &Pubkey,
     depositor_token: &Pubkey,
@@ -36,7 +37,7 @@ pub fn global_vault_deposit_instruction(
     sub_vault_id: u16,
     amount_atoms: u64,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let (global_vault_signer, _) = global_vault_signer_pda(&vault);
     let (global_vault_staging, _) = global_vault_staging_pda(&vault);
     let (integration_account, _) = global_vault_integration_account_pda(&vault);

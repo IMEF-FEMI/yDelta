@@ -59,11 +59,11 @@ pub fn accept_market_admin_instruction(market: &Pubkey, pending_admin: &Pubkey) 
 /// `mint`. `current_admin` (signer) stamps `new_admin` into the vault's
 /// `pending_admin`.
 pub fn transfer_global_vault_admin_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     current_admin: &Pubkey,
     new_admin: &Pubkey,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::TransferGlobalVaultAdmin.to_vec();
     TransferGlobalVaultAdminParams {
         new_admin: *new_admin,
@@ -83,8 +83,8 @@ pub fn transfer_global_vault_admin_instruction(
 
 /// Builds the `AcceptGlobalVaultAdmin` instruction for the vault keyed by
 /// `mint`. `pending_admin` (signer) finalizes the handoff.
-pub fn accept_global_vault_admin_instruction(mint: &Pubkey, pending_admin: &Pubkey) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+pub fn accept_global_vault_admin_instruction(bank: &Pubkey, pending_admin: &Pubkey) -> Instruction {
+    let (vault, _) = global_vault_pda(bank);
     Instruction {
         program_id: crate::id(),
         accounts: vec![
@@ -100,12 +100,12 @@ pub fn accept_global_vault_admin_instruction(mint: &Pubkey, pending_admin: &Pubk
 /// role on the vault keyed by `mint`. `current_curator` (signer) stamps
 /// `new_curator` into the profile's `pending_curator`.
 pub fn transfer_curator_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     current_curator: &Pubkey,
     sub_vault_id: u16,
     new_curator: &Pubkey,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::TransferCurator.to_vec();
     TransferCuratorParams {
         sub_vault_id,
@@ -128,11 +128,11 @@ pub fn transfer_curator_instruction(
 /// on the vault keyed by `mint`. `pending_curator` (signer) finalizes the
 /// handoff.
 pub fn accept_curator_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     pending_curator: &Pubkey,
     sub_vault_id: u16,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::AcceptCurator.to_vec();
     AcceptCuratorParams { sub_vault_id }
         .serialize(&mut data)

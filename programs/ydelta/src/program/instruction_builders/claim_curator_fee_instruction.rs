@@ -22,6 +22,7 @@ use crate::state::vault::{
 /// `liquidity_vault` / oracle path.
 #[allow(clippy::too_many_arguments)]
 pub fn claim_curator_fee_instruction(
+    bank: &Pubkey,
     mint: &Pubkey,
     payer: &Pubkey,
     curator_token: &Pubkey,
@@ -34,7 +35,7 @@ pub fn claim_curator_fee_instruction(
     marginfi_group: &Pubkey,
     sub_vault_id: u16,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let (global_vault_signer, _) = global_vault_signer_pda(&vault);
     let (global_vault_staging, _) = global_vault_staging_pda(&vault);
     let (vault_integration, _) = global_vault_integration_account_pda(&vault);

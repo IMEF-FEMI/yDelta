@@ -20,7 +20,7 @@ use crate::state::vault::global_vault_pda;
 /// (seconds), and `new_flags`.
 #[allow(clippy::too_many_arguments)]
 pub fn update_order_for_sub_vault_instruction(
-    mint: &Pubkey,
+    bank: &Pubkey,
     market: &Pubkey,
     fee_payer: &Pubkey,
     curator: &Pubkey,
@@ -29,7 +29,7 @@ pub fn update_order_for_sub_vault_instruction(
     new_term_seconds: u32,
     new_flags: u8,
 ) -> Instruction {
-    let (vault, _) = global_vault_pda(mint);
+    let (vault, _) = global_vault_pda(bank);
     let mut data = YdeltaInstruction::UpdateOrderForSubVault.to_vec();
     UpdateOrderForSubVaultParams {
         sub_vault_id,
