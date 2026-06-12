@@ -53,7 +53,7 @@ pub enum YdeltaInstruction {
     /// Vault-admin gated: append a `SubVault` to the vault. Stamps
     /// curator + LTV cap (optional, defaults to marginfi-derived) +
     /// max term. Auto-assigns a monotonic `sub_vault_id` starting at 1.
-    CreateSubVault = 9,
+    CreatePoolSubVault = 9,
 
     /// Lender deposits atoms into a sub-vault, minting profile shares.
     GlobalVaultDeposit = 10,
@@ -179,6 +179,10 @@ pub enum YdeltaInstruction {
     /// sunset profiles (during wind-down) — non-sunset profiles can only
     /// be cancelled by the curator via `CancelOrderForSubVault`.
     AdminCancelSubVaultOrder = 40,
+
+    /// Permissionless: create a single-owner Private sub-vault — the
+    /// signer becomes curator and sole depositor; fee is 0 (v1 D2).
+    CreatePrivateSubVault = 41,
 }
 
 impl YdeltaInstruction {
@@ -195,7 +199,7 @@ mod tests {
 
     #[test]
     fn instruction_tags_are_contiguous() {
-        let last_tag: u8 = 40;
+        let last_tag: u8 = 41;
         for i in 0..=255u8 {
             match YdeltaInstruction::try_from(i) {
                 Ok(ix) => {

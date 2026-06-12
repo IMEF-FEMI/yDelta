@@ -203,7 +203,8 @@ async fn first_place_order_auto_creates_vault_seat() {
 
 /// `create_sub_vault` rejects when signer is not global_vault_admin.
 #[tokio::test]
-async fn create_sub_vault_rejects_non_admin() {
+async fn create_pool_sub_vault_rejects_non_protocol_admin() {
+    use ydelta::program::instruction_builders::create_sub_vault_instruction::create_pool_sub_vault_instruction;
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let interloper = fixture.create_trader().await;
@@ -212,17 +213,34 @@ async fn create_sub_vault_rejects_non_admin() {
     fixture.refresh_blockhash().await;
     fixture.create_vault(&admin).await.unwrap();
 
+    // v1 D3: Pool creation is PROTOCOL-admin gated; a random signer
+    // (even the vault admin) must be rejected.
     fixture.refresh_blockhash().await;
-    let result = fixture
-        .create_sub_vault(
-            &interloper, // not the admin
-            curator.pubkey(),
-            Some(8_000),
-            30 * 86_400,
-        )
-        .await;
-    // Loader's admin gate must surface the exact VaultAdminRequired variant.
-    crate::assert_custom_error!(result, ydelta::program::YdeltaError::VaultAdminRequired);
+    let ix = create_pool_sub_vault_instruction(
+        &mainnet::usdc_bank(),
+        &interloper.pubkey(),
+        &curator.pubkey(),
+        /*spread_bps=*/ 0,
+        /*max_ltv_bps=*/ 8_000,
+        /*liquidation_ltv_bps=*/ 9_000,
+        30 * 86_400,
+        /*curator_fee_bps=*/ 0,
+    );
+    let result = fixture.process(ix, &[&interloper.insecure_clone()]).await;
+    crate::assert_custom_error!(result, ydelta::program::YdeltaError::ProtocolAdminRequired);
+
+    // …while a permissionless PRIVATE sub-vault from the same signer
+    // succeeds, with the signer stamped as curator (v1 D2).
+    fixture.refresh_blockhash().await;
+    fixture
+        .create_private_sub_vault(&interloper, 5_000, 6_000, 30 * 86_400)
+        .await
+        .expect("private sub-vault creation is permissionless");
+    let sv = fixture.read_sub_vault(1).await;
+    assert_eq!(sv.kind, ydelta::state::vault::SUB_VAULT_KIND_PRIVATE);
+    assert_eq!(sv.curator, interloper.pubkey());
+    assert_eq!(sv.curator_fee_bps, 0, "private sub-vaults carry no fee");
+    assert_eq!(sv.liquidation_ltv_bps, 6_000);
 }
 
 /// A paused vault rejects vault-scoped state-mutating ixs (deposit,

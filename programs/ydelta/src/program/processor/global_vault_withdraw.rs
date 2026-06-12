@@ -142,6 +142,17 @@ pub fn process_global_vault_withdraw(
 
         let profile_node = get_mut_helper_sub_vault(dynamic, profile_idx);
         let profile = profile_node.get_mut_value();
+        // v1 D2: Private sub-vaults pay out only to their owner. (The
+        // depositor-seat key already scopes shares to the signer; this is
+        // defense-in-depth so a stray Private seat can never exist.)
+        require!(
+            profile.kind != crate::state::vault::SUB_VAULT_KIND_PRIVATE
+                || profile.curator == *payer.info.key,
+            YdeltaError::VaultCuratorRequired,
+            "global_vault_withdraw: sub_vault_id {} is Private; only its \
+             owner may withdraw",
+            params.sub_vault_id
+        )?;
 
         let share_value_fp48 =
             crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info)?;

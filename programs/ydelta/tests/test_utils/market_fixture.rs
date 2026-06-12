@@ -33,7 +33,9 @@ use ydelta::program::instruction_builders::{
     claim_repayment_for_sub_vault_instruction::claim_repayment_for_sub_vault_instruction,
     claim_seat_instruction::claim_seat_instruction,
     create_market_instructions::create_market_instructions,
-    create_sub_vault_instruction::create_sub_vault_instruction,
+    create_sub_vault_instruction::{
+        create_pool_sub_vault_instruction, create_private_sub_vault_instruction,
+    },
     create_vault_instruction::create_vault_instruction,
     deposit_instruction::deposit_instruction,
     global_vault_deposit_instruction::global_vault_deposit_instruction,
@@ -1449,21 +1451,74 @@ impl MarketFixture {
     /// `next_sub_vault_id` counter); off-chain tests that need to know
     /// which id was assigned should read the
     /// `SubVaultCreatedLog` event or pre-snapshot the counter.
+    /// v1 D3: Pool creation is PROTOCOL-admin gated, so this signs with
+    /// `self.payer` (the fixture's protocol admin). The `admin` param is
+    /// retained for call-site compatibility but no longer signs.
+    /// Liquidation LTV defaults to `max_ltv + 1_000` (capped at 10_000)
+    /// and the curator fee to 0; use `create_pool_sub_vault_full` when a
+    /// test needs explicit values.
     pub async fn create_sub_vault(
         &self,
-        admin: &Keypair,
+        _admin: &Keypair,
         curator: Pubkey,
         max_ltv_bps: Option<u16>,
         max_term_seconds: u32,
     ) -> Result<(), solana_program_test::BanksClientError> {
-        let ix = create_sub_vault_instruction(
+        let ltv = max_ltv_bps.expect("v1: max_ltv_bps is required");
+        self.create_pool_sub_vault_full(
+            curator,
+            /*spread_bps=*/ 0,
+            ltv,
+            /*liquidation_ltv_bps=*/ ltv.saturating_add(1_000).min(10_000),
+            max_term_seconds,
+            /*curator_fee_bps=*/ 0,
+        )
+        .await
+    }
+
+    /// Full-parameter Pool creation, signed by the protocol admin
+    /// (`self.payer`).
+    pub async fn create_pool_sub_vault_full(
+        &self,
+        curator: Pubkey,
+        spread_bps: u16,
+        max_ltv_bps: u16,
+        liquidation_ltv_bps: u16,
+        max_term_seconds: u32,
+        curator_fee_bps: u16,
+    ) -> Result<(), solana_program_test::BanksClientError> {
+        let ix = create_pool_sub_vault_instruction(
             &mainnet::usdc_bank(),
-            &admin.pubkey(),
+            &self.payer.pubkey(),
             &curator,
+            spread_bps,
             max_ltv_bps,
+            liquidation_ltv_bps,
+            max_term_seconds,
+            curator_fee_bps,
+        );
+        let kp = self.payer.insecure_clone();
+        self.process(ix, &[&kp]).await
+    }
+
+    /// Permissionless Private sub-vault creation; `owner` signs and
+    /// becomes curator + sole depositor (v1 D2).
+    pub async fn create_private_sub_vault(
+        &self,
+        owner: &Keypair,
+        max_ltv_bps: u16,
+        liquidation_ltv_bps: u16,
+        max_term_seconds: u32,
+    ) -> Result<(), solana_program_test::BanksClientError> {
+        let ix = create_private_sub_vault_instruction(
+            &mainnet::usdc_bank(),
+            &owner.pubkey(),
+            /*spread_bps=*/ 0,
+            max_ltv_bps,
+            liquidation_ltv_bps,
             max_term_seconds,
         );
-        let kp = admin.insecure_clone();
+        let kp = owner.insecure_clone();
         self.process(ix, &[&kp]).await
     }
 
@@ -1520,22 +1575,29 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Vault-admin updates a sub_vault's mutable policy fields.
+    /// CURATOR updates a sub_vault's mutable policy fields (v1 D15).
+    /// The resulting LTV pair must satisfy the liq-gap invariant; pass
+    /// `new_liquidation_ltv_bps` when raising `new_max_ltv_bps`.
     pub async fn update_sub_vault(
         &self,
-        admin: &Keypair,
+        curator: &Keypair,
         sub_vault_id: u16,
         new_max_ltv_bps: Option<u16>,
         new_max_term_seconds: Option<u32>,
     ) -> Result<(), solana_program_test::BanksClientError> {
+        // Default companion liq override keeps the pair valid for tests
+        // that only move the origination cap.
+        let new_liq = new_max_ltv_bps.map(|v| v.saturating_add(1_000).min(10_000));
         let ix = update_sub_vault_instruction(
             &mainnet::usdc_bank(),
-            &admin.pubkey(),
+            &curator.pubkey(),
             sub_vault_id,
             new_max_ltv_bps,
+            new_liq,
             new_max_term_seconds,
+            /*new_spread_bps=*/ None,
         );
-        let kp = admin.insecure_clone();
+        let kp = curator.insecure_clone();
         self.process(ix, &[&kp]).await
     }
 
