@@ -259,9 +259,9 @@ pub struct RiskProfile {
     /// Curator pubkey; signs curator-only instructions on this profile.
     pub curator: Pubkey,
 
-    /// LTV cap for this profile in bps. The sentinel
-    /// `LTV_AUTO_FROM_MARGINFI` defers to the marginfi-derived cap minus
-    /// `LTV_AUTO_BUFFER_BPS`.
+    /// LTV cap for this profile in bps (lender-side policy, read live at
+    /// match time). Required at creation; the marginfi-auto sentinel was
+    /// removed (v1 D17).
     pub max_ltv_bps: u16,
     _pad1: [u8; 2],
     /// Maximum loan term in seconds this profile will fill.

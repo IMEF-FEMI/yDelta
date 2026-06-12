@@ -571,13 +571,13 @@ pub fn process_liquidate_loan(
                     .ok_or(ProgramError::ArithmeticOverflow)?;
             }
             if did_full_repay {
-                let principal_shares: u128 = MarginfiV18Adapter
-                    .amount_to_asset_shares(&[debt_bank.info.clone()], loan_principal)?;
-                lender_seat.debt_encumbered_shares = lender_seat
-                    .debt_encumbered_shares
-                    .saturating_sub(principal_shares);
-                lender_seat.open_lend_count =
-                    lender_seat.open_lend_count.saturating_sub(1);
+                // Vault asks take no seat-level debt encumbrance (the
+                // profile's atom counters are the lender ledger); just
+                // retire the open-lend counter stamped at fill time.
+                lender_seat.open_lend_count = lender_seat
+                    .open_lend_count
+                    .checked_sub(1)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
             }
         }
 

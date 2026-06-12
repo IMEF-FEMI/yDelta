@@ -1,7 +1,6 @@
 //! LTV math used at match time and liquidation time. Computes the
-//! quote-collateral needed to back a borrow, resolves a profile's
-//! effective LTV cap (including the `LTV_AUTO_FROM_MARGINFI` sentinel),
-//! and gates liquidation on `collateral < required_at_maint_weights`.
+//! quote-collateral needed to back a borrow and gates liquidation on
+//! `collateral < required_at_maint_weights`.
 
 use solana_program::{
     account_info::AccountInfo, clock::Clock, program_error::ProgramError, pubkey::Pubkey,
@@ -23,47 +22,6 @@ fn pow10_u128(exp: u32) -> Result<u128, ProgramError> {
             .ok_or(ProgramError::ArithmeticOverflow)?;
     }
     Ok(acc)
-}
-
-/// Returns marginfi's implied max LTV in bps as
-/// `floor((coll_asset_weight / debt_liab_weight) × 10_000)`. Errors with
-/// `OracleDegenerate` on a zero liability weight.
-pub fn marginfi_implied_max_ltv_bps(
-    coll_asset_weight_init_fp48: crate::math::Fp48,
-    debt_liability_weight_init_fp48: crate::math::Fp48,
-) -> Result<u16, ProgramError> {
-    require!(
-        !debt_liability_weight_init_fp48.is_zero(),
-        YdeltaError::OracleDegenerate,
-        "marginfi_implied_max_ltv_bps: debt liability_weight_init is 0 — \
-         refusing to divide by zero"
-    )?;
-    let ratio_fp48 =
-        coll_asset_weight_init_fp48.checked_div(debt_liability_weight_init_fp48)?;
-    let bps_fp48 = ratio_fp48.checked_mul_u64(10_000)?;
-    let bps_u64 = bps_fp48.to_atoms_floor()?;
-    u16::try_from(bps_u64).map_err(|_| ProgramError::ArithmeticOverflow)
-}
-
-/// Resolves the effective LTV cap for a risk profile. When
-/// `profile_max_ltv_bps == LTV_AUTO_FROM_MARGINFI`, returns the
-/// marginfi-derived cap minus `LTV_AUTO_BUFFER_BPS`; otherwise returns
-/// the literal stored cap.
-pub fn effective_max_ltv_bps_for_profile(
-    profile_max_ltv_bps: u16,
-    coll_asset_weight_init_fp48: crate::math::Fp48,
-    debt_liability_weight_init_fp48: crate::math::Fp48,
-) -> Result<u16, ProgramError> {
-    if profile_max_ltv_bps == crate::state::constants::LTV_AUTO_FROM_MARGINFI {
-        let marginfi_implied = marginfi_implied_max_ltv_bps(
-            coll_asset_weight_init_fp48,
-            debt_liability_weight_init_fp48,
-        )?;
-        Ok(marginfi_implied
-            .saturating_sub(crate::state::constants::LTV_AUTO_BUFFER_BPS))
-    } else {
-        Ok(profile_max_ltv_bps)
-    }
 }
 
 /// Computes the collateral (in collateral atoms) required to back

@@ -673,6 +673,9 @@ fn repay_atoms_inner<'info>(
         })
 }
 
+/// Reads `Account.amount` at its fixed base-layout offset. Safe for
+/// token-2022 too: extensions are TLV-appended after the 165-byte base
+/// account, so offset 64 holds the amount regardless of extensions.
 pub(crate) fn token_balance_of(info: &AccountInfo) -> Result<u64, ProgramError> {
     if info.owner != &spl_token::id() && info.owner != &spl_token_2022::id() {
         return Err(AdapterError::InvalidIntegrationAccount.into());

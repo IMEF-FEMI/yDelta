@@ -466,6 +466,7 @@ pub fn match_order(
         }
 
         let matched_principal: u64;
+        let profile_id: u8;
 
         let mut profile_max_ltv_bps: u16 = 0;
         let mut profile_max_term_seconds: u32 = 0;
@@ -484,7 +485,7 @@ pub fn match_order(
                     continue;
                 }
             };
-            let profile_id = lender_seat.risk_profile_id;
+            profile_id = lender_seat.risk_profile_id;
 
             let profile_idle: u64 = {
                 let vault_data = vault_ai_ref.try_borrow_data()?;
@@ -519,23 +520,6 @@ pub fn match_order(
                 continue;
             }
             matched_principal = remaining_principal.min(profile_idle);
-
-            {
-                let mut vault_data = vault_ai_ref.try_borrow_mut_data()?;
-                let (fixed_bytes, vault_dyn) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
-                let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-                let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
-                let tree =
-                    RiskProfileTreeReadOnly::new(vault_dyn, header.risk_profiles_root_index, NIL);
-                let idx = tree.lookup_index(&probe);
-                if idx != NIL {
-                    let p = get_mut_helper_risk_profile(vault_dyn, idx).get_mut_value();
-                    p.encumbered_in_orders_atoms = p
-                        .encumbered_in_orders_atoms
-                        .checked_add(matched_principal)
-                        .ok_or(ProgramError::ArithmeticOverflow)?;
-                }
-            }
         }
 
         let matched_collateral_taker = if matched_principal == remaining_principal {
@@ -572,15 +556,11 @@ pub fn match_order(
                 required_collateral
             )?;
 
-            let effective_profile_max_ltv_bps =
-                crate::state::ltv::effective_max_ltv_bps_for_profile(
-                    profile_max_ltv_bps,
-                    args.collateral_asset_weight_init_fp48,
-                    args.debt_liability_weight_init_fp48,
-                )?;
-            if effective_profile_max_ltv_bps > 0 {
+            // Stored cap only — the marginfi-auto sentinel was removed
+            // (v1 D17): the curator's cap is the lender-side LTV policy.
+            if profile_max_ltv_bps > 0 {
                 let collateral_asset_weight_fp48 =
-                    crate::math::to_scaled(effective_profile_max_ltv_bps as u128)?
+                    crate::math::to_scaled(profile_max_ltv_bps as u128)?
                         / 10_000u128;
                 let required_at_profile_cap =
                     crate::state::ltv::get_required_quote_collateral_to_back_debt(
@@ -593,14 +573,32 @@ pub fn match_order(
                         fixed.debt_mint_decimals,
                         fixed.collateral_mint_decimals,
                     )?;
-                require!(
-                    total_collateral_for_match >= required_at_profile_cap,
-                    YdeltaError::CollateralBelowMatchLTV,
-                    "matched collateral {} < required {} at profile LTV cap {} bps (effective)",
-                    total_collateral_for_match,
-                    required_at_profile_cap,
-                    effective_profile_max_ltv_bps
-                )?;
+                // The profile cap is per-ask policy, not a property of the
+                // bid: a stricter profile skips and the scan walks on to
+                // asks whose cap the bid's collateral does satisfy.
+                if total_collateral_for_match < required_at_profile_cap {
+                    current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+                    continue;
+                }
+            }
+        }
+
+        // Every gate has passed — only now reserve the fill on the profile,
+        // so a skipped ask leaves no stale encumbrance behind.
+        if let Some(vault_ai_ref) = vault_ai {
+            let mut vault_data = vault_ai_ref.try_borrow_mut_data()?;
+            let (fixed_bytes, vault_dyn) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
+            let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
+            let probe = RiskProfile::new_empty(profile_id, Pubkey::default(), 1, 1);
+            let tree =
+                RiskProfileTreeReadOnly::new(vault_dyn, header.risk_profiles_root_index, NIL);
+            let idx = tree.lookup_index(&probe);
+            if idx != NIL {
+                let p = get_mut_helper_risk_profile(vault_dyn, idx).get_mut_value();
+                p.encumbered_in_orders_atoms = p
+                    .encumbered_in_orders_atoms
+                    .checked_add(matched_principal)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
             }
         }
 
@@ -689,6 +687,15 @@ pub fn match_order(
             let seat = get_mut_helper_seat(dynamic, borrower_seat_index).get_mut_value();
             seat.open_borrow_count = seat
                 .open_borrow_count
+                .checked_add(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
+        // `open_lend_count` counts resting asks plus active loans; the loan
+        // close-out paths decrement it, so each fill must stamp it here.
+        {
+            let seat = get_mut_helper_seat(dynamic, lender_seat_index).get_mut_value();
+            seat.open_lend_count = seat
+                .open_lend_count
                 .checked_add(1)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
         }
@@ -1499,15 +1506,10 @@ pub fn match_p2pool_residual_against_asks(
                     required_collateral
                 )?;
 
-                let effective_profile_max_ltv_bps =
-                    crate::state::ltv::effective_max_ltv_bps_for_profile(
-                        profile_max_ltv_bps,
-                        args.collateral_asset_weight_init_fp48,
-                        args.debt_liability_weight_init_fp48,
-                    )?;
-                if effective_profile_max_ltv_bps > 0 {
+                // Stored cap only — marginfi-auto sentinel removed (v1 D17).
+                if profile_max_ltv_bps > 0 {
                     let collateral_asset_weight_fp48 =
-                        crate::math::to_scaled(effective_profile_max_ltv_bps as u128)?
+                        crate::math::to_scaled(profile_max_ltv_bps as u128)?
                             / 10_000u128;
                     let required_at_profile_cap =
                         crate::state::ltv::get_required_quote_collateral_to_back_debt(
@@ -1620,6 +1622,16 @@ pub fn match_p2pool_residual_against_asks(
             .matched_loan_sequence
             .checked_add(1)
             .ok_or(ProgramError::ArithmeticOverflow)?;
+
+        // Same open-lend stamp as match_order: each refinance cross becomes
+        // a Fixed loan whose close-out decrements the lender seat's counter.
+        {
+            let seat = get_mut_helper_seat(dynamic, maker.trader_seat_index).get_mut_value();
+            seat.open_lend_count = seat
+                .open_lend_count
+                .checked_add(1)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
 
         crosses.push(P2PoolRefinanceCross {
             lender_profile_id,

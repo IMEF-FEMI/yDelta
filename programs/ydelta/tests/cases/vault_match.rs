@@ -540,3 +540,204 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
 }
+
+/// The lender seat's `open_lend_count` counts resting asks PLUS active
+/// loans: each fill stamps +1, each full loan close retires exactly that
+/// +1, and the resting ask's own count survives the loan lifecycle.
+///
+/// Regression: the close-out paths used to `saturating_sub(1)` without a
+/// matching fill-time increment, eating the resting ask's count — after
+/// one full repay the curator's `cancel_order_for_risk_profile` failed
+/// with ArithmeticOverflow on `checked_sub(0)`.
+#[tokio::test]
+async fn lender_open_lend_count_survives_full_repay_then_cancel() {
+    use ydelta::program::instruction_builders::cancel_order_for_risk_profile_instruction::cancel_order_for_risk_profile_instruction;
+
+    let fixture = MarketFixture::new().await;
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let borrower = fixture.create_trader().await;
+
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(8_000),
+            /*rate_bps=*/ 500,
+            /*term_seconds=*/ 30 * 86_400,
+            /*deposit_atoms=*/ 100_000_000,
+        )
+        .await;
+
+    let vault_pk = ydelta::state::vault::global_vault_pda(&mainnet::usdc_mint()).0;
+    let seat = fixture.read_vault_seat(&vault_pk, 1).await;
+    assert_eq!(seat.open_lend_count, 1, "one resting ask");
+
+    fixture.claim_seat(&borrower).await;
+    let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
+    fixture.put_wsol_token_account(borrower_wsol, borrower.pubkey(), 500_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&borrower, borrower_wsol, /*is_debt=*/ false, 50_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Seed the borrower's USDC ATA for the full repay below.
+    let borrower_usdc = fixture.signer_debt_token(&borrower.pubkey());
+    fixture.put_token_account(
+        borrower_usdc,
+        mainnet::usdc_mint(),
+        borrower.pubkey(),
+        4_000_000,
+    );
+    fixture.refresh_blockhash().await;
+
+    fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            30 * 86_400,
+            /*principal=*/ 1_000_000,
+            /*collateral=*/ 50_000_000,
+            /*flags=*/ 0,
+        )
+        .await
+        .unwrap();
+
+    let seat = fixture.read_vault_seat(&vault_pk, 1).await;
+    assert_eq!(seat.open_lend_count, 2, "resting ask + one open loan");
+
+    fixture.refresh_blockhash().await;
+    fixture
+        .crank_matched_loan_for_risk_profile(0)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    fixture
+        .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    let seat = fixture.read_vault_seat(&vault_pk, 1).await;
+    assert_eq!(
+        seat.open_lend_count, 1,
+        "loan close retires only the fill's count; the resting ask survives"
+    );
+
+    let cancel_ix = cancel_order_for_risk_profile_instruction(
+        &mainnet::usdc_mint(),
+        &fixture.market.pubkey(),
+        &admin.pubkey(),
+        &curator.pubkey(),
+        1,
+    );
+    fixture
+        .process_ixs(&[cancel_ix], &[&admin, &curator])
+        .await
+        .expect("curator cancel after a full loan close must succeed");
+    let seat = fixture.read_vault_seat(&vault_pk, 1).await;
+    assert_eq!(seat.open_lend_count, 0, "cancel retires the ask's count");
+}
+
+/// The profile LTV cap is per-ask policy: a bid whose collateral fails a
+/// stricter profile's cap skips that ask and fills against a looser one
+/// further down the book.
+///
+/// Regression: `match_order` used to hard-`require!` the profile-cap
+/// gate, failing the whole bid on the FIRST too-strict ask even when a
+/// compatible ask rested right behind it (and the refinance engine
+/// already skipped). The strict profile must also end with zero stale
+/// encumbrance — the engine only reserves the fill after every gate.
+#[tokio::test]
+async fn profile_ltv_cap_skips_strict_ask_and_fills_looser_one() {
+    let fixture = MarketFixture::new().await;
+    let admin = fixture.create_trader().await;
+    let depositor = fixture.create_trader().await;
+    let curator = fixture.create_trader().await;
+    let borrower = fixture.create_trader().await;
+
+    // Profile 1: strict 10% LTV cap quoting the BEST rate — the scan
+    // hits it first.
+    fixture
+        .provide_vault_liquidity(
+            &admin,
+            &depositor,
+            &curator,
+            /*profile_id=*/ 1,
+            /*max_ltv_bps=*/ Some(1_000),
+            /*rate_bps=*/ 400,
+            /*term_seconds=*/ 30 * 86_400,
+            /*deposit_atoms=*/ 100_000_000,
+        )
+        .await;
+
+    // Profile 2: loose 80% cap at a worse rate, same vault, also funded.
+    fixture.refresh_blockhash().await;
+    fixture
+        .create_risk_profile(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
+    fixture
+        .global_vault_deposit(&depositor, depositor_token, 2, 100_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+    fixture
+        .place_order_for_risk_profile(&curator, 2, 500, 30 * 86_400, 0)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    // Borrower posts ~$4 of wSOL against $1 of debt: enough for the 80%
+    // cap (and the market init-weight gate), nowhere near the 10% cap's
+    // ~$10 requirement.
+    fixture.claim_seat(&borrower).await;
+    let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
+    fixture.put_wsol_token_account(borrower_wsol, borrower.pubkey(), 500_000_000);
+    fixture.refresh_blockhash().await;
+    fixture
+        .deposit(&borrower, borrower_wsol, /*is_debt=*/ false, 50_000_000)
+        .await
+        .unwrap();
+    fixture.refresh_blockhash().await;
+
+    let result = fixture
+        .place_order_with_flags(
+            &borrower,
+            ydelta::state::Side::Bid,
+            ydelta::state::OrderType::Limit,
+            800,
+            30 * 86_400,
+            /*principal=*/ 1_000_000,
+            /*collateral=*/ 50_000_000,
+            /*flags=*/ 0,
+        )
+        .await;
+    result.expect("a stricter profile cap must skip the ask, not fail the bid");
+
+    let p1 = fixture.read_risk_profile(1).await;
+    assert_eq!(
+        p1.encumbered_in_orders_atoms, 0,
+        "skipped strict profile must carry no stale encumbrance"
+    );
+    let p2 = fixture.read_risk_profile(2).await;
+    assert_eq!(
+        p2.encumbered_in_orders_atoms, 1_000_000,
+        "the looser profile behind it fills the whole bid"
+    );
+    let market = fixture.read_market_fixed().await;
+    assert_eq!(
+        market.matched_loan_sequence, 1,
+        "exactly one cross: profile 1 skipped, profile 2 filled"
+    );
+}

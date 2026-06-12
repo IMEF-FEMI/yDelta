@@ -53,30 +53,18 @@ pub enum HarnessInstruction {
     /// marginfi_program]` plus any remaining health accounts (deposit
     /// usually empty).
     ///
-    /// **Phase 3 retirement candidate.** `ydelta::process_deposit` now
-    /// covers this codepath end-to-end via real production CPI; the
-    /// `cases/deposit_withdraw.rs` SBF tests exercise it directly. The
-    /// harness arm stays in place to keep `adapter_deposit.rs` compiling
-    /// (which uses the harness as a thin trampoline). Deletion is
-    /// scheduled for the Phase 11 cleanup sweep.
+    /// Retained as **test setup only**: `adapter_borrow_repay.rs` uses it
+    /// to seed collateral before driving Borrow/Repay. Production deposit
+    /// coverage lives in `ydelta::process_deposit` + `deposit_withdraw.rs`.
     Deposit = 3,
-    /// Call `MarginfiV18Adapter::withdraw(shares)`. Accounts mirror the
-    /// withdraw IDL list: `[group, marginfi_account, authority, bank,
-    /// destination_token_account, bank_liquidity_vault_authority,
-    /// liquidity_vault, token_program, marginfi_program]` plus
-    /// `(bank, oracle)` pairs in remaining for the health check.
-    ///
-    /// **Phase 3 retirement candidate.** Covered by
-    /// `ydelta::process_withdraw`; see Deposit's note above.
-    Withdraw = 4,
     /// Call `MarginfiV18Adapter::borrow(amount_atoms)`. Accounts mirror
-    /// the borrow IDL list (same shape as withdraw) plus `(bank, oracle)`
+    /// the borrow IDL list (withdraw shape) plus `(bank, oracle)`
     /// remaining for the health check.
     ///
-    /// **Stays through Phase 3.** Ydelta has no `process_borrow` ix.
-    /// Borrows happen as a side effect of the matching engine once the
-    /// P2Pool fallback path is active. Until then, this harness arm is
-    /// the only way to drive the adapter's `borrow` from a test.
+    /// Ydelta has no `process_borrow` ix — borrows happen as a side
+    /// effect of the matching engine's P2Pool fallback. This harness arm
+    /// is the only way to drive the adapter's `borrow` from a test in
+    /// isolation.
     Borrow = 5,
     /// Call `MarginfiV18Adapter::repay(shares)`. Accounts mirror the
     /// repay IDL list: `[group, marginfi_account, authority, bank,
@@ -84,15 +72,9 @@ pub enum HarnessInstruction {
     /// marginfi_program]`. Repay doesn't run a health check; remaining
     /// accounts are normally empty.
     ///
-    /// **Phase 3 retirement candidate.** `ydelta::process_repay` covers
-    /// the borrower-side flow (using `marginfi.deposit` rather than
-    /// `marginfi.repay` — Phase 3 is wallet-vs-wallet so no liability
-    /// exists on the marginfi account; see `process_repay`'s doc).
-    /// This harness arm only exercises the raw `marginfi.repay`
-    /// primitive, which is what `MarginfiV18Adapter::repay` calls. It
-    /// stays for adapter-level coverage of the `borrow → repay` round
-    /// trip in `adapter_borrow_repay.rs`. Retire alongside Borrow when
-    /// Phase 4 lands.
+    /// Stays for adapter-level coverage of the `borrow → repay` round
+    /// trip in `adapter_borrow_repay.rs` (raw `marginfi.repay`
+    /// primitive). Retire alongside Borrow if that test ever retires.
     Repay = 6,
 }
 
@@ -109,11 +91,6 @@ pub struct AmountToSharesParams {
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct DepositParams {
     pub amount_atoms: u64,
-}
-
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
-pub struct WithdrawParams {
-    pub shares: u128,
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
@@ -184,11 +161,6 @@ pub fn process_instruction(
             let params = DepositParams::try_from_slice(data)?;
             let shares = adapter.deposit(accounts, params.amount_atoms, &[])?;
             emit_result(3, shares);
-        }
-        HarnessInstruction::Withdraw => {
-            let params = WithdrawParams::try_from_slice(data)?;
-            let (atoms, _shares_burned) = adapter.withdraw(accounts, params.shares, &[])?;
-            emit_result(4, atoms as u128);
         }
         HarnessInstruction::Borrow => {
             let params = BorrowParams::try_from_slice(data)?;
