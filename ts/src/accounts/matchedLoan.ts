@@ -19,7 +19,10 @@
  *   @80  1    u8    loan_type   (0 = Fixed, 1 = P2Pool)
  *   @81  1    u8    flags       (bit 0: VAULT_LENDER, bit 3: VAULT_PRESETTLED)
  *   @82  6    u8[6] _pad_before_p5
- *   @88  24   u8[24] _reserved
+ *   @88  2    u16   curator_fee_bps_snapshot
+ *   @90  2    u16   origination_ltv_bps
+ *   @92  2    u16   liquidation_ltv_bps
+ *   @94  18   u8[18] _reserved
  *   @112 16   u128  lender_debt_share_price_snapshot_fp48
  *   @128 16   u128  borrower_collateral_share_price_snapshot_fp48
  */
@@ -42,6 +45,9 @@ export interface MatchedLoan {
   lenderRateBps: number;
   loanType: LoanType;
   flags: number;
+  curatorFeeBpsSnapshot: number;
+  originationLtvBps: number;
+  liquidationLtvBps: number;
   lenderDebtSharePriceSnapshotFp48: bigint;
   borrowerCollateralSharePriceSnapshotFp48: bigint;
 }
@@ -61,6 +67,9 @@ export function decodeMatchedLoan(payload: DataView): MatchedLoan {
     lenderRateBps: readU16(payload, 78),
     loanType: readU8(payload, 80) as LoanType,
     flags: readU8(payload, 81),
+    curatorFeeBpsSnapshot: readU16(payload, 88),
+    originationLtvBps: readU16(payload, 90),
+    liquidationLtvBps: readU16(payload, 92),
     lenderDebtSharePriceSnapshotFp48: readU128(payload, 112),
     borrowerCollateralSharePriceSnapshotFp48: readU128(payload, 128),
   };

@@ -12,10 +12,10 @@ import { InstructionTag } from './_tags.js';
  */
 export function setVaultPauseInstruction(args: {
   admin: PublicKey;
-  mint: PublicKey;
+  bank: PublicKey;
   paused: boolean;
 }): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  const vault = globalVaultPda(args.bank)[0];
   const data = new Writer()
     .u8(InstructionTag.SetVaultPause)
     .u8(args.paused ? 1 : 0)

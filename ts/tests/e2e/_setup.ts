@@ -1,7 +1,7 @@
 /**
  * Shared setup helpers for e2e specs. Each helper composes the SDK ixs that
  * a given spec needs as a precondition (global config, market, vault,
- * profile), so the spec files themselves stay focused on the flow under
+ * sub-vault), so the spec files themselves stay focused on the flow under
  * test.
  */
 import { Keypair, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
@@ -10,7 +10,7 @@ import {
   claimSeatInstruction,
   createGlobalConfigInstruction,
   createMarketInstruction,
-  createRiskProfileInstruction,
+  createPoolSubVaultInstruction,
   createVaultInstruction,
   cuBudgetIx,
   decodeMarket,
@@ -18,7 +18,7 @@ import {
   globalVaultDepositInstruction,
   HEAVY_IX_CU_LIMIT,
   MARKET_FIXED_SIZE,
-  placeOrderForRiskProfileInstruction,
+  placeOrderForSubVaultInstruction,
   placeOrderInstruction,
   YDELTA_PROGRAM_ID,
 } from '../../src/index.js';
@@ -58,19 +58,17 @@ export async function setupGlobalConfig(bk: BankrunHandle, admin: Keypair): Prom
 
 /**
  * Per-test fee_config overrides layered on top of the on-chain
- * `FeeConfig::default()`. The suite-wide convention is `ltv_buffer_bps: 0`
- * (matching-friendly — tiny atom amounts cross without hitting the buffer)
- * unless a spec needs to exercise non-zero fee accrual or LTV-tightening
- * behaviour.
+ * `FeeConfig::default()`. v1 dropped `ltv_buffer_bps` (the auto-LTV buffer
+ * is gone — sub-vault `max_ltv_bps` is always explicit) and moved
+ * `curator_fee_bps` to the sub-vault, so neither is a market FeeConfig
+ * field any more.
  */
 export interface FeeOverrides {
   protocolFeeBpsFloor?: number;
   originationBps?: number;
   curatorSplitBps?: number;
-  curatorFeeBps?: number;
   liquidationKeeperBps?: number;
   liquidationProtocolBps?: number;
-  ltvBufferBps?: number;
   gracePeriodSeconds?: number;
 }
 
@@ -79,11 +77,6 @@ export interface FeeOverrides {
  * baked in. Returns the market keypair (the caller should treat the pubkey
  * as the market id). The market ships **unpaused** and fully configured —
  * no follow-up `set_fee_config` / `set_market_pause` round-trip required.
- *
- * `ltvBufferBps` defaults to `0` to keep tiny-atom matching tests stable
- * across the suite (the on-chain default of 200 would tighten the
- * LTV-at-match gate enough to break those cases). Pass an explicit
- * `feeOverrides.ltvBufferBps` to opt in to a non-zero buffer.
  */
 export async function setupMarket(
   bk: BankrunHandle,
@@ -120,11 +113,9 @@ export async function setupMarket(
         collateralBank: SOL_BANK,
         marginfiProgram: MARGINFI_PROGRAM_ID,
         params: {
-          ltvBufferBps: feeOverrides.ltvBufferBps ?? 0,
           protocolFeeBpsFloor: feeOverrides.protocolFeeBpsFloor,
           originationBps: feeOverrides.originationBps,
           curatorSplitBps: feeOverrides.curatorSplitBps,
-          curatorFeeBps: feeOverrides.curatorFeeBps,
           liquidationKeeperBps: feeOverrides.liquidationKeeperBps,
           liquidationProtocolBps: feeOverrides.liquidationProtocolBps,
           gracePeriodSeconds: feeOverrides.gracePeriodSeconds,
@@ -153,33 +144,49 @@ export async function setupVault(bk: BankrunHandle, admin: Keypair): Promise<voi
 }
 
 /**
- * Insert a single risk profile with the given curator + policy. The
- * profile's `profile_id` is assigned by the program (monotonic
- * `next_profile_id` counter, 1-based) — on a fresh vault the first
+ * Insert a single Pool sub-vault with the given curator + policy. The
+ * sub-vault's `sub_vault_id` is assigned by the program (monotonic
+ * `next_sub_vault_id` counter, 1-based) — on a fresh vault the first
  * create lands at id 1, the second at id 2, and so on. Id 0 is the
  * sentinel/invalid value and is never assigned.
  *
- * The `opts.profileId` hint is accepted for callsite readability but is
+ * The `opts.subVaultId` hint is accepted for callsite readability but is
  * no longer threaded into the ix; the on-chain assignment is what
  * matters. Downstream calls that need the assigned id should either
- * snapshot the vault's `next_profile_id` BEFORE this helper runs, or
- * decode the resulting `RiskProfileCreatedLog`.
+ * snapshot the vault's `next_sub_vault_id` BEFORE this helper runs, or
+ * decode the resulting `SubVaultCreatedLog`.
+ *
+ * `liquidationLtvBps` defaults to `maxLtvBps + 1_000` (well above the
+ * on-chain `MIN_LIQ_GAP_BPS = 200` gap), capped at `9_999`. The vault is
+ * keyed to the debt lending pool (`USDC_BANK`), not a mint.
  */
-export async function setupRiskProfile(
+export async function setupPoolSubVault(
   bk: BankrunHandle,
   admin: Keypair,
   curator: PublicKey,
-  opts: { profileId?: number; maxLtvBps?: number; maxTermSeconds?: number } = {},
+  opts: {
+    subVaultId?: number;
+    maxLtvBps?: number;
+    liquidationLtvBps?: number;
+    maxTermSeconds?: number;
+    spreadBps?: number;
+    curatorFeeBps?: number;
+  } = {},
 ): Promise<void> {
-  void opts.profileId;
+  void opts.subVaultId;
+  const maxLtvBps = opts.maxLtvBps ?? 6_000;
+  const liquidationLtvBps = opts.liquidationLtvBps ?? Math.min(maxLtvBps + 1_000, 9_999);
   await bk.send(
     [
-      createRiskProfileInstruction({
+      createPoolSubVaultInstruction({
         payer: admin.publicKey,
-        mint: USDC_MINT,
+        bank: USDC_BANK,
         curator,
-        maxLtvBps: opts.maxLtvBps ?? 6_000,
+        spreadBps: opts.spreadBps ?? 0,
+        maxLtvBps,
+        liquidationLtvBps,
         maxTermSeconds: opts.maxTermSeconds ?? 30 * 86_400,
+        curatorFeeBps: opts.curatorFeeBps ?? 0,
       }),
     ],
     [admin],
@@ -239,8 +246,10 @@ export async function driveToMatchLanded(
 ): Promise<MatchLandedHandles> {
   const admin = bk.payer;
   const vaultDepositAtoms = overrides.vaultDepositAtoms ?? 100_000_000n;
-  const askRateBps = 500;
-  const bidRateBps = 800;
+  // v1: the vault ask rate is quoted live by the program (bank lending APR +
+  // sub_vault.spread_bps), so it can't be hardcoded — it's read back from the
+  // resting order after placement below. The borrower bid is then set a
+  // comfortable margin above that so the cross always lands.
   const termSeconds = 30 * 86_400;
   const maxLtvBps = 8_000;
   const wsolFundAtoms = overrides.wsolFundAtoms ?? 100_000n;
@@ -252,7 +261,7 @@ export async function driveToMatchLanded(
   const market = await setupMarket(bk, admin);
   await setupVault(bk, admin);
   const curator = await bk.fundedKeypair();
-  await setupRiskProfile(bk, admin, curator.publicKey, { maxLtvBps, maxTermSeconds: termSeconds });
+  await setupPoolSubVault(bk, admin, curator.publicKey, { maxLtvBps, maxTermSeconds: termSeconds });
 
   // Vault funding.
   const depositor = await bk.fundedKeypair();
@@ -274,28 +283,39 @@ export async function driveToMatchLanded(
         lendingPool: USDC_BANK,
         liquidityVault: USDC_LIQUIDITY_VAULT,
         marginfiProgram: MARGINFI_PROGRAM_ID,
-        profileId: 1,
+        subVaultId: 1,
         amountAtoms: vaultDepositAtoms,
       }),
     ],
     [depositor],
   );
 
-  // Curator ask.
+  // Curator ask. v1: PlaceOrderForSubVault takes no rate/term — the
+  // processor quotes `live bank lending APR + sub_vault.spread_bps` and
+  // uses `sub_vault.max_term_seconds`, so it reads the bank/oracles.
+  await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE, switchboardOracle: SOL_ORACLE });
   await bk.send(
     [
-      placeOrderForRiskProfileInstruction({
+      placeOrderForSubVaultInstruction({
         feePayer: curator.publicKey,
         curator: curator.publicKey,
-        mint: USDC_MINT,
         market: market.publicKey,
-        profileId: 1,
-        rateBps: askRateBps,
-        termSeconds,
+        debtBank: USDC_BANK,
+        marginfiGroup: MARGINFI_GROUP,
+        collateralBank: SOL_BANK,
+        debtOracles: [USDC_ORACLE],
+        collateralOracles: [SOL_ORACLE],
+        subVaultId: 1,
       }),
     ],
     [curator],
   );
+
+  // Read back the program-quoted ask rate, then set the borrower bid a
+  // comfortable margin above it so the IOC bid always crosses the ask.
+  const askMarket = decodeMarket((await bk.getAccount(market.publicKey))!.data);
+  const askRateBps = askMarket.asks[0].order.rateBps;
+  const bidRateBps = askRateBps + 300;
 
   // Borrower seat + collateral.
   const borrower = await bk.fundedKeypair();

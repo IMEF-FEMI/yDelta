@@ -1,10 +1,10 @@
 /**
- * `UserAccount` — 128-byte header + variable dynamic region holding three
- * RB-trees (vault_positions, market_positions, open_loans) sharing one
- * 160-byte free list. Each tree-node payload is 144 bytes.
+ * `UserAccount` — 128-byte header + variable dynamic region holding four
+ * RB-trees (vault_positions, market_positions, open_loans, open_orders)
+ * sharing one 160-byte free list. Each tree-node payload is 144 bytes.
  *
  * Mirrors are downstream: the authoritative balances live on each
- * `ClaimedSeat` / `RiskProfileDepositorSeat`. The mirrors here let UIs
+ * `ClaimedSeat` / `SubVaultDepositorSeat`. The mirrors here let UIs
  * answer "show me everything this wallet has" without scanning every
  * market / vault.
  */
@@ -39,11 +39,15 @@ export interface UserAccountHeader {
   openLoanCount: number;
   bump: number;
   version: number;
+  /** Root of the resting-bid ref tree (`UserOrderRef`; v1 D6). */
+  openOrdersRootIndex: number;
+  /** Number of live `UserOrderRef` nodes. */
+  userOrderCount: number;
 }
 
 export interface VaultPosition {
   vault: PublicKey;
-  profileId: number;
+  subVaultId: number;
   shares: bigint;
   snapshotSupplyYieldIndexScaled: bigint;
   snapshotDeltaYieldIndexScaled: bigint;
@@ -71,7 +75,20 @@ export interface UserLoanRef {
   /** 0 = UserWallet, 1 = GlobalVault. */
   counterpartyKind: number;
   /** Only meaningful when counterpartyKind == 1. */
-  counterpartyProfileId: number;
+  counterpartySubVaultId: number;
+}
+
+export const USER_ORDER_REF_SIZE = 144;
+
+export interface UserOrderRef {
+  market: PublicKey;
+  orderSequence: bigint;
+  principalAtoms: bigint;
+  placedAtUnix: bigint;
+  termSeconds: number;
+  rateBps: number;
+  /** Always `Side::Bid` (0) in v1 — users only rest bids. */
+  side: number;
 }
 
 export interface UserAccount {
@@ -79,6 +96,7 @@ export interface UserAccount {
   vaultPositions: VaultPosition[];
   marketPositions: MarketPosition[];
   openLoans: UserLoanRef[];
+  openOrders: UserOrderRef[];
 }
 
 /* ── Header ──────────────────────────────────────────────── */
@@ -106,6 +124,8 @@ export function decodeUserAccountHeader(data: Uint8Array | Buffer): UserAccountH
     openLoanCount: readU32(dv, 64),
     bump: readU8(dv, 68),
     version: readU8(dv, 69),
+    openOrdersRootIndex: readU32(dv, 72),
+    userOrderCount: readU32(dv, 76),
   };
 }
 
@@ -114,7 +134,7 @@ export function decodeUserAccountHeader(data: Uint8Array | Buffer): UserAccountH
 export function decodeVaultPosition(payload: DataView): VaultPosition {
   return {
     vault: readPubkey(payload, 0),
-    profileId: readU8(payload, 32),
+    subVaultId: readU16(payload, 32),
     shares: readU128(payload, 48),
     snapshotSupplyYieldIndexScaled: readU128(payload, 64),
     snapshotDeltaYieldIndexScaled: readU128(payload, 80),
@@ -143,7 +163,32 @@ export function decodeUserLoanRef(payload: DataView): UserLoanRef {
     rateBps: readU16(payload, 88),
     role: readU8(payload, 90),
     counterpartyKind: readU8(payload, 91),
-    counterpartyProfileId: readU8(payload, 92),
+    counterpartySubVaultId: readU16(payload, 92),
+  };
+}
+
+/**
+ * `UserOrderRef` (144 bytes) — pointer to a resting bid the user has on a
+ * market (v1 D6). Maintained by the user place/cancel/update-bid paths.
+ *
+ * Layout (offsets from state/user_account.rs):
+ *   @0   32   Pubkey market
+ *   @32  8    u64    order_sequence
+ *   @40  8    u64    principal_atoms
+ *   @48  8    i64    placed_at_unix
+ *   @56  4    u32    term_seconds
+ *   @60  2    u16    rate_bps
+ *   @62  1    u8     side       (always Side::Bid = 0 in v1)
+ */
+export function decodeUserOrderRef(payload: DataView): UserOrderRef {
+  return {
+    market: readPubkey(payload, 0),
+    orderSequence: readU64(payload, 32),
+    principalAtoms: readU64(payload, 40),
+    placedAtUnix: readI64(payload, 48),
+    termSeconds: readU32(payload, 56),
+    rateBps: readU16(payload, 60),
+    side: readU8(payload, 62),
   };
 }
 
@@ -163,6 +208,7 @@ export function decodeUserAccount(data: Uint8Array | Buffer): UserAccount {
   const vaultPositions: VaultPosition[] = [];
   const marketPositions: MarketPosition[] = [];
   const openLoans: UserLoanRef[] = [];
+  const openOrders: UserOrderRef[] = [];
 
   if (!isNil(header.vaultPositionsRootIndex)) {
     for (const { payload } of walkDescending(
@@ -191,6 +237,15 @@ export function decodeUserAccount(data: Uint8Array | Buffer): UserAccount {
       openLoans.push(decodeUserLoanRef(payload));
     }
   }
+  if (!isNil(header.openOrdersRootIndex)) {
+    for (const { payload } of walkDescending(
+      dynamic,
+      header.openOrdersRootIndex,
+      USER_ACCOUNT_BLOCK_PAYLOAD_SIZE,
+    )) {
+      openOrders.push(decodeUserOrderRef(payload));
+    }
+  }
 
-  return { header, vaultPositions, marketPositions, openLoans };
+  return { header, vaultPositions, marketPositions, openLoans, openOrders };
 }

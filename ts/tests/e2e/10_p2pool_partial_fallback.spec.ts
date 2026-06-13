@@ -4,8 +4,8 @@
  * residual falls through to `marginfi.borrow` (P2Pool fallback).
  *
  *   1. Vault has only 50 atoms idle (`GlobalVaultDeposit(50)`).
- *   2. Curator quotes an unbounded ask at 500 bps.
- *   3. Borrower bids 100 atoms at 800 bps.
+ *   2. Curator rests an unbounded ask (rate quoted live by the program).
+ *   3. Borrower bids 100 atoms above the quoted ask.
  *      - 50 atoms cross against the vault → Fixed MatchedLoan node.
  *      - 50 atoms residual → marginfi.borrow → P2Pool MatchedLoan node.
  *   4. Market matched_loans has **two** entries with distinct loan_type.
@@ -28,7 +28,7 @@ import {
   HEAVY_IX_CU_LIMIT,
   LoanType,
   MATCHED_LOAN_FLAG_VAULT_LENDER,
-  placeOrderForRiskProfileInstruction,
+  placeOrderForSubVaultInstruction,
   placeOrderInstruction,
 } from '../../src/index.js';
 import { bootBankrun, BankrunHandle } from './_bankrun.ts';
@@ -49,7 +49,7 @@ import {
   bankLiquidityVaultAuthority,
   setupGlobalConfig,
   setupMarket,
-  setupRiskProfile,
+  setupPoolSubVault,
   setupVault,
 } from './_setup.ts';
 
@@ -65,6 +65,9 @@ describe('e2e: P2Pool partial fallback (fixed match + marginfi residual)', () =>
   let borrowerUsdcAta: PublicKey;
   const vaultDepositAtoms = 50n; // tiny so the bid eats it all
   const bidPrincipalAtoms = 100n; // bigger than vault → 50/50 split
+  // v1: vault ask rate is program-quoted (bank APR + spread), read back below.
+  let askRateBps: number;
+  let bidRateBps: number;
 
   beforeAll(async () => {
     bk = await bootBankrun({ loadMarginfiFixtures: true });
@@ -73,7 +76,7 @@ describe('e2e: P2Pool partial fallback (fixed match + marginfi residual)', () =>
     market = await setupMarket(bk, admin);
     await setupVault(bk, admin);
     curator = await bk.fundedKeypair();
-    await setupRiskProfile(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });
+    await setupPoolSubVault(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });
 
     // Tiny vault deposit so partial residual is forced.
     depositor = await bk.fundedKeypair();
@@ -95,28 +98,36 @@ describe('e2e: P2Pool partial fallback (fixed match + marginfi residual)', () =>
           lendingPool: USDC_BANK,
           liquidityVault: USDC_LIQUIDITY_VAULT,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          profileId: 1,
+          subVaultId: 1,
           amountAtoms: vaultDepositAtoms,
         }),
       ],
       [depositor],
     );
 
-    // Curator ask.
+    // Curator ask. v1: no rate/term — program quotes live (bank APR + spread).
+    await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE, switchboardOracle: SOL_ORACLE });
     await bk.send(
       [
-        placeOrderForRiskProfileInstruction({
+        placeOrderForSubVaultInstruction({
           feePayer: curator.publicKey,
           curator: curator.publicKey,
-          mint: USDC_MINT,
           market: market.publicKey,
-          profileId: 1,
-          rateBps: 500,
-          termSeconds: 30 * 86_400,
+          debtBank: USDC_BANK,
+          marginfiGroup: MARGINFI_GROUP,
+          collateralBank: SOL_BANK,
+          debtOracles: [USDC_ORACLE],
+          collateralOracles: [SOL_ORACLE],
+          subVaultId: 1,
         }),
       ],
       [curator],
     );
+
+    // Read back the program-quoted ask rate; the borrower bids above it.
+    const askMarket = decodeMarket((await bk.getAccount(market.publicKey))!.data);
+    askRateBps = askMarket.asks[0].order.rateBps;
+    bidRateBps = askRateBps + 300;
 
     // Borrower: seat + collateral.
     borrower = await bk.fundedKeypair();
@@ -173,11 +184,11 @@ describe('e2e: P2Pool partial fallback (fixed match + marginfi residual)', () =>
           borrowerDebtToken: borrowerUsdcAta,
           tokenProgram: SPL_TOKEN_PROGRAM_ID,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          rateBps: 800,
+          rateBps: bidRateBps,
           termSeconds: 30 * 86_400,
           principalAtoms: bidPrincipalAtoms,
           collateralAtoms: 5_000n,
-          // flags = 0 → fallback ON
+          // residualMode defaults to 0 → P2Pool fallback ON (v1 D6).
         }),
       ],
       [borrower],
@@ -201,7 +212,7 @@ describe('e2e: P2Pool partial fallback (fixed match + marginfi residual)', () =>
         : vaultDepositAtoms - fixedNode!.principalAtoms;
     expect(fixedDrift).toBeLessThanOrEqual(2n);
     expect(fixedNode!.flags & MATCHED_LOAN_FLAG_VAULT_LENDER).toBe(MATCHED_LOAN_FLAG_VAULT_LENDER);
-    expect(fixedNode!.lenderRateBps).toBe(500);
+    expect(fixedNode!.lenderRateBps).toBe(askRateBps);
 
     // P2Pool leg takes the residual; same 2-atom band (the residual absorbs
     // the deposit-acknowledgment rounding the Fixed leg didn't fill).
@@ -214,11 +225,11 @@ describe('e2e: P2Pool partial fallback (fixed match + marginfi residual)', () =>
     expect(p2poolNode!.flags & MATCHED_LOAN_FLAG_VAULT_LENDER).toBe(0);
     expect(fixedNode!.principalAtoms + p2poolNode!.principalAtoms).toBe(bidPrincipalAtoms);
 
-    // Vault profile encumbrance tracks the fixed leg amount actually filled.
-    const [vaultPda] = globalVaultPda(USDC_MINT);
+    // Vault sub-vault encumbrance tracks the fixed leg amount actually filled.
+    const [vaultPda] = globalVaultPda(USDC_BANK);
     const v = decodeGlobalVault((await bk.getAccount(vaultPda))!.data);
-    const profile = v.riskProfiles[0].profile;
-    expect(profile.encumberedInOrdersAtoms).toBe(fixedNode!.principalAtoms);
+    const subVault = v.subVaults[0].subVault;
+    expect(subVault.encumberedInOrdersAtoms).toBe(fixedNode!.principalAtoms);
 
     // Borrower marginfi: only the P2Pool half lives as a marginfi liability.
     // The liability MUST reflect exactly the residual (bid - vault_idle = 50

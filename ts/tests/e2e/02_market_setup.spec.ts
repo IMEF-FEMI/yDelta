@@ -10,7 +10,7 @@
  *      while paused, for emergency retunes).
  *   4. SetMarketPause(true) / (false) — admin halt/resume.
  *   5. CreateVault — opens the per-mint GlobalVault.
- *   6. CreateRiskProfile — adds profile 0.
+ *   6. CreatePoolSubVault — adds sub-vault 1.
  *
  * Verifies decoded state at each step.
  */
@@ -25,7 +25,7 @@ import {
 import {
   createGlobalConfigInstruction,
   createMarketInstruction,
-  createRiskProfileInstruction,
+  createPoolSubVaultInstruction,
   createVaultInstruction,
   decodeGlobalConfig,
   decodeGlobalVault,
@@ -110,7 +110,6 @@ describe('e2e: market + vault setup', () => {
           marginfiProgram: MARGINFI_PROGRAM_ID,
           params: {
             protocolFeeBpsFloor: 50,
-            ltvBufferBps: 200,
             curatorSplitBps: 1_000,
             gracePeriodSeconds: 86_400,
           },
@@ -127,7 +126,6 @@ describe('e2e: market + vault setup', () => {
     // `set_fee_config` / `set_market_pause(false)` round-trip required.
     expect(header.isPaused).toBe(false);
     expect(header.feeConfig.protocolFeeBpsFloor).toBe(50);
-    expect(header.feeConfig.ltvBufferBps).toBe(200);
     expect(header.feeConfig.curatorSplitBps).toBe(1_000);
     expect(header.feeConfig.gracePeriodSeconds).toBe(86_400);
     expect(header.marginfiGroup.equals(MARGINFI_GROUP)).toBe(true);
@@ -139,7 +137,7 @@ describe('e2e: market + vault setup', () => {
         setFeeConfigInstruction({
           admin: admin.publicKey,
           market: market.publicKey,
-          ltvBufferBps: 300,
+          protocolFeeBpsFloor: 75,
         }),
       ],
       [admin],
@@ -149,8 +147,7 @@ describe('e2e: market + vault setup', () => {
     // Only the field passed in changes; the others stay at their
     // create-market values (regression guard for the shared
     // `apply_fee_config_overrides` helper).
-    expect(header.feeConfig.ltvBufferBps).toBe(300);
-    expect(header.feeConfig.protocolFeeBpsFloor).toBe(50);
+    expect(header.feeConfig.protocolFeeBpsFloor).toBe(75);
     expect(header.feeConfig.curatorSplitBps).toBe(1_000);
     expect(header.feeConfig.gracePeriodSeconds).toBe(86_400);
   });
@@ -185,40 +182,44 @@ describe('e2e: market + vault setup', () => {
       ],
       [admin],
     );
-    const [vaultPda] = globalVaultPda(USDC_MINT);
+    const [vaultPda] = globalVaultPda(USDC_BANK);
     const vault = decodeGlobalVault((await bk.getAccount(vaultPda))!.data);
     expect(vault.header.mint.equals(USDC_MINT)).toBe(true);
     expect(vault.header.globalVaultAdmin.equals(admin.publicKey)).toBe(true);
     expect(vault.header.lendingPool.equals(USDC_BANK)).toBe(true);
-    expect(vault.header.riskProfileCount).toBe(0);
-    expect(vault.riskProfiles).toHaveLength(0);
+    expect(vault.header.subVaultCount).toBe(0);
+    expect(vault.subVaults).toHaveLength(0);
   });
 
-  it('CreateRiskProfile inserts profile 0 into the tree', async () => {
+  it('CreatePoolSubVault inserts sub-vault 1 into the tree', async () => {
     const curator = await bk.fundedKeypair();
     await bk.send(
       [
-        createRiskProfileInstruction({
+        createPoolSubVaultInstruction({
           payer: admin.publicKey,
-          mint: USDC_MINT,
-          profileId: 1,
+          bank: USDC_BANK,
           curator: curator.publicKey,
+          spreadBps: 0,
           maxLtvBps: 6_000,
+          liquidationLtvBps: 7_000,
           maxTermSeconds: 30 * 86_400,
+          curatorFeeBps: 0,
         }),
       ],
       [admin],
     );
-    const [vaultPda] = globalVaultPda(USDC_MINT);
+    const [vaultPda] = globalVaultPda(USDC_BANK);
     const vault = decodeGlobalVault((await bk.getAccount(vaultPda))!.data);
-    expect(vault.header.riskProfileCount).toBe(1);
-    expect(vault.riskProfiles).toHaveLength(1);
-    const profile = vault.riskProfiles[0].profile;
-    expect(profile.profileId).toBe(0);
-    expect(profile.curator.equals(curator.publicKey)).toBe(true);
-    expect(profile.maxLtvBps).toBe(6_000);
-    expect(profile.maxTermSeconds).toBe(30 * 86_400);
-    expect(profile.totalShares).toBe(0n);
-    expect(profile.deployedPrincipalAtoms).toBe(0n);
+    expect(vault.header.subVaultCount).toBe(1);
+    expect(vault.subVaults).toHaveLength(1);
+    const subVault = vault.subVaults[0].subVault;
+    // First sub-vault on a fresh vault is assigned id 1 (0 is the sentinel).
+    expect(subVault.subVaultId).toBe(1);
+    expect(subVault.curator.equals(curator.publicKey)).toBe(true);
+    expect(subVault.maxLtvBps).toBe(6_000);
+    expect(subVault.liquidationLtvBps).toBe(7_000);
+    expect(subVault.maxTermSeconds).toBe(30 * 86_400);
+    expect(subVault.totalShares).toBe(0n);
+    expect(subVault.deployedPrincipalAtoms).toBe(0n);
   });
 });

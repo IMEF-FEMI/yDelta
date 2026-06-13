@@ -81,6 +81,21 @@ describe('Writer primitives', () => {
     );
   });
 
+  it('encodes Option<u8>', () => {
+    expect(new Writer().optionU8(null).toBuffer()).toEqual(Buffer.from([0]));
+    expect(new Writer().optionU8(undefined).toBuffer()).toEqual(Buffer.from([0]));
+    expect(new Writer().optionU8(0x7f).toBuffer()).toEqual(Buffer.from([1, 0x7f]));
+  });
+
+  it('encodes the seat-index hint as an Option<u32> (optionDataIndex)', () => {
+    // v1 place/cancel/update-order builders pass `seatIndexHint` through
+    // `optionDataIndex`, which is a plain borsh `Option<u32>`.
+    expect(new Writer().optionDataIndex(null).toBuffer()).toEqual(Buffer.from([0]));
+    expect(new Writer().optionDataIndex(0x01020304).toBuffer()).toEqual(
+      Buffer.from([1, 0x04, 0x03, 0x02, 0x01]),
+    );
+  });
+
   it('chains writes in order', () => {
     const out = new Writer()
       .u8(0xff)

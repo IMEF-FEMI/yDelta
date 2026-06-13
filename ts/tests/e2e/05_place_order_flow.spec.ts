@@ -2,9 +2,9 @@
  * Tier 3c e2e: full match flow.
  *
  * Sequence (everything a real UX user would do, end-to-end):
- *   1. Global config + market + vault + risk profile (`max_ltv = 80%`).
- *   2. Curator: GlobalVaultDeposit 100 USDC → profile idle.
- *   3. Curator: PlaceOrderForRiskProfile at 500 bps / 30 days.
+ *   1. Global config + market + vault + sub-vault (`max_ltv = 80%`).
+ *   2. Curator: GlobalVaultDeposit 100 USDC → sub-vault idle.
+ *   3. Curator: PlaceOrderForSubVault — rate quoted live (bank APR + spread).
  *   4. Borrower: ClaimSeat + Deposit wSOL collateral.
  *   5. Borrower: PlaceOrder IOC bid at 800 bps / 30 days.
  *   6. Verify: match landed (encumbered_in_orders_atoms grew, matched_loan
@@ -25,7 +25,7 @@ import {
   depositInstruction,
   globalVaultDepositInstruction,
   globalVaultPda,
-  placeOrderForRiskProfileInstruction,
+  placeOrderForSubVaultInstruction,
   placeOrderInstruction,
   HEAVY_IX_CU_LIMIT,
   MATCHED_LOAN_FLAG_VAULT_LENDER,
@@ -44,7 +44,7 @@ import {
   USDC_ORACLE,
   WSOL_MINT,
 } from './_fixtures.ts';
-import { setupGlobalConfig, setupMarket, setupRiskProfile, setupVault } from './_setup.ts';
+import { setupGlobalConfig, setupMarket, setupPoolSubVault, setupVault } from './_setup.ts';
 
 /**
  * Derive a marginfi v0.1.8 bank's `liquidity_vault_authority` PDA. Seeds:
@@ -60,8 +60,6 @@ function bankLiquidityVaultAuthority(bank: PublicKey): PublicKey {
 // Match the Rust integration-test recipe so the LTV gate doesn't reject the
 // cross at the dumped mainnet oracle prices. Tiny atoms = trivially-OK LTV.
 const VAULT_DEPOSIT_ATOMS = 100_000_000n; // 100 USDC
-const ASK_RATE_BPS = 500;
-const BID_RATE_BPS = 800;
 const TERM_SECONDS = 30 * 86_400;
 const MAX_LTV_BPS = 8_000;
 const WSOL_FUND_ATOMS = 100_000n; // 0.0001 SOL — well over the 5_000-collateral bid
@@ -79,17 +77,21 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
   let borrower: Keypair;
   let borrowerSolAta: PublicKey;
   let borrowerUsdcAta: PublicKey;
+  // v1: the vault ask rate is quoted live by the program (bank lending APR +
+  // sub_vault.spread_bps), read back after placement. The bid is set above it.
+  let askRateBps: number;
+  let bidRateBps: number;
 
   beforeAll(async () => {
     bk = await bootBankrun({ loadMarginfiFixtures: true });
     admin = bk.payer;
 
-    // Global config + market + vault + risk profile.
+    // Global config + market + vault + sub-vault.
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
     await setupVault(bk, admin);
     curator = await bk.fundedKeypair();
-    await setupRiskProfile(bk, admin, curator.publicKey, {
+    await setupPoolSubVault(bk, admin, curator.publicKey, {
       maxLtvBps: MAX_LTV_BPS,
       maxTermSeconds: TERM_SECONDS,
     });
@@ -114,28 +116,38 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
           lendingPool: USDC_BANK,
           liquidityVault: USDC_LIQUIDITY_VAULT,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          profileId: 1,
+          subVaultId: 1,
           amountAtoms: VAULT_DEPOSIT_ATOMS,
         }),
       ],
       [depositor],
     );
 
-    // Curator quotes an unbounded ask.
+    // Curator rests an unbounded ask. v1: no rate/term args — the program
+    // quotes the rate live (bank lending APR + spread) and uses the
+    // sub-vault's max_term_seconds, so it reads the bank + oracles.
+    await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE, switchboardOracle: SOL_ORACLE });
     await bk.send(
       [
-        placeOrderForRiskProfileInstruction({
+        placeOrderForSubVaultInstruction({
           feePayer: curator.publicKey,
           curator: curator.publicKey,
-          mint: USDC_MINT,
           market: market.publicKey,
-          profileId: 1,
-          rateBps: ASK_RATE_BPS,
-          termSeconds: TERM_SECONDS,
+          debtBank: USDC_BANK,
+          marginfiGroup: MARGINFI_GROUP,
+          collateralBank: SOL_BANK,
+          debtOracles: [USDC_ORACLE],
+          collateralOracles: [SOL_ORACLE],
+          subVaultId: 1,
         }),
       ],
       [curator],
     );
+
+    // Read back the program-quoted ask rate; the borrower bids above it.
+    const askMarket = decodeMarket((await bk.getAccount(market.publicKey))!.data);
+    askRateBps = askMarket.asks[0].order.rateBps;
+    bidRateBps = askRateBps + 300;
 
     // Borrower claims a seat + deposits collateral.
     borrower = await bk.fundedKeypair();
@@ -173,17 +185,17 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
     );
   });
 
-  it('pre-cross profile is fully idle (zero encumbered / deployed)', async () => {
-    const [vaultPda] = globalVaultPda(USDC_MINT);
+  it('pre-cross sub-vault is fully idle (zero encumbered / deployed)', async () => {
+    const [vaultPda] = globalVaultPda(USDC_BANK);
     const vault = decodeGlobalVault((await bk.getAccount(vaultPda))!.data);
-    const profile = vault.riskProfiles[0].profile;
-    expect(profile.encumberedInOrdersAtoms).toBe(0n);
-    expect(profile.deployedPrincipalAtoms).toBe(0n);
+    const subVault = vault.subVaults[0].subVault;
+    expect(subVault.encumberedInOrdersAtoms).toBe(0n);
+    expect(subVault.deployedPrincipalAtoms).toBe(0n);
     // Credited principal is the marginfi-ACKNOWLEDGED deposit (gross minus
     // sub-atom share-rounding on the deposit CPI), so allow a couple atoms
     // below the gross.
-    expect(profile.totalPrincipalAtoms).toBeLessThanOrEqual(VAULT_DEPOSIT_ATOMS);
-    expect(profile.totalPrincipalAtoms).toBeGreaterThan(VAULT_DEPOSIT_ATOMS - 4n);
+    expect(subVault.totalPrincipalAtoms).toBeLessThanOrEqual(VAULT_DEPOSIT_ATOMS);
+    expect(subVault.totalPrincipalAtoms).toBeGreaterThan(VAULT_DEPOSIT_ATOMS - 4n);
   });
 
   it('PlaceOrder crosses the vault ask, bumps encumbered + queues a MatchedLoan', async () => {
@@ -207,11 +219,11 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
           borrowerDebtToken: borrowerUsdcAta,
           tokenProgram: SPL_TOKEN_PROGRAM_ID,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          rateBps: BID_RATE_BPS,
+          rateBps: bidRateBps,
           termSeconds: TERM_SECONDS,
           principalAtoms: BID_PRINCIPAL_ATOMS,
           collateralAtoms: BID_COLLATERAL_ATOMS,
-          // flags = 0 → P2Pool fallback on. Default-args path the SDK exposes.
+          // residualMode defaults to 0 → P2Pool fallback on (v1 D6).
         }),
       ],
       [borrower],
@@ -220,14 +232,14 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
     // Vault profile state: match-time bookkeeping bumps encumbered, NOT
     // deployed. Atoms physically stay in the vault's marginfi integration
     // account until the cranker promotes the queue node to a real Loan PDA.
-    const [vaultPda] = globalVaultPda(USDC_MINT);
+    const [vaultPda] = globalVaultPda(USDC_BANK);
     const vault = decodeGlobalVault((await bk.getAccount(vaultPda))!.data);
-    const profile = vault.riskProfiles[0].profile;
-    expect(profile.encumberedInOrdersAtoms).toBe(BID_PRINCIPAL_ATOMS);
-    expect(profile.deployedPrincipalAtoms).toBe(0n);
+    const subVault = vault.subVaults[0].subVault;
+    expect(subVault.encumberedInOrdersAtoms).toBe(BID_PRINCIPAL_ATOMS);
+    expect(subVault.deployedPrincipalAtoms).toBe(0n);
     // Marginfi-acknowledged deposit (gross minus sub-atom share-rounding).
-    expect(profile.totalPrincipalAtoms).toBeLessThanOrEqual(VAULT_DEPOSIT_ATOMS);
-    expect(profile.totalPrincipalAtoms).toBeGreaterThan(VAULT_DEPOSIT_ATOMS - 4n);
+    expect(subVault.totalPrincipalAtoms).toBeLessThanOrEqual(VAULT_DEPOSIT_ATOMS);
+    expect(subVault.totalPrincipalAtoms).toBeGreaterThan(VAULT_DEPOSIT_ATOMS - 4n);
 
     // Market: one MatchedLoan queue node landed. The ask is unbounded so
     // it stays in the asks tree.
@@ -236,27 +248,28 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
     const ml = m.matchedLoans[0].loan;
     expect(ml.principalAtoms).toBe(BID_PRINCIPAL_ATOMS);
     expect(ml.collateralAtoms).toBe(BID_COLLATERAL_ATOMS);
-    expect(ml.lenderRateBps).toBe(ASK_RATE_BPS); // borrower locks in the ask rate
-    expect(ml.borrowerRateBps).toBeGreaterThanOrEqual(ASK_RATE_BPS); // ≥ ask + protocol fee floor
+    expect(ml.lenderRateBps).toBe(askRateBps); // borrower locks in the ask rate
+    expect(ml.borrowerRateBps).toBeGreaterThanOrEqual(askRateBps); // ≥ ask + protocol fee floor
     expect(ml.termSeconds).toBe(TERM_SECONDS);
     expect(ml.flags & MATCHED_LOAN_FLAG_VAULT_LENDER).toBe(MATCHED_LOAN_FLAG_VAULT_LENDER);
 
-    // Borrower seat: collateral encumbrance happens at `process_matched_loan`
-    // (cranker) time, not at match time — the matched-loan queue node carries
-    // the seat indices but the borrower's `collateral_withdrawable → encumbered`
-    // shift is performed when the cranker promotes the queue node to a
-    // `LoanFixed` PDA. So at this point the seat still shows the full
-    // deposit as collateral_withdrawable, and BOTH debt-side fields are 0
-    // (no debt has been credited to the seat yet — the cranker does that).
+    // Borrower seat: v1 `place_order` encumbers the bid's collateral up front
+    // (`encumber_for_order(Side::Bid)` shifts collateral_withdrawable →
+    // collateral_encumbered) BEFORE the match runs; the matched portion stays
+    // encumbered to back the queued MatchedLoan. So post-cross the seat shows
+    // the bid collateral as ENCUMBERED, with the unbid remainder of the
+    // deposit still withdrawable. The debt-side fields stay 0 — no debt is
+    // credited to the borrower seat until the cranker promotes the queue node
+    // to a `LoanFixed` PDA.
     const borrowerSeat = m.claimedSeats.find((s) => s.seat.owner.equals(borrower.publicKey))!.seat;
+    expect(borrowerSeat.collateralEncumberedShares).toBeGreaterThan(0n);
     expect(borrowerSeat.collateralWithdrawableShares).toBeGreaterThan(0n);
-    expect(borrowerSeat.collateralEncumberedShares).toBe(0n);
     expect(borrowerSeat.debtWithdrawableShares).toBe(0n);
     expect(borrowerSeat.debtEncumberedShares).toBe(0n);
 
     // The vault ask itself remains on the book — unbounded "quote-all-idle".
     expect(m.asks).toHaveLength(1);
-    expect(m.asks[0].order.rateBps).toBe(ASK_RATE_BPS);
+    expect(m.asks[0].order.rateBps).toBe(askRateBps);
     expect(m.asks[0].order.termSeconds).toBe(TERM_SECONDS);
     // Profile is the ONLY one in the vault and the seat invariant holds:
     // post-cross profile state is what the match-engine writes — no

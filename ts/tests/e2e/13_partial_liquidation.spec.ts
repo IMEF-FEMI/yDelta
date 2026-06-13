@@ -75,7 +75,7 @@ describe('e2e: partial liquidation leaves loan Active with reduced balances', ()
     collateralAtoms = handles.collateralAtoms;
 
     // Crank the match into a real Loan PDA.
-    const vault = globalVaultPda(USDC_MINT)[0];
+    const vault = globalVaultPda(USDC_BANK)[0];
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
@@ -159,6 +159,7 @@ describe('e2e: partial liquidation leaves loan Active with reduced balances', ()
           marginfiProgram: MARGINFI_PROGRAM_ID,
           repayAtomsMax: partialRepay,
           crankerRefund: cranker.publicKey,
+          globalVault: globalVaultPda(USDC_BANK)[0], // Fixed loan: vault-lent
         }),
       ],
       [keeper],
@@ -224,15 +225,16 @@ describe('e2e: partial liquidation leaves loan Active with reduced balances', ()
           marginfiProgram: MARGINFI_PROGRAM_ID,
           repayAtomsMax: 0n, // 0 = full
           crankerRefund: cranker.publicKey,
+          globalVault: globalVaultPda(USDC_BANK)[0], // Fixed loan: vault-lent
         }),
       ],
       [keeper],
     );
 
-    const loan = decodeLoanFixed((await bk.getAccount(loanKey))!.data);
-    expect(loan.state).toBe(LoanState.Repaid);
-    expect(loan.outstandingDebtAtoms).toBe(0n);
-    expect(loan.collateralAtoms).toBe(0n);
+    // v1: the second pass retires the remaining debt to zero, which is a
+    // full-repay close-out — the loan PDA is CLOSED in the same ix (rent →
+    // the original cranker) rather than left behind in a `Repaid` shell.
+    expect(await bk.getAccount(loanKey)).toBeNull();
 
     // Across BOTH passes the keeper has paid exactly the original
     // principal (interest accrued = 0 at our zero-time-elapse setup).

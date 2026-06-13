@@ -1,14 +1,14 @@
 /**
  * vault-withdraw.ts — `GlobalVaultWithdraw` (tag 11). Depositor burns
  * vault shares for atoms (or, with `withdrawAll: true`, drains the full
- * redeemable balance under the chosen profile).
+ * redeemable balance under the chosen sub-vault).
  *
  * Reads:
  *   .local/vault-withdraw-input.json {
  *     mint: string,
  *     depositorKeypairPath?: string,
  *     depositorTokenAta: string,
- *     profileId: number,
+ *     subVaultId: number,                    // u16 (v1; was profileId u8)
  *     sharesToBurn?: string | number,        // u128; required unless withdrawAll
  *     withdrawAll?: boolean                  // sets sharesToBurn to the on-chain stake
  *   }
@@ -45,7 +45,7 @@ import type { VaultDump } from './_types.js';
 
 interface Input {
   mint: string;
-  profileId: number;
+  subVaultId: number;
   sharesToBurn?: string | number;
   withdrawAll?: boolean;
 }
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
 
   let shares: bigint;
   if (input.withdrawAll) {
-    shares = await readDepositorShares(conn, input.mint, depositor.publicKey, input.profileId);
+    shares = await readDepositorShares(conn, bankPk, depositor.publicKey, input.subVaultId);
     if (shares === 0n) {
       log(`[vault-withdraw] withdrawAll: depositor has 0 shares; nothing to do`);
       return;
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
     liquidityVault: bank.liquidityVault,
     bankLiquidityVaultAuthority: bankLiquidityVaultAuthority(bankPk),
     marginfiProgram: MARGINFI_PROGRAM_ID,
-    profileId: input.profileId,
+    subVaultId: input.subVaultId,
     sharesToBurn: shares,
   });
   // Ensure the payout destination ATA exists before the withdraw lands.
@@ -110,7 +110,7 @@ async function main(): Promise<void> {
     oracleCrank: crank.entries,
     summary: {
       mint: input.mint,
-      profileId: input.profileId,
+      subVaultId: input.subVaultId,
       depositor: depositor.publicKey.toBase58(),
       sharesBurned: shares.toString(),
       withdrawAll: input.withdrawAll ?? false,
@@ -119,25 +119,28 @@ async function main(): Promise<void> {
 }
 
 /**
- * Sum the depositor's share-balance across every per-(depositor, profileId)
+ * Sum the depositor's share-balance across every per-(depositor, subVaultId)
  * slot in the vault. `decodeGlobalVault` decodes the dynamic region into
- * a list of `RiskProfileDepositorSeat` entries; one depositor can have
- * multiple slots open under different profiles (or repeat entries after
- * partial redemptions), so we filter to (owner, profileId) and sum.
+ * a list of `SubVaultDepositorSeat` entries; one depositor can have
+ * multiple slots open under different sub-vaults (or repeat entries after
+ * partial redemptions), so we filter to (owner, subVaultId) and sum.
+ *
+ * The GlobalVault PDA is bank-keyed in v1 (`[b"vault", bank]`), so we
+ * derive it from the vault's pinned bank, NOT the mint.
  */
 async function readDepositorShares(
   conn: ReturnType<typeof loadConnection>,
-  mint: string,
+  bank: PublicKey,
   depositor: PublicKey,
-  profileId: number,
+  subVaultId: number,
 ): Promise<bigint> {
-  const [vaultPk] = globalVaultPda(new PublicKey(mint));
+  const [vaultPk] = globalVaultPda(bank);
   const info = await conn.getAccountInfo(vaultPk);
   if (!info) throw new Error(`vault account ${vaultPk.toBase58()} not found on chain`);
   const vault = decodeGlobalVault(info.data);
   let total = 0n;
   for (const { seat } of vault.depositorSeats) {
-    if (seat.profileId === profileId && seat.owner.equals(depositor)) {
+    if (seat.subVaultId === subVaultId && seat.owner.equals(depositor)) {
       total += seat.shares;
     }
   }

@@ -6,8 +6,8 @@
  *      (Custom 40) — the loan is well over-collateralised at mainnet prices.
  *   3. Crash the SOL oracle price to $0.001 (fp18 = 1e15).
  *   4. Keeper calls LiquidateLoan → succeeds, seizes collateral, repays
- *      lender, flips loan to `Repaid`.
- *   5. ClaimRepaymentForRiskProfile (post-maturity) closes the PDA.
+ *      lender, and (v1) closes the loan PDA in-ix.
+ *   5. ClaimRepaymentForSubVault sweeps the realised atoms back to the vault.
  *
  * Mirrors the Rust `liquidate_loan_breaches_at_oracle_drop_succeeds` test.
  */
@@ -15,10 +15,9 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
-  claimRepaymentForRiskProfileInstruction,
+  claimRepaymentForSubVaultInstruction,
   cuBudgetIx,
   decodeGlobalVault,
-  decodeLoanFixed,
   globalVaultIntegrationAccountPda,
   globalVaultPda,
   globalVaultSignerPda,
@@ -27,7 +26,6 @@ import {
   lenderIntegrationAccountPda,
   liquidateLoanInstruction,
   loanPda,
-  LoanState,
   marketSignerPda,
   marketTokenVaultPda,
   processMatchedLoanInstruction,
@@ -64,7 +62,7 @@ describe('e2e: LTV-based liquidation after oracle price crash', () => {
     loanKey = loanPda(handles.market.publicKey, handles.matchedLoanSequence)[0];
 
     // Crank match → Loan PDA.
-    const vault = globalVaultPda(USDC_MINT)[0];
+    const vault = globalVaultPda(USDC_BANK)[0];
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
@@ -140,6 +138,7 @@ describe('e2e: LTV-based liquidation after oracle price crash', () => {
             marginfiProgram: MARGINFI_PROGRAM_ID,
             repayAtomsMax: 0n,
             crankerRefund: cranker.publicKey,
+            globalVault: globalVaultPda(USDC_BANK)[0], // Fixed loan: vault-lent
           }),
         ],
         [keeper],
@@ -183,16 +182,16 @@ describe('e2e: LTV-based liquidation after oracle price crash', () => {
           marginfiProgram: MARGINFI_PROGRAM_ID,
           repayAtomsMax: 0n,
           crankerRefund: cranker.publicKey,
+          globalVault: globalVaultPda(USDC_BANK)[0], // Fixed loan: vault-lent
         }),
       ],
       [keeper],
     );
 
-    // Loan flipped to Repaid; outstanding + collateral zeroed.
-    const loan = decodeLoanFixed((await bk.getAccount(loanKey))!.data);
-    expect(loan.state).toBe(LoanState.Repaid);
-    expect(loan.outstandingDebtAtoms).toBe(0n);
-    expect(loan.collateralAtoms).toBe(0n);
+    // v1: a full liquidation retires the debt, seizes the collateral, AND
+    // closes the loan PDA in the same ix (rent → the original cranker). The
+    // realised atoms land in the sub-vault's `pending_claim_atoms` bucket.
+    expect(await bk.getAccount(loanKey)).toBeNull();
 
     // Keeper paid exactly the outstanding (no `liquidation_keeper_bps`
     // bonus charged at default fee config) and received the full collateral
@@ -205,31 +204,33 @@ describe('e2e: LTV-based liquidation after oracle price crash', () => {
     expect(collateralDust).toBeLessThanOrEqual(1n);
   });
 
-  it('Post-maturity ClaimRepayment closes the liquidated loan + frees profile', async () => {
-    // Liquidation flips loan to Repaid but doesn't close the PDA — the
-    // lender-side claim cranker handles that. Same shape as spec 07.
-    await bk.warpForward(31 * 86_400 + 3_600);
+  it('ClaimRepaymentForSubVault sweeps the liquidated atoms back + frees the sub-vault', async () => {
+    // The loan PDA was already closed at full-liquidation time; the sweep is a
+    // stateless seat→vault move with no maturity gate. The realised atoms sit
+    // in the sub-vault's pending_claim bucket until swept here.
+    const vault = globalVaultPda(USDC_BANK)[0];
+    const pendingPre = decodeGlobalVault((await bk.getAccount(vault))!.data).subVaults[0].subVault
+      .pendingClaimAtoms;
+    expect(pendingPre).toBeGreaterThan(0n);
 
-    const vault = globalVaultPda(USDC_MINT)[0];
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
         cuBudgetIx(HEAVY_IX_CU_LIMIT),
-        claimRepaymentForRiskProfileInstruction({
+        claimRepaymentForSubVaultInstruction({
           payer: cranker.publicKey,
           market: handles.market.publicKey,
-          sequence: handles.matchedLoanSequence,
+          subVaultId: 1,
           globalVault: vault,
           debtMint: USDC_MINT,
           debtBank: USDC_BANK,
           debtLiquidityVault: USDC_LIQUIDITY_VAULT,
           debtBankLiquidityVaultAuthority: bankLiquidityVaultAuthority(USDC_BANK),
-          bankOracle: USDC_ORACLE,
+          bankOracles: [USDC_ORACLE],
           lenderMarginfiAccount: lenderIntegrationAccountPda(handles.market.publicKey)[0],
           tokenProgram: SPL_TOKEN_PROGRAM_ID,
           marginfiGroup: MARGINFI_GROUP,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          crankerRefund: cranker.publicKey,
         }),
       ],
       [cranker],
@@ -237,7 +238,13 @@ describe('e2e: LTV-based liquidation after oracle price crash', () => {
 
     expect(await bk.getAccount(loanKey)).toBeNull();
     const v = decodeGlobalVault((await bk.getAccount(vault))!.data);
-    const profile = v.riskProfiles[0].profile;
-    expect(profile.deployedPrincipalAtoms).toBe(0n);
+    const subVault = v.subVaults[0].subVault;
+    // The sweep drains pending_claim down to AT MOST 1 atom of marginfi
+    // share-round-down dust (withdraw shares→atoms rounds DOWN, so
+    // `saturating_sub(actual_atoms)` can strand ≤ 1 atom — the program's
+    // own idle invariant tolerates this rather than forcing it to 0).
+    expect(subVault.pendingClaimAtoms).toBeLessThan(pendingPre);
+    expect(subVault.pendingClaimAtoms).toBeLessThanOrEqual(1n);
+    expect(subVault.deployedPrincipalAtoms).toBe(0n);
   });
 });

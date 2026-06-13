@@ -94,7 +94,7 @@ async function main() {
 
   // Find target seat.
   const userSeats = market.claimedSeats.filter((s) => s.seat.ownerKind === OwnerKind.User);
-  let target = OWNER
+  const target = OWNER
     ? userSeats.find((s) => s.seat.owner.equals(OWNER))
     : userSeats.find((s) => s.seat.debtWithdrawableShares > 0n);
   if (!target) {

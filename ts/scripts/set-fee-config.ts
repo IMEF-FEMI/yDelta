@@ -7,12 +7,13 @@
  *     protocolFeeBpsFloor?: number,
  *     originationBps?: number,
  *     curatorSplitBps?: number,
- *     curatorFeeBps?: number,
  *     liquidationKeeperBps?: number,
  *     liquidationProtocolBps?: number,
- *     ltvBufferBps?: number,
  *     gracePeriodSeconds?: number
  *   }
+ *
+ * v1: `curatorFeeBps` is no longer a market FeeConfig field (it's per
+ * sub-vault), and `ltvBufferBps` was removed entirely.
  */
 import { PublicKey } from '@solana/web3.js';
 
@@ -32,10 +33,8 @@ interface Input {
   protocolFeeBpsFloor?: number;
   originationBps?: number;
   curatorSplitBps?: number;
-  curatorFeeBps?: number;
   liquidationKeeperBps?: number;
   liquidationProtocolBps?: number;
-  ltvBufferBps?: number;
   gracePeriodSeconds?: number;
 }
 
@@ -54,10 +53,8 @@ async function main(): Promise<void> {
     protocolFeeBpsFloor: input.protocolFeeBpsFloor,
     originationBps: input.originationBps,
     curatorSplitBps: input.curatorSplitBps,
-    curatorFeeBps: input.curatorFeeBps,
     liquidationKeeperBps: input.liquidationKeeperBps,
     liquidationProtocolBps: input.liquidationProtocolBps,
-    ltvBufferBps: input.ltvBufferBps,
     gracePeriodSeconds: input.gracePeriodSeconds,
   });
   const sig = await sendIxs(conn, signer, [ix]);

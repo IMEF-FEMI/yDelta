@@ -6,21 +6,22 @@ import { Writer } from './_serialise.js';
 import { InstructionTag } from './_tags.js';
 
 /**
- * Tag 13 — `CancelOrderForRiskProfile`. Zero-CPI. Removes the
- * market-side `RestingOrder` + vault-side `RiskProfileOrderRef`. Idempotent
- * on missing (no error if there's nothing to cancel).
+ * Tag 13 — `CancelOrderForSubVault`. Zero-CPI. Removes the market-side
+ * `RestingOrder` + vault-side `SubVaultOrderRef`. Idempotent on missing (no
+ * error if there's nothing to cancel). The vault PDA is derived from
+ * `debtBank` (the market's debt lending pool).
  */
-export function cancelOrderForRiskProfileInstruction(args: {
+export function cancelOrderForSubVaultInstruction(args: {
   feePayer: PublicKey;
   curator: PublicKey;
-  mint: PublicKey;
+  debtBank: PublicKey;
   market: PublicKey;
-  profileId: number;
+  subVaultId: number;
 }): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  const vault = globalVaultPda(args.debtBank)[0];
   const data = new Writer()
-    .u8(InstructionTag.CancelOrderForRiskProfile)
-    .u8(args.profileId)
+    .u8(InstructionTag.CancelOrderForSubVault)
+    .u16(args.subVaultId)
     .toBuffer();
   return ydeltaIx(
     [

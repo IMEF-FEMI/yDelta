@@ -19,11 +19,16 @@ import { InstructionTag } from './_tags.js';
  * MUST prepend `withCuBudget(...)` (the bid walk + per-cross matching +
  * potential P2Pool fallback CPI is well above the default 200k CU limit).
  *
- * The `globalVault` is always passed and is derived from `debtMint`. If
- * the vault doesn't exist on-chain (no `create_vault` yet for this mint),
- * the loader downgrades the slot to None and vault crosses are skipped —
- * but the account meta still has to be present for the AccountMeta array
- * to line up.
+ * The `globalVault` is always passed and is derived from `debtBank` (the
+ * market's debt lending pool). If the vault doesn't exist on-chain (no
+ * `create_vault` yet for this bank), the loader downgrades the slot to None
+ * and vault crosses are skipped — but the account meta still has to be
+ * present for the AccountMeta array to line up.
+ *
+ * `residualMode` (v1 D6) picks the unfilled-residual path: `0` P2Pool
+ * fallback (default), `1` rest the residual as a bid, `2` drop it.
+ * `lastValidUnixTs` is the rested bid's expiry (`0` = never) and only
+ * matters for `residualMode === 1`.
  */
 export interface PlaceOrderArgs {
   payer: PublicKey;
@@ -43,8 +48,10 @@ export interface PlaceOrderArgs {
   termSeconds: number;
   principalAtoms: bigint | BN | number;
   collateralAtoms: bigint | BN | number;
-  /** Place-order flags (`FLAG_OB_ONLY = 0b10` for strict orderbook). */
-  flags?: number;
+  /** Unfilled-residual path: 0 P2Pool fallback, 1 rest, 2 drop. */
+  residualMode?: number;
+  /** Rested-bid expiry unix ts; `0` = never (only used with residualMode 1). */
+  lastValidUnixTs?: bigint | BN | number;
   seatIndexHint?: number | null;
 }
 
@@ -53,12 +60,13 @@ export function placeOrderInstruction(args: PlaceOrderArgs): TransactionInstruct
   const lenderMa = lenderIntegrationAccountPda(args.market)[0];
   const marketDebtVault = marketTokenVaultPda(args.market, args.debtMint)[0];
   const marketSigner = marketSignerPda(args.market)[0];
-  const vault = globalVaultPda(args.debtMint)[0];
+  const vault = globalVaultPda(args.debtBank)[0];
 
   const data = new Writer()
     .u8(InstructionTag.PlaceOrder)
     .optionDataIndex(args.seatIndexHint ?? null)
-    .u8(args.flags ?? 0)
+    .u8(args.residualMode ?? 0)
+    .i64(args.lastValidUnixTs ?? 0)
     .u16(args.rateBps)
     .u32(args.termSeconds)
     .u64(args.principalAtoms)

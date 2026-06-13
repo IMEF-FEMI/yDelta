@@ -2,7 +2,8 @@
  * Six admin-transfer instruction builders (tags 21..=26 + 29/30 for the
  * protocol admin, plus market/vault pause-toggles). Each one is small and
  * shares the same shape: signer is the current/pending admin, the global
- * config is read-only, and the target state account is the one mutated.
+ * config is read-only, and the target state account is the one mutated. The
+ * curator handoffs are scoped to a single `subVaultId` (u16) on the vault.
  */
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 
@@ -42,11 +43,11 @@ export function acceptMarketAdminInstruction(args: {
 /* ── Global-vault admin ────────────────────────────────────────── */
 
 export function transferGlobalVaultAdminInstruction(args: {
-  mint: PublicKey;
+  bank: PublicKey;
   currentAdmin: PublicKey;
   newAdmin: PublicKey;
 }): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  const vault = globalVaultPda(args.bank)[0];
   const data = new Writer()
     .u8(InstructionTag.TransferGlobalVaultAdmin)
     .pubkey(args.newAdmin)
@@ -58,10 +59,10 @@ export function transferGlobalVaultAdminInstruction(args: {
 }
 
 export function acceptGlobalVaultAdminInstruction(args: {
-  mint: PublicKey;
+  bank: PublicKey;
   pendingAdmin: PublicKey;
 }): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  const vault = globalVaultPda(args.bank)[0];
   const data = new Writer().u8(InstructionTag.AcceptGlobalVaultAdmin).toBuffer();
   return ydeltaIx(
     [signerRw(args.pendingAdmin), ro(globalConfigPda()[0]), rw(vault)],
@@ -69,18 +70,18 @@ export function acceptGlobalVaultAdminInstruction(args: {
   );
 }
 
-/* ── Curator (per-profile) ─────────────────────────────────────── */
+/* ── Curator (per-sub-vault) ───────────────────────────────────── */
 
 export function transferCuratorInstruction(args: {
-  mint: PublicKey;
+  bank: PublicKey;
   currentCurator: PublicKey;
-  profileId: number;
+  subVaultId: number;
   newCurator: PublicKey;
 }): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  const vault = globalVaultPda(args.bank)[0];
   const data = new Writer()
     .u8(InstructionTag.TransferCurator)
-    .u8(args.profileId)
+    .u16(args.subVaultId)
     .pubkey(args.newCurator)
     .toBuffer();
   return ydeltaIx(
@@ -90,14 +91,14 @@ export function transferCuratorInstruction(args: {
 }
 
 export function acceptCuratorInstruction(args: {
-  mint: PublicKey;
+  bank: PublicKey;
   pendingCurator: PublicKey;
-  profileId: number;
+  subVaultId: number;
 }): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  const vault = globalVaultPda(args.bank)[0];
   const data = new Writer()
     .u8(InstructionTag.AcceptCurator)
-    .u8(args.profileId)
+    .u16(args.subVaultId)
     .toBuffer();
   return ydeltaIx(
     [signerRw(args.pendingCurator), ro(globalConfigPda()[0]), rw(vault)],

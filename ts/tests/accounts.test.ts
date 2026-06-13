@@ -13,13 +13,18 @@ import { PublicKey } from '@solana/web3.js';
 import {
   CLAIMED_SEAT_SIZE,
   GLOBAL_CONFIG_SIZE,
+  LOAN_FIXED_SIZE,
+  LOAN_FIXED_DISCRIMINANT,
   MARKET_FIXED_SIZE,
   GLOBAL_VAULT_FIXED_SIZE,
+  SUB_VAULT_SIZE,
   decodeClaimedSeat,
   decodeGlobalConfig,
+  decodeLoanFixed,
   decodeMarketHeader,
   decodeMatchedLoan,
   decodeRestingOrder,
+  decodeSubVault,
   decodeGlobalVaultHeader,
   walkDescending,
   walkAscending,
@@ -79,7 +84,7 @@ describe('decodeGlobalConfig', () => {
 });
 
 describe('decodeClaimedSeat', () => {
-  it('reads u128 shares + owner_kind + risk_profile_id', () => {
+  it('reads u128 shares + owner_kind + sub_vault_id (u16 @106)', () => {
     const buf = new Uint8Array(CLAIMED_SEAT_SIZE);
     const owner = new PublicKey('11111111111111111111111111111112');
     writePk(buf, 0, owner);
@@ -89,8 +94,8 @@ describe('decodeClaimedSeat', () => {
     writeU128LE(buf, 80, 4_000_000n); // collateral_encumbered
     writeU32LE(buf, 96, 5);            // open_borrow_count
     writeU32LE(buf, 100, 7);           // open_lend_count
-    buf[104] = 1;                      // owner_kind = RiskProfile
-    buf[105] = 9;                      // risk_profile_id
+    buf[104] = 1;                      // owner_kind = SubVault
+    writeU16LE(buf, 106, 9);           // sub_vault_id (u16)
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const seat = decodeClaimedSeat(dv);
     expect(seat.owner.equals(owner)).toBe(true);
@@ -101,7 +106,14 @@ describe('decodeClaimedSeat', () => {
     expect(seat.openBorrowCount).toBe(5);
     expect(seat.openLendCount).toBe(7);
     expect(seat.ownerKind).toBe(1);
-    expect(seat.riskProfileId).toBe(9);
+    expect(seat.subVaultId).toBe(9);
+  });
+
+  it('reads a wide sub_vault_id (u16, not u8)', () => {
+    const buf = new Uint8Array(CLAIMED_SEAT_SIZE);
+    writeU16LE(buf, 106, 0x0102); // 258 — needs both bytes
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    expect(decodeClaimedSeat(dv).subVaultId).toBe(0x0102);
   });
 });
 
@@ -125,15 +137,23 @@ describe('decodeRestingOrder', () => {
     expect(order.sequenceNumber).toBe(999n);
     expect(order.principalAtoms).toBe(50_000n);
     expect(order.collateralAtoms).toBe(250_000n);
+    expect(order.lastValidUnixTs).toBe(0n);
     expect(order.termSeconds).toBe(86_400 * 30);
     expect(order.rateBps).toBe(750);
     expect(order.side).toBe(1);
     expect(order.sharePriceSnapshotFp48).toBe(1n << 48n);
   });
+
+  it('reads a non-zero last_valid_unix_ts expiry', () => {
+    const buf = new Uint8Array(144);
+    writeI64LE(buf, 32, 1_700_000_000n);
+    const dv = new DataView(buf.buffer);
+    expect(decodeRestingOrder(dv).lastValidUnixTs).toBe(1_700_000_000n);
+  });
 });
 
 describe('decodeMatchedLoan', () => {
-  it('reads sequence + principal + rates + flag bits', () => {
+  it('reads sequence + principal + rates + the v1 ltv/curator snapshots', () => {
     const buf = new Uint8Array(144);
     writeU64LE(buf, 0, 42n);                  // sequence
     writeU128LE(buf, 16, 0n);                 // borrower_marginfi_borrow_shares
@@ -148,6 +168,9 @@ describe('decodeMatchedLoan', () => {
     writeU16LE(buf, 78, 800);                  // lender_rate_bps
     buf[80] = 0;                               // loan_type = Fixed
     buf[81] = 0b0000_0001;                     // flags = VAULT_LENDER
+    writeU16LE(buf, 88, 25);                   // curator_fee_bps_snapshot
+    writeU16LE(buf, 90, 6_000);                // origination_ltv_bps
+    writeU16LE(buf, 92, 8_000);                // liquidation_ltv_bps
     writeU128LE(buf, 112, 1n << 48n);          // lender_debt_share_price_snapshot_fp48
     writeU128LE(buf, 128, 2n << 48n);          // borrower_collateral_share_price_snapshot_fp48
     const dv = new DataView(buf.buffer);
@@ -157,13 +180,154 @@ describe('decodeMatchedLoan', () => {
     expect(loan.borrowerRateBps).toBe(830);
     expect(loan.lenderRateBps).toBe(800);
     expect(loan.flags & 0b1).toBe(1); // VAULT_LENDER bit
+    expect(loan.curatorFeeBpsSnapshot).toBe(25);
+    expect(loan.originationLtvBps).toBe(6_000);
+    expect(loan.liquidationLtvBps).toBe(8_000);
     expect(loan.lenderDebtSharePriceSnapshotFp48).toBe(1n << 48n);
     expect(loan.borrowerCollateralSharePriceSnapshotFp48).toBe(2n << 48n);
   });
 });
 
+describe('decodeSubVault', () => {
+  it('reads the full 496-byte sub-vault layout', () => {
+    const buf = new Uint8Array(SUB_VAULT_SIZE);
+    writeU16LE(buf, 0, 7);                     // sub_vault_id (u16)
+    buf[2] = 1;                                 // is_sunset
+    buf[3] = 1;                                 // kind = Private
+    writeU16LE(buf, 4, 150);                   // spread_bps
+    const curator = new PublicKey('11111111111111111111111111111112');
+    writePk(buf, 8, curator);
+    writeU16LE(buf, 40, 6_000);                // max_ltv_bps
+    writeU16LE(buf, 42, 8_000);                // liquidation_ltv_bps
+    writeU32LE(buf, 44, 86_400 * 90);          // max_term_seconds
+    writeU16LE(buf, 48, 50);                   // curator_fee_bps
+    writeU16LE(buf, 50, 3);                    // open_orders_count (u16)
+    writeU32LE(buf, 52, 11);                   // open_loans_count
+    writeU128LE(buf, 64, 1_000_000n);          // total_shares
+    writeU64LE(buf, 80, 2_000_000n);           // total_assets_atoms
+    writeU64LE(buf, 88, 1_500_000n);           // total_principal_atoms
+    writeU64LE(buf, 96, 900_000n);             // deployed_principal_atoms
+    writeU64LE(buf, 104, 100_000n);            // encumbered_in_orders_atoms
+    writeU128LE(buf, 112, 5_000n);             // total_weighted_rate_bps
+    writeU64LE(buf, 128, 4_242n);              // accumulated_curator_fee_atoms
+    writeI64LE(buf, 136, 1_700_000_000n);      // last_accrue_unix
+    writeU128LE(buf, 144, 1n << 64n);          // cumulative_supply_yield_index_scaled
+    writeU128LE(buf, 160, 2n << 64n);          // cumulative_delta_yield_index_scaled
+    writeU128LE(buf, 176, 1n << 48n);          // last_supply_share_value_fp48
+    const pending = new PublicKey('11111111111111111111111111111113');
+    writePk(buf, 192, pending);
+    writeU128LE(buf, 224, 4_500n);             // total_weighted_net_rate_bps
+    writeU64LE(buf, 240, 777n);                // pending_claim_atoms
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const sv = decodeSubVault(dv);
+    expect(sv.subVaultId).toBe(7);
+    expect(sv.isSunset).toBe(1);
+    expect(sv.kind).toBe(1);
+    expect(sv.spreadBps).toBe(150);
+    expect(sv.curator.equals(curator)).toBe(true);
+    expect(sv.maxLtvBps).toBe(6_000);
+    expect(sv.liquidationLtvBps).toBe(8_000);
+    expect(sv.maxTermSeconds).toBe(86_400 * 90);
+    expect(sv.curatorFeeBps).toBe(50);
+    expect(sv.openOrdersCount).toBe(3);
+    expect(sv.openLoansCount).toBe(11);
+    expect(sv.totalShares).toBe(1_000_000n);
+    expect(sv.totalAssetsAtoms).toBe(2_000_000n);
+    expect(sv.totalPrincipalAtoms).toBe(1_500_000n);
+    expect(sv.deployedPrincipalAtoms).toBe(900_000n);
+    expect(sv.encumberedInOrdersAtoms).toBe(100_000n);
+    expect(sv.totalWeightedRateBps).toBe(5_000n);
+    expect(sv.accumulatedCuratorFeeAtoms).toBe(4_242n);
+    expect(sv.lastAccrueUnix).toBe(1_700_000_000n);
+    expect(sv.cumulativeSupplyYieldIndexScaled).toBe(1n << 64n);
+    expect(sv.cumulativeDeltaYieldIndexScaled).toBe(2n << 64n);
+    expect(sv.lastSupplyShareValueFp48).toBe(1n << 48n);
+    expect(sv.pendingCurator.equals(pending)).toBe(true);
+    expect(sv.totalWeightedNetRateBps).toBe(4_500n);
+    expect(sv.pendingClaimAtoms).toBe(777n);
+  });
+});
+
+describe('decodeLoanFixed', () => {
+  it('reads the 288-byte loan layout incl. v1 ltv + u16 lender_sub_vault_id', () => {
+    const buf = new Uint8Array(LOAN_FIXED_SIZE);
+    writeU64LE(buf, 0, LOAN_FIXED_DISCRIMINANT);
+    const market = new PublicKey('CYf9nJB7eJYqVRm6ucMcRYrwvtT6mzS5HHKkc4dHHGxk');
+    const createdBy = new PublicKey('11111111111111111111111111111112');
+    writePk(buf, 8, market);
+    writePk(buf, 40, createdBy);
+    writeU64LE(buf, 72, 99n);                  // matched_loan_sequence
+    writeU128LE(buf, 80, 0n);                  // borrower_marginfi_borrow_shares
+    writeU16LE(buf, 96, 6_000);                // origination_ltv_bps
+    writeU16LE(buf, 98, 8_000);                // liquidation_ltv_bps
+    writeU64LE(buf, 112, 1_000_000n);          // principal_debt_atoms
+    writeU64LE(buf, 120, 1_010_000n);          // outstanding_debt_atoms
+    writeU64LE(buf, 128, 1_005_000n);          // lender_claimable_atoms
+    writeU64LE(buf, 136, 5_000_000n);          // collateral_atoms
+    writeU64LE(buf, 144, 50n);                 // accumulated_protocol_fee_atoms
+    writeU64LE(buf, 152, 30n);                 // accumulated_curator_fee_atoms
+    writeI64LE(buf, 160, 1_700_000_000n);      // started_at_unix
+    writeI64LE(buf, 168, 1_702_000_000n);      // matures_at_unix
+    writeI64LE(buf, 176, 1_700_500_000n);      // last_accrued_unix
+    writeU32LE(buf, 184, 4);                   // lender_seat_index
+    writeU32LE(buf, 188, 9);                   // borrower_seat_index
+    writeU16LE(buf, 192, 830);                 // borrower_rate_bps
+    writeU16LE(buf, 194, 800);                 // lender_rate_bps
+    buf[196] = 0;                              // state = Active
+    buf[197] = 0;                              // loan_type = Fixed
+    buf[198] = 0b0000_0001;                    // flags
+    buf[199] = 1;                              // version
+    buf[200] = 254;                            // bump
+    buf[201] = 1;                              // lender_kind = GlobalVault
+    writeU16LE(buf, 202, 0x0103);              // lender_sub_vault_id (u16 — 259)
+    writeU16LE(buf, 204, 25);                  // curator_fee_bps_snapshot
+    const lenderVault = new PublicKey('11111111111111111111111111111113');
+    writePk(buf, 208, lenderVault);
+    writeU64LE(buf, 240, 12_000n);             // principal_retired_atoms
+    writeU64LE(buf, 248, 6_000n);              // cumulative_lender_gross_interest_atoms
+    writeU128LE(buf, 256, 1n << 48n);          // lender_debt_share_price_snapshot_fp48
+    writeU128LE(buf, 272, 2n << 48n);          // borrower_collateral_share_price_snapshot_fp48
+    const loan = decodeLoanFixed(buf);
+    expect(loan.market.equals(market)).toBe(true);
+    expect(loan.createdBy.equals(createdBy)).toBe(true);
+    expect(loan.matchedLoanSequence).toBe(99n);
+    expect(loan.originationLtvBps).toBe(6_000);
+    expect(loan.liquidationLtvBps).toBe(8_000);
+    expect(loan.principalDebtAtoms).toBe(1_000_000n);
+    expect(loan.outstandingDebtAtoms).toBe(1_010_000n);
+    expect(loan.lenderClaimableAtoms).toBe(1_005_000n);
+    expect(loan.collateralAtoms).toBe(5_000_000n);
+    expect(loan.accumulatedProtocolFeeAtoms).toBe(50n);
+    expect(loan.accumulatedCuratorFeeAtoms).toBe(30n);
+    expect(loan.startedAtUnix).toBe(1_700_000_000n);
+    expect(loan.maturesAtUnix).toBe(1_702_000_000n);
+    expect(loan.lastAccruedUnix).toBe(1_700_500_000n);
+    expect(loan.lenderSeatIndex).toBe(4);
+    expect(loan.borrowerSeatIndex).toBe(9);
+    expect(loan.borrowerRateBps).toBe(830);
+    expect(loan.lenderRateBps).toBe(800);
+    expect(loan.state).toBe(0);
+    expect(loan.version).toBe(1);
+    expect(loan.bump).toBe(254);
+    expect(loan.lenderKind).toBe(1);
+    expect(loan.lenderSubVaultId).toBe(0x0103);
+    expect(loan.curatorFeeBpsSnapshot).toBe(25);
+    expect(loan.lenderGlobalVault.equals(lenderVault)).toBe(true);
+    expect(loan.principalRetiredAtoms).toBe(12_000n);
+    expect(loan.cumulativeLenderGrossInterestAtoms).toBe(6_000n);
+    expect(loan.lenderDebtSharePriceSnapshotFp48).toBe(1n << 48n);
+    expect(loan.borrowerCollateralSharePriceSnapshotFp48).toBe(2n << 48n);
+  });
+
+  it('rejects a bad discriminator', () => {
+    const buf = new Uint8Array(LOAN_FIXED_SIZE);
+    writeU64LE(buf, 0, 0xdeadbeefn);
+    expect(() => decodeLoanFixed(buf)).toThrow();
+  });
+});
+
 describe('decodeMarketHeader', () => {
-  it('reads the documented offsets', () => {
+  it('reads the documented offsets (no ltv_buffer_bps in FeeConfig)', () => {
     const buf = new Uint8Array(MARKET_FIXED_SIZE);
     writeU64LE(buf, 0, DISC_MARKET_FIXED);
     buf[8] = 1; // version
@@ -180,8 +344,14 @@ describe('decodeMarketHeader', () => {
     writeU32LE(buf, 196, NIL_INDEX);    // claimed_seats_root_index
     writeU32LE(buf, 200, NIL_INDEX);    // matched_loans_root_index
     writeU32LE(buf, 208, 3);            // position_count
+    // FeeConfig @212: protocol_fee_bps_floor(0) origination(2) curator_split(4)
+    // liquidation_keeper(6) liquidation_protocol(8) [pad 10] grace_period(16).
+    writeU16LE(buf, 212 + 0, 50);       // FeeConfig.protocol_fee_bps_floor
+    writeU16LE(buf, 212 + 2, 100);      // FeeConfig.origination_bps
+    writeU16LE(buf, 212 + 4, 1_000);    // FeeConfig.curator_split_bps
+    writeU16LE(buf, 212 + 6, 20);       // FeeConfig.liquidation_keeper_bps
+    writeU16LE(buf, 212 + 8, 30);       // FeeConfig.liquidation_protocol_bps
     writeU32LE(buf, 212 + 16, 86_400);  // FeeConfig.grace_period_seconds
-    writeU16LE(buf, 212 + 12, 200);     // FeeConfig.ltv_buffer_bps
     const admin = new PublicKey('11111111111111111111111111111114');
     writePk(buf, 440, admin);
     buf[504] = 0; // is_paused = false
@@ -195,35 +365,46 @@ describe('decodeMarketHeader', () => {
     expect(header.orderSequenceNumber).toBe(50n);
     expect(header.matchedLoanSequence).toBe(10n);
     expect(header.positionCount).toBe(3);
-    expect(header.feeConfig.ltvBufferBps).toBe(200);
+    expect(header.feeConfig.protocolFeeBpsFloor).toBe(50);
+    expect(header.feeConfig.originationBps).toBe(100);
+    expect(header.feeConfig.curatorSplitBps).toBe(1_000);
+    expect(header.feeConfig.liquidationKeeperBps).toBe(20);
+    expect(header.feeConfig.liquidationProtocolBps).toBe(30);
     expect(header.feeConfig.gracePeriodSeconds).toBe(86_400);
+    // `ltvBufferBps` was removed from FeeConfig in v1.
+    expect('ltvBufferBps' in header.feeConfig).toBe(false);
     expect(header.admin.equals(admin)).toBe(true);
     expect(header.isPaused).toBe(false);
   });
 });
 
 describe('decodeGlobalVaultHeader', () => {
-  it('reads mint, admin, tree roots, is_paused', () => {
+  it('reads mint, admin, lending_pool, tree roots, sub_vault_count (u16), is_paused', () => {
     const buf = new Uint8Array(GLOBAL_VAULT_FIXED_SIZE);
     writeU64LE(buf, 0, DISC_GLOBAL_VAULT);
     const mint = new PublicKey('11111111111111111111111111111112');
     const admin = new PublicKey('11111111111111111111111111111113');
+    const lendingPool = new PublicKey('11111111111111111111111111111114');
     writePk(buf, 8, mint);
     writePk(buf, 40, admin);
-    writeU32LE(buf, 200, NIL_INDEX); // risk_profiles_root
+    writePk(buf, 168, lendingPool);  // lending_pool (the bank the vault is keyed to)
+    writeU32LE(buf, 200, NIL_INDEX); // sub_vaults_root
     writeU32LE(buf, 204, NIL_INDEX); // claimed_seats_root
     writeU32LE(buf, 208, NIL_INDEX); // market_orders_root
     writeU32LE(buf, 220, 1024);       // num_bytes_allocated
-    buf[224] = 5;                     // risk_profile_count
-    buf[226] = 1;                     // version
+    writeU16LE(buf, 224, 5);          // sub_vault_count (u16)
+    buf[227] = 1;                     // version
     buf[304] = 1;                     // is_paused
+    writeU16LE(buf, 306, 6);          // next_sub_vault_id
     const h = decodeGlobalVaultHeader(buf);
     expect(h.mint.equals(mint)).toBe(true);
     expect(h.globalVaultAdmin.equals(admin)).toBe(true);
-    expect(h.riskProfileCount).toBe(5);
+    expect(h.lendingPool.equals(lendingPool)).toBe(true);
+    expect(h.subVaultCount).toBe(5);
     expect(h.numBytesAllocated).toBe(1024);
     expect(h.version).toBe(1);
     expect(h.isPaused).toBe(true);
+    expect(h.nextSubVaultId).toBe(6);
   });
 });
 

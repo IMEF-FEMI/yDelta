@@ -1,7 +1,7 @@
 /**
  * Shared `.local/` JSON shapes consumed by multiple scripts. Each script
  * file owns its own input shape, but the artifact-shape JSONs (markets,
- * vaults, risk-profiles, curators) are shared and live here so the
+ * vaults, sub-vaults, curators) are shared and live here so the
  * scripts agree on field names.
  */
 
@@ -40,12 +40,17 @@ export interface VaultDump {
   alreadyExisted?: boolean;
 }
 
-export interface ProfileDump {
-  profileId: number;
+export interface SubVaultDump {
+  subVaultId: number;
+  /** `Pool` (curator-managed) or `Private` (self-managed) sub-vault. */
+  kind: 'Pool' | 'Private';
   curator: string;
   curatorLabel: string;
+  spreadBps: number;
   maxLtvBps: number;
+  liquidationLtvBps: number;
   maxTermSeconds: number;
+  curatorFeeBps: number;
   signature?: string;
 }
 
@@ -55,20 +60,20 @@ export interface CuratorDump {
   secretKeyBase58: string;
 }
 
-export function resolveCuratorForProfile(
-  profiles: Record<string, ProfileDump[]>,
+export function resolveCuratorForSubVault(
+  subVaults: Record<string, SubVaultDump[]>,
   curators: CuratorDump[],
   mint: string,
-  profileId: number,
+  subVaultId: number,
 ): CuratorDump {
-  const arr = profiles[mint];
+  const arr = subVaults[mint];
   if (!arr) throw new Error(`risk-profiles.json: no entries for mint ${mint}`);
-  const p = arr.find((x) => x.profileId === profileId);
-  if (!p) throw new Error(`risk-profiles.json[${mint}]: no profileId=${profileId}`);
-  const c = curators.find((x) => x.pubkey === p.curator);
+  const sv = arr.find((x) => x.subVaultId === subVaultId);
+  if (!sv) throw new Error(`risk-profiles.json[${mint}]: no subVaultId=${subVaultId}`);
+  const c = curators.find((x) => x.pubkey === sv.curator);
   if (!c) {
     throw new Error(
-      `curators.json: no curator with pubkey ${p.curator} (profileId=${profileId}). ` +
+      `curators.json: no curator with pubkey ${sv.curator} (subVaultId=${subVaultId}). ` +
       `Did curators.json get regenerated after risk-profiles.json was written?`,
     );
   }

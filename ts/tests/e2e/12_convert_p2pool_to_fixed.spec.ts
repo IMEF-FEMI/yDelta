@@ -5,9 +5,10 @@
  *   1. Empty book → borrower IOC bid w/ fallback ON → P2Pool MatchedLoan
  *      queued → cranker promotes to a `LoanType.P2Pool` PDA (spec 09's flow
  *      replayed inline).
- *   2. Curator funds a vault profile + posts an ask at 600 bps.
+ *   2. Curator funds a sub-vault + rests an ask (rate quoted live by the
+ *      program: bank lending APR + sub_vault.spread_bps).
  *   3. Borrower calls `ConvertP2PoolToFixed(max_acceptable_rate = 1_000)`.
- *      The walk crosses the 600 bps ask; the entire marginfi liability is
+ *      The walk crosses the quoted ask; the entire marginfi liability is
  *      retired and a fresh Fixed MatchedLoan node lands at the next sequence.
  *   4. Verify: borrower's marginfi liability → 0, P2Pool PDA closed,
  *      market.matched_loan_sequence = 2 (P2Pool seq 0 + Fixed seq 1).
@@ -28,7 +29,7 @@ import {
   lenderIntegrationAccountPda,
   loanPda,
   LoanType,
-  placeOrderForRiskProfileInstruction,
+  placeOrderForSubVaultInstruction,
   placeOrderInstruction,
   processMatchedLoanInstruction,
 } from '../../src/index.js';
@@ -50,7 +51,7 @@ import {
   bankLiquidityVaultAuthority,
   setupGlobalConfig,
   setupMarket,
-  setupRiskProfile,
+  setupPoolSubVault,
   setupVault,
 } from './_setup.ts';
 
@@ -63,6 +64,8 @@ describe('e2e: ConvertP2PoolToFixed refinances variable debt at a curator ask', 
   let p2poolSequence: bigint;
   let p2poolLoanKey: PublicKey;
   let p2poolCranker: Keypair;
+  // v1: vault ask rate is program-quoted (bank APR + spread), read back below.
+  let askRateBps: number;
 
   // Larger amounts so the convert flow's `liability_atoms_to_fully_cover`
   // share-rounding lands at meaningful share counts; the tiny 100-atom case
@@ -78,40 +81,11 @@ describe('e2e: ConvertP2PoolToFixed refinances variable debt at a curator ask', 
     await setupGlobalConfig(bk, admin);
     market = await setupMarket(bk, admin);
 
-    // ── Step 0: an unrelated lender (Alice) deposits USDC first ──
-    // This pre-initialises the lender-side marginfi-account's USDC balance
-    // slot so the P2Pool fallback's `marginfi.deposit` reuses it rather than
-    // allocating a fresh slot. The Rust integration tests do the same
-    // before `convert_p2pool_to_fixed` — without it, the later
-    // `marginfi.lending_account_withdraw` from `lender_marginfi_account`
-    // hits `OperationWithdrawOnly` (Custom 6020).
-    const alice = await bk.fundedKeypair();
-    const aliceUsdcAta = Keypair.generate().publicKey;
-    await bk.putTokenAccount({
-      address: aliceUsdcAta,
-      mint: USDC_MINT,
-      owner: alice.publicKey,
-      amount: 100_000_000n,
-    });
-    await bk.send([claimSeatInstruction({ payer: alice.publicKey, market: market.publicKey })], [alice]);
-    await bk.send(
-      [
-        depositInstruction({
-          payer: alice.publicKey,
-          market: market.publicKey,
-          mint: USDC_MINT,
-          debtMint: USDC_MINT,
-          traderToken: aliceUsdcAta,
-          tokenProgram: SPL_TOKEN_PROGRAM_ID,
-          marginfiGroup: MARGINFI_GROUP,
-          bank: USDC_BANK,
-          liquidityVault: USDC_LIQUIDITY_VAULT,
-          marginfiProgram: MARGINFI_PROGRAM_ID,
-          amountAtoms: 10_000_000n,
-        }),
-      ],
-      [alice],
-    );
+    // v1 is quote-only: lenders fund via vaults, NOT seat debt-deposits
+    // (deposit.rs rejects depositing the debt asset into a market seat). The
+    // lender-side marginfi balance slot no longer needs manual pre-init — the
+    // P2Pool borrow's own deposit-back CPI in Step 1's place_order initialises
+    // it, so the old "Alice deposits USDC first" warm-up step is gone.
 
     // ── Step 1: open a P2Pool loan ──
     borrower = await bk.fundedKeypair();
@@ -194,10 +168,10 @@ describe('e2e: ConvertP2PoolToFixed refinances variable debt at a curator ask', 
       [p2poolCranker],
     );
 
-    // ── Step 2: stand up the vault + risk profile + curator ask AFTER the P2Pool loan exists ──
+    // ── Step 2: stand up the vault + sub-vault + curator ask AFTER the P2Pool loan exists ──
     await setupVault(bk, admin);
     const curator = await bk.fundedKeypair();
-    await setupRiskProfile(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });
+    await setupPoolSubVault(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });
 
     const vaultDepositor = await bk.fundedKeypair();
     const vaultDepositorAta = Keypair.generate().publicKey;
@@ -218,26 +192,34 @@ describe('e2e: ConvertP2PoolToFixed refinances variable debt at a curator ask', 
           lendingPool: USDC_BANK,
           liquidityVault: USDC_LIQUIDITY_VAULT,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          profileId: 1,
+          subVaultId: 1,
           amountAtoms: 10_000_000_000n, // 10k USDC idle — covers the full P2Pool conversion
         }),
       ],
       [vaultDepositor],
     );
+    // Curator ask. v1: no rate/term — program quotes live (bank APR + spread).
+    await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE, switchboardOracle: SOL_ORACLE });
     await bk.send(
       [
-        placeOrderForRiskProfileInstruction({
+        placeOrderForSubVaultInstruction({
           feePayer: curator.publicKey,
           curator: curator.publicKey,
-          mint: USDC_MINT,
           market: market.publicKey,
-          profileId: 1,
-          rateBps: 600,
-          termSeconds: 30 * 86_400,
+          debtBank: USDC_BANK,
+          marginfiGroup: MARGINFI_GROUP,
+          collateralBank: SOL_BANK,
+          debtOracles: [USDC_ORACLE],
+          collateralOracles: [SOL_ORACLE],
+          subVaultId: 1,
         }),
       ],
       [curator],
     );
+
+    // Read back the program-quoted ask rate; the convert walk crosses it.
+    const askMarket = decodeMarket((await bk.getAccount(market.publicKey))!.data);
+    askRateBps = askMarket.asks[0].order.rateBps;
   });
 
   it('ConvertP2PoolToFixed refinances the liability + closes the P2Pool PDA', async () => {
@@ -313,7 +295,7 @@ describe('e2e: ConvertP2PoolToFixed refinances variable debt at a curator ask', 
     expect(postMarket.matchedLoans).toHaveLength(1);
     const convertedNode = postMarket.matchedLoans[0].loan;
     expect(convertedNode.loanType).toBe(LoanType.Fixed);
-    expect(convertedNode.lenderRateBps).toBe(600);
+    expect(convertedNode.lenderRateBps).toBe(askRateBps);
     expect(convertedNode.sequence).toBe(1n); // pre-counter value
     // Principal of the converted loan: the convert matcher refinances the
     // borrower's LIVE outstanding (post-accrual). Since no time elapsed

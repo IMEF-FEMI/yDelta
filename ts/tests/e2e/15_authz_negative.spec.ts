@@ -7,9 +7,9 @@
  *   - SetMarketPause: non-MarketFixed.admin → MarketAdminRequired (43)
  *   - SetFeeConfig: non-MarketFixed.admin → MarketAdminRequired (43)
  *   - SetGlobalPause: non-protocol_admin → ProtocolAdminRequired (48)
- *   - CreateRiskProfile: non-vault.global_vault_admin → VaultAdminRequired (30)
- *   - PlaceOrderForRiskProfile: non-RiskProfile.curator → VaultCuratorRequired (29)
- *   - CancelOrderForRiskProfile: non-curator → VaultCuratorRequired (29)
+ *   - CreatePoolSubVault: non-protocol_admin → ProtocolAdminRequired (48)
+ *   - PlaceOrderForSubVault: non-SubVault.curator → VaultCuratorRequired (29)
+ *   - CancelOrderForSubVault: non-curator → VaultCuratorRequired (29)
  *   - AcceptMarketAdmin: signer != pending_admin → PendingAdminMismatch (45)
  */
 import { beforeAll, describe, it } from 'vitest';
@@ -17,10 +17,10 @@ import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
   acceptMarketAdminInstruction,
-  cancelOrderForRiskProfileInstruction,
-  createRiskProfileInstruction,
+  cancelOrderForSubVaultInstruction,
+  createPoolSubVaultInstruction,
   globalVaultPda,
-  placeOrderForRiskProfileInstruction,
+  placeOrderForSubVaultInstruction,
   setFeeConfigInstruction,
   setGlobalPauseInstruction,
   setMarketPauseInstruction,
@@ -28,12 +28,12 @@ import {
   YDELTA_PROGRAM_ID,
 } from '../../src/index.js';
 import { bootBankrun, BankrunHandle } from './_bankrun.ts';
-import { USDC_MINT } from './_fixtures.ts';
+import { MARGINFI_GROUP, SOL_BANK, SOL_ORACLE, USDC_BANK, USDC_MINT, USDC_ORACLE } from './_fixtures.ts';
 import { expectCustomError, YdeltaError } from './_errors.ts';
 import {
   setupGlobalConfig,
   setupMarket,
-  setupRiskProfile,
+  setupPoolSubVault,
   setupVault,
 } from './_setup.ts';
 
@@ -54,7 +54,7 @@ describe('e2e: authz negative paths (non-admin/non-curator attempts)', () => {
     market = await setupMarket(bk, admin);
     await setupVault(bk, admin);
     curator = await bk.fundedKeypair();
-    await setupRiskProfile(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });
+    await setupPoolSubVault(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });
     outsider = await bk.fundedKeypair();
   });
 
@@ -76,7 +76,7 @@ describe('e2e: authz negative paths (non-admin/non-curator attempts)', () => {
           setFeeConfigInstruction({
             admin: outsider.publicKey,
             market: market.publicKey,
-            ltvBufferBps: 100,
+            protocolFeeBpsFloor: 100,
           }),
         ],
         [outsider],
@@ -94,41 +94,45 @@ describe('e2e: authz negative paths (non-admin/non-curator attempts)', () => {
     );
   });
 
-  it('CreateRiskProfile by non-vault-admin → VaultAdminRequired', async () => {
+  it('CreatePoolSubVault by non-protocol-admin → ProtocolAdminRequired', async () => {
     await expectCustomError(
       bk.send(
         [
-          createRiskProfileInstruction({
+          createPoolSubVaultInstruction({
             payer: outsider.publicKey,
-            mint: USDC_MINT,
-            profileId: 99,
+            bank: USDC_BANK,
             curator: outsider.publicKey,
+            spreadBps: 0,
             maxLtvBps: 5_000,
+            liquidationLtvBps: 6_000,
             maxTermSeconds: 30 * 86_400,
+            curatorFeeBps: 0,
           }),
         ],
         [outsider],
       ),
-      YdeltaError.VaultAdminRequired,
-      'outsider tries to allocate a risk profile',
+      YdeltaError.ProtocolAdminRequired,
+      'outsider tries to allocate a sub-vault',
     );
   });
 
-  it('PlaceOrderForRiskProfile by non-curator → VaultCuratorRequired', async () => {
+  it('PlaceOrderForSubVault by non-curator → VaultCuratorRequired', async () => {
     // The split-payer ix needs BOTH signatures, but the curator signature is
-    // the one checked against `profile.curator`. We sign with `outsider` in
+    // the one checked against `subVault.curator`. We sign with `outsider` in
     // both slots; the curator gate should reject.
     await expectCustomError(
       bk.send(
         [
-          placeOrderForRiskProfileInstruction({
+          placeOrderForSubVaultInstruction({
             feePayer: outsider.publicKey,
             curator: outsider.publicKey, // not the real curator
-            mint: USDC_MINT,
             market: market.publicKey,
-            profileId: 1,
-            rateBps: 500,
-            termSeconds: 30 * 86_400,
+            debtBank: USDC_BANK,
+            marginfiGroup: MARGINFI_GROUP,
+            collateralBank: SOL_BANK,
+            debtOracles: [USDC_ORACLE],
+            collateralOracles: [SOL_ORACLE],
+            subVaultId: 1,
           }),
         ],
         [outsider],
@@ -138,16 +142,16 @@ describe('e2e: authz negative paths (non-admin/non-curator attempts)', () => {
     );
   });
 
-  it('CancelOrderForRiskProfile by non-curator → VaultCuratorRequired', async () => {
+  it('CancelOrderForSubVault by non-curator → VaultCuratorRequired', async () => {
     await expectCustomError(
       bk.send(
         [
-          cancelOrderForRiskProfileInstruction({
+          cancelOrderForSubVaultInstruction({
             feePayer: outsider.publicKey,
             curator: outsider.publicKey,
-            mint: USDC_MINT,
+            debtBank: USDC_BANK,
             market: market.publicKey,
-            profileId: 1,
+            subVaultId: 1,
           }),
         ],
         [outsider],

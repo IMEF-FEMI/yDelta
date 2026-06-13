@@ -38,10 +38,10 @@ export function marketTokenVaultPda(
   );
 }
 
-/** `[vault, mint]` — GlobalVault PDA (one per debt mint). */
-export function globalVaultPda(mint: PublicKey): [PublicKey, number] {
+/** `[vault, bank]` — GlobalVault PDA (one per marginfi bank / debt lending pool). */
+export function globalVaultPda(bank: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [SEEDS.globalVault, mint.toBuffer()],
+    [SEEDS.globalVault, bank.toBuffer()],
     YDELTA_PROGRAM_ID,
   );
 }

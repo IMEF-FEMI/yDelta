@@ -15,7 +15,7 @@ import { InstructionTag } from './_tags.js';
 
 /**
  * Tag 11 — `GlobalVaultWithdraw`. Reverts if
- * `profile.idle_principal_atoms < atoms_out` — deployed liquidity is
+ * `subVault.idle_principal_atoms < atoms_out` — deployed liquidity is
  * non-redeemable until the underlying loans repay.
  *
  * `sharesToBurn` is u128 (the on-chain `total_shares` slot is u128 to
@@ -33,21 +33,21 @@ export interface GlobalVaultWithdrawArgs {
   liquidityVault: PublicKey;
   bankLiquidityVaultAuthority: PublicKey;
   marginfiProgram: PublicKey;
-  profileId: number;
+  subVaultId: number;
   sharesToBurn: bigint | BN;
 }
 
 export function globalVaultWithdrawInstruction(
   args: GlobalVaultWithdrawArgs,
 ): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  const vault = globalVaultPda(args.lendingPool)[0];
   const signerPda = globalVaultSignerPda(vault)[0];
   const staging = globalVaultStagingPda(vault)[0];
   const integration = globalVaultIntegrationAccountPda(vault)[0];
   const data = new Writer()
     .u8(InstructionTag.GlobalVaultWithdraw)
     .u128(args.sharesToBurn)
-    .u8(args.profileId)
+    .u16(args.subVaultId)
     .toBuffer();
   return ydeltaIx(
     [

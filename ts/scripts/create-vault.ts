@@ -97,7 +97,9 @@ async function main(): Promise<void> {
     );
   }
 
-  const [vault] = globalVaultPda(mint);
+  // v1: the GlobalVault PDA is bank-keyed (`[b"vault", bank]`), so we derive
+  // it from the pinned bank, NOT the mint (the mint is cached from bank.mint).
+  const [vault] = globalVaultPda(bankPubkey);
   const onchainVault = await conn.getAccountInfo(vault);
   if (onchainVault) {
     const header = decodeGlobalVaultHeader(onchainVault.data);

@@ -60,13 +60,13 @@ export const MarketFixedOffsets = {
 // ─────────────────────────────────────────────────────────────────────
 
 export const FeeConfigOffsets = {
+  // v1 (D3b/D17): curator_fee_bps moved to the sub-vault and ltv_buffer_bps
+  // was removed, so the liquidation fields shifted up to 6/8.
   PROTOCOL_FEE_BPS_FLOOR: 0,
   ORIGINATION_BPS: 2,
   CURATOR_SPLIT_BPS: 4,
-  CURATOR_FEE_BPS: 6,
-  LIQUIDATION_KEEPER_BPS: 8,
-  LIQUIDATION_PROTOCOL_BPS: 10,
-  LTV_BUFFER_BPS: 12,
+  LIQUIDATION_KEEPER_BPS: 6,
+  LIQUIDATION_PROTOCOL_BPS: 8,
   GRACE_PERIOD_SECONDS: 16,
 } as const;
 

@@ -32,7 +32,8 @@ export interface CreateVaultArgs {
 }
 
 export function createVaultInstruction(args: CreateVaultArgs): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  // v1 (D1): vaults are bank-keyed; mint is still passed as a readonly account.
+  const vault = globalVaultPda(args.lendingPool)[0];
   const signerPda = globalVaultSignerPda(vault)[0];
   const integration = globalVaultIntegrationAccountPda(vault)[0];
   const staging = globalVaultStagingPda(vault)[0];

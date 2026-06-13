@@ -73,7 +73,7 @@ describe('e2e: interest accrual lands at the exact simple-interest fp math', () 
     cranker = await bk.fundedKeypair();
     loanKey = loanPda(handles.market.publicKey, handles.matchedLoanSequence)[0];
 
-    const vault = globalVaultPda(USDC_MINT)[0];
+    const vault = globalVaultPda(USDC_BANK)[0];
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
@@ -118,9 +118,15 @@ describe('e2e: interest accrual lands at the exact simple-interest fp math', () 
     lenderRateBps = BigInt(promoted.lenderRateBps);
     principalAtoms = promoted.principalDebtAtoms;
     lastAccruedAtPromote = promoted.lastAccruedUnix;
-    // Confirm the locked-in rates match what we asked for in setup.
-    expect(borrowerRateBps).toBe(800n);
-    expect(lenderRateBps).toBe(500n);
+    // v1: the ask rate is quoted live by the program (bank lending APR +
+    // sub_vault.spread_bps), so it is NOT a hardcoded magic number. Confirm
+    // the locked-in rates against the live-quoted values from setup: the
+    // lender rate == the resting ask rate, and the borrower rate == the
+    // crossing bid (ask + 300, the driver's bid premium), which clears the
+    // protocol-fee floor.
+    expect(lenderRateBps).toBe(BigInt(handles.askRateBps));
+    expect(borrowerRateBps).toBe(BigInt(handles.askRateBps + 300));
+    expect(borrowerRateBps).toBeGreaterThan(lenderRateBps);
     expect(principalAtoms).toBe(1_000_000n);
     // Pre-accrual baseline: outstanding == lender_claimable == principal.
     expect(promoted.outstandingDebtAtoms).toBe(principalAtoms);
@@ -171,6 +177,10 @@ describe('e2e: interest accrual lands at the exact simple-interest fp math', () 
           marginfiProgram: MARGINFI_PROGRAM_ID,
           repayAtoms: partialRepay,
           crankerRefund: cranker.publicKey,
+          // Fixed (vault-lender) loan: the repay loader REQUIRES the lender
+          // global vault for ALL Fixed repays (partial included), not just
+          // the full-repay close-out.
+          globalVault: globalVaultPda(USDC_BANK)[0],
         }),
       ],
       [handles.borrower],

@@ -8,14 +8,16 @@
  *   - Pre-fetched marketData, payer's seat present → returns []
  *   - Pre-fetched marketData, only a different owner's seat present →
  *     returns [claimSeat]
- *   - Pre-fetched marketData, payer present but as a RiskProfile seat
+ *   - Pre-fetched marketData, payer present but as a SubVault seat
  *     (wrong ownerKind) → returns [claimSeat]
  *   - Missing both marketData and connection → throws
  *
  * The single-node RB-tree we synthesise here mirrors the on-disk layout
  * documented in `accounts/trees.ts:5-13`: a 16-byte node header
  * (left/right/parent = NIL, color = Black) followed by the 144-byte
- * `ClaimedSeat` payload.
+ * `ClaimedSeat` payload. v1 `ClaimedSeat` keys the seat by
+ * `(ownerKind, owner, subVaultId)` where `subVaultId` is a u16 at byte
+ * offset 106 of the payload.
  */
 import { describe, expect, it } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
@@ -60,7 +62,7 @@ function plantSingleSeat(
   buf: Uint8Array,
   owner: PublicKey,
   ownerKind: number,
-  riskProfileId: number,
+  subVaultId: number,
 ): Uint8Array {
   const dynStart = MARKET_FIXED_SIZE;
   const nodeOff = 0; // root at dynamic offset 0
@@ -79,7 +81,7 @@ function plantSingleSeat(
   buf.set(owner.toBuffer(), payloadOff + 0); // owner
   // (debt/collateral shares and counts default to 0 — fine)
   dv.setUint8(payloadOff + 104, ownerKind); // owner_kind
-  dv.setUint8(payloadOff + 105, riskProfileId); // risk_profile_id
+  dv.setUint16(payloadOff + 106, subVaultId, true); // sub_vault_id (u16)
 
   // Sanity: payload must fit before buffer end.
   if (payloadOff + CLAIMED_SEAT_SIZE > buf.byteLength) {
@@ -107,7 +109,7 @@ describe('claimSeatIfNeededInstructions (sync / marketData mode)', () => {
 
   it('returns [] when the payer already has a user-side seat', () => {
     const buf = emptyMarket();
-    plantSingleSeat(buf, PAYER, /* ownerKind=User */ 0, /* riskProfileId */ 0);
+    plantSingleSeat(buf, PAYER, /* ownerKind=User */ 0, /* subVaultId */ 0);
     expect(hasUserSeat(buf, PAYER)).toBe(true);
 
     const ixs = claimSeatIfNeededInstructions({
@@ -132,11 +134,11 @@ describe('claimSeatIfNeededInstructions (sync / marketData mode)', () => {
     expect(ixs[0].data[0]).toBe(InstructionTag.ClaimSeat);
   });
 
-  it('returns [claimSeat] when the payer has a RiskProfile seat but no user seat', () => {
+  it('returns [claimSeat] when the payer has a SubVault seat but no user seat', () => {
     const buf = emptyMarket();
-    // Same owner, but ownerKind = RiskProfile (1) — deposit's seat probe
+    // Same owner, but ownerKind = SubVault (1) — deposit's seat probe
     // requires ownerKind = User (0), so this should NOT count.
-    plantSingleSeat(buf, PAYER, /* ownerKind=RiskProfile */ 1, /* riskProfileId */ 7);
+    plantSingleSeat(buf, PAYER, /* ownerKind=SubVault */ 1, /* subVaultId */ 7);
     expect(hasUserSeat(buf, PAYER)).toBe(false);
 
     const ixs = claimSeatIfNeededInstructions({

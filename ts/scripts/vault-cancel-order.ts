@@ -1,17 +1,17 @@
 /**
- * vault-cancel-order.ts — `CancelOrderForRiskProfile` (tag 13). Idempotent;
+ * vault-cancel-order.ts — `CancelOrderForSubVault` (tag 13). Idempotent;
  * succeeds silently if there's nothing to cancel.
  *
  * Reads:
  *   .local/vault-cancel-order-input.json {
  *     marketLabel: string,
  *     mint: string,
- *     profileId: number
+ *     subVaultId: number
  *   }
  */
 import { PublicKey } from '@solana/web3.js';
 
-import { cancelOrderForRiskProfileInstruction } from '../src/instructions/index.js';
+import { cancelOrderForSubVaultInstruction } from '../src/instructions/index.js';
 import {
   appendTxLog,
   loadConnection,
@@ -21,36 +21,36 @@ import {
   readKeypairFromBase58,
   sendIxs,
 } from './_runner.js';
-import type { CuratorDump, MarketDump, ProfileDump } from './_types.js';
-import { resolveCuratorForProfile } from './_types.js';
+import type { CuratorDump, MarketDump, SubVaultDump } from './_types.js';
+import { resolveCuratorForSubVault } from './_types.js';
 
 interface Input {
   marketLabel: string;
   mint: string;
-  profileId: number;
+  subVaultId: number;
 }
 
 async function main(): Promise<void> {
   const input = readJson<Input>('vault-cancel-order-input.json');
   const markets = readJson<Record<string, MarketDump>>('markets.json');
-  const profiles = readJson<Record<string, ProfileDump[]>>('risk-profiles.json');
+  const subVaults = readJson<Record<string, SubVaultDump[]>>('risk-profiles.json');
   const curators = readJson<CuratorDump[]>('curators.json');
 
   const market = markets[input.marketLabel];
   if (!market) throw new Error(`unknown marketLabel ${input.marketLabel}`);
 
-  const curator = resolveCuratorForProfile(profiles, curators, input.mint, input.profileId);
+  const curator = resolveCuratorForSubVault(subVaults, curators, input.mint, input.subVaultId);
   const curatorKp = readKeypairFromBase58(curator.secretKeyBase58);
 
   const conn = loadConnection();
   const feePayer = loadSigner();
 
-  const ix = cancelOrderForRiskProfileInstruction({
+  const ix = cancelOrderForSubVaultInstruction({
     feePayer: feePayer.publicKey,
     curator: curatorKp.publicKey,
-    mint: new PublicKey(input.mint),
+    debtBank: new PublicKey(market.debtBank),
     market: new PublicKey(market.market),
-    profileId: input.profileId,
+    subVaultId: input.subVaultId,
   });
   const sig = await sendIxs(conn, feePayer, [ix], [curatorKp]);
   log(`[vault-cancel-order] signature = ${sig}`);
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
     summary: {
       marketLabel: input.marketLabel,
       mint: input.mint,
-      profileId: input.profileId,
+      subVaultId: input.subVaultId,
       curator: curatorKp.publicKey.toBase58(),
     },
   });

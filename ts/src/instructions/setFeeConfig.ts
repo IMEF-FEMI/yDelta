@@ -17,10 +17,8 @@ export interface SetFeeConfigArgs {
   protocolFeeBpsFloor?: number | null;
   originationBps?: number | null;
   curatorSplitBps?: number | null;
-  curatorFeeBps?: number | null;
   liquidationKeeperBps?: number | null;
   liquidationProtocolBps?: number | null;
-  ltvBufferBps?: number | null;
   gracePeriodSeconds?: number | null;
 }
 
@@ -30,10 +28,8 @@ export function setFeeConfigInstruction(args: SetFeeConfigArgs): TransactionInst
     .optionU16(args.protocolFeeBpsFloor ?? null)
     .optionU16(args.originationBps ?? null)
     .optionU16(args.curatorSplitBps ?? null)
-    .optionU16(args.curatorFeeBps ?? null)
     .optionU16(args.liquidationKeeperBps ?? null)
     .optionU16(args.liquidationProtocolBps ?? null)
-    .optionU16(args.ltvBufferBps ?? null)
     .optionU32(args.gracePeriodSeconds ?? null)
     .toBuffer();
   return ydeltaIx(

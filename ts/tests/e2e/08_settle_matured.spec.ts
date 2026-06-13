@@ -7,7 +7,8 @@
  *   4. A permissionless keeper / settler calls `SettleMaturedLoan` with
  *      enough USDC to cover the outstanding principal + accrued interest;
  *      they receive the borrower's collateral.
- *   5. Loan PDA closes, profile.deployed → 0.
+ *   5. Loan PDA closes (v1: a full settle closes it in-ix), subVault.deployed
+ *      → 0, and the realised atoms land in subVault.pending_claim_atoms.
  *
  * Mirror of the on-chain `settle_matured_loan` flow — this exercises the
  * heavier 4-CPI cranker path that liquidate_loan / settle_matured_loan share.
@@ -16,10 +17,9 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
-  claimRepaymentForRiskProfileInstruction,
+  claimRepaymentForSubVaultInstruction,
   cuBudgetIx,
   decodeGlobalVault,
-  decodeLoanFixed,
   decodeMarket,
   globalVaultIntegrationAccountPda,
   globalVaultPda,
@@ -28,7 +28,6 @@ import {
   HEAVY_IX_CU_LIMIT,
   lenderIntegrationAccountPda,
   loanPda,
-  LoanState,
   marketSignerPda,
   marketTokenVaultPda,
   processMatchedLoanInstruction,
@@ -66,7 +65,7 @@ describe('e2e: borrower defaults → keeper settles matured loan', () => {
     loanKey = loanPda(handles.market.publicKey, handles.matchedLoanSequence)[0];
 
     // Crank match → Loan PDA.
-    const vault = globalVaultPda(USDC_MINT)[0];
+    const vault = globalVaultPda(USDC_BANK)[0];
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
@@ -142,6 +141,7 @@ describe('e2e: borrower defaults → keeper settles matured loan', () => {
             marginfiProgram: MARGINFI_PROGRAM_ID,
             repayAtomsMax: 0n, // 0 = full repay
             crankerRefund: cranker.publicKey,
+            globalVault: globalVaultPda(USDC_BANK)[0], // Fixed loan: vault-lent
           }),
         ],
         [settler],
@@ -185,18 +185,17 @@ describe('e2e: borrower defaults → keeper settles matured loan', () => {
           marginfiProgram: MARGINFI_PROGRAM_ID,
           repayAtomsMax: 0n, // 0 = full repay
           crankerRefund: cranker.publicKey,
+          globalVault: globalVaultPda(USDC_BANK)[0], // Fixed loan: vault-lent
         }),
       ],
       [settler],
     );
 
-    // For a Fixed loan, settle only flips state→Repaid + seizes collateral;
-    // the PDA closes at the lender-side `claim_repayment_for_risk_profile`
-    // cranker step (same shape as the borrower-repay flow in spec 07).
-    const settledLoan = decodeLoanFixed((await bk.getAccount(loanKey))!.data);
-    expect(settledLoan.state).toBe(LoanState.Repaid);
-    expect(settledLoan.outstandingDebtAtoms).toBe(0n);
-    expect(settledLoan.collateralAtoms).toBe(0n);
+    // v1: a full SettleMaturedLoan seizes the collateral, retires the debt,
+    // and CLOSES the loan PDA in the same ix (rent → the original cranker).
+    // The realised atoms land in the sub-vault's `pending_claim_atoms`
+    // bucket, swept by the lender-side `ClaimRepaymentForSubVault` step.
+    expect(await bk.getAccount(loanKey)).toBeNull();
 
     // Settler balance changes:
     //  - USDC: paid exactly the full outstanding (principal + integer-floor
@@ -216,39 +215,49 @@ describe('e2e: borrower defaults → keeper settles matured loan', () => {
     expect(collateralDust).toBeLessThanOrEqual(1n);
   });
 
-  it('ClaimRepaymentForRiskProfile closes the settled loan', async () => {
-    const vault = globalVaultPda(USDC_MINT)[0];
+  it('ClaimRepaymentForSubVault sweeps the settled atoms back into the vault', async () => {
+    const vault = globalVaultPda(USDC_BANK)[0];
+    const pendingPre = decodeGlobalVault((await bk.getAccount(vault))!.data).subVaults[0].subVault
+      .pendingClaimAtoms;
+    expect(pendingPre).toBeGreaterThan(0n);
+
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
         cuBudgetIx(HEAVY_IX_CU_LIMIT),
-        claimRepaymentForRiskProfileInstruction({
+        claimRepaymentForSubVaultInstruction({
           payer: cranker.publicKey,
           market: handles.market.publicKey,
-          sequence: handles.matchedLoanSequence,
+          subVaultId: 1,
           globalVault: vault,
           debtMint: USDC_MINT,
           debtBank: USDC_BANK,
           debtLiquidityVault: USDC_LIQUIDITY_VAULT,
           debtBankLiquidityVaultAuthority: bankLiquidityVaultAuthority(USDC_BANK),
-          bankOracle: USDC_ORACLE,
+          bankOracles: [USDC_ORACLE],
           lenderMarginfiAccount: lenderIntegrationAccountPda(handles.market.publicKey)[0],
           tokenProgram: SPL_TOKEN_PROGRAM_ID,
           marginfiGroup: MARGINFI_GROUP,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          crankerRefund: cranker.publicKey,
         }),
       ],
       [cranker],
     );
 
-    // Loan PDA closed; profile back to all-idle. Curator's resting ask
-    // is still there — vault never withdrew it.
+    // Loan PDA was already closed at full-settle time; the sweep never
+    // touches it. Sub-vault back to all-idle: pending_claim drained. Curator's
+    // resting ask is still there — vault never withdrew it.
     expect(await bk.getAccount(loanKey)).toBeNull();
-    const v = decodeGlobalVault((await bk.getAccount(globalVaultPda(USDC_MINT)[0]))!.data);
-    const profile = v.riskProfiles[0].profile;
-    expect(profile.deployedPrincipalAtoms).toBe(0n);
-    expect(profile.encumberedInOrdersAtoms).toBe(0n);
+    const v = decodeGlobalVault((await bk.getAccount(vault))!.data);
+    const subVault = v.subVaults[0].subVault;
+    // The sweep drains pending_claim down to AT MOST 1 atom of marginfi
+    // share-round-down dust (withdraw shares→atoms rounds DOWN, so
+    // `saturating_sub(actual_atoms)` can strand ≤ 1 atom — the program's
+    // own idle invariant tolerates this rather than forcing it to 0).
+    expect(subVault.pendingClaimAtoms).toBeLessThan(pendingPre);
+    expect(subVault.pendingClaimAtoms).toBeLessThanOrEqual(1n);
+    expect(subVault.deployedPrincipalAtoms).toBe(0n);
+    expect(subVault.encumberedInOrdersAtoms).toBe(0n);
     const m = decodeMarket((await bk.getAccount(handles.market.publicKey))!.data);
     expect(m.asks).toHaveLength(1);
   });

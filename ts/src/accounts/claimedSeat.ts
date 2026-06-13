@@ -1,7 +1,7 @@
 /**
  * `ClaimedSeat` — per-trader bookkeeping tree-node payload inside a market's
  * dynamic region. 144 bytes (= MARKET_BLOCK_PAYLOAD_SIZE). Lives behind a
- * 16-byte RBNode header. Tree key: `Ord on (owner_kind, owner, risk_profile_id)`.
+ * 16-byte RBNode header. Tree key: `Ord on (owner_kind, owner, sub_vault_id)`.
  *
  * Layout:
  *   @0    32   Pubkey  owner
@@ -11,15 +11,16 @@
  *   @80   16   u128    collateral_encumbered_shares
  *   @96   4    u32     open_borrow_count
  *   @100  4    u32     open_lend_count
- *   @104  1    u8      owner_kind  (OwnerKind enum: User=0, RiskProfile=1)
- *   @105  1    u8      risk_profile_id
- *   @106  6    u8[6]   _padding
+ *   @104  1    u8      owner_kind  (OwnerKind enum: User=0, SubVault=1)
+ *   @105  1    u8      _pad0
+ *   @106  2    u16     sub_vault_id
+ *   @108  4    u8[4]   _padding
  *   @112  32   u64[4]  _reserved
  */
 import { PublicKey } from '@solana/web3.js';
 
 import { OwnerKind } from '../types.js';
-import { readPubkey, readU128, readU32, readU8 } from './_read.js';
+import { readPubkey, readU128, readU16, readU32, readU8 } from './_read.js';
 
 export const CLAIMED_SEAT_SIZE = 144;
 
@@ -32,7 +33,7 @@ export interface ClaimedSeat {
   openBorrowCount: number;
   openLendCount: number;
   ownerKind: OwnerKind;
-  riskProfileId: number;
+  subVaultId: number;
 }
 
 /** Decode a `ClaimedSeat` from a 144-byte payload `DataView` (post-RBNode header). */
@@ -46,6 +47,6 @@ export function decodeClaimedSeat(payload: DataView): ClaimedSeat {
     openBorrowCount: readU32(payload, 96),
     openLendCount: readU32(payload, 100),
     ownerKind: readU8(payload, 104) as OwnerKind,
-    riskProfileId: readU8(payload, 105),
+    subVaultId: readU16(payload, 106),
   };
 }

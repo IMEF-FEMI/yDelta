@@ -19,7 +19,7 @@ import {
   cuBudgetIx,
   globalVaultDepositInstruction,
   HEAVY_IX_CU_LIMIT,
-  placeOrderForRiskProfileInstruction,
+  placeOrderForSubVaultInstruction,
   setGlobalPauseInstruction,
   setMarketPauseInstruction,
   setVaultPauseInstruction,
@@ -28,16 +28,19 @@ import { bootBankrun, BankrunHandle } from './_bankrun.ts';
 import {
   MARGINFI_GROUP,
   MARGINFI_PROGRAM_ID,
+  SOL_BANK,
+  SOL_ORACLE,
   SPL_TOKEN_PROGRAM_ID,
   USDC_BANK,
   USDC_LIQUIDITY_VAULT,
   USDC_MINT,
+  USDC_ORACLE,
 } from './_fixtures.ts';
 import { expectCustomError, YdeltaError } from './_errors.ts';
 import {
   setupGlobalConfig,
   setupMarket,
-  setupRiskProfile,
+  setupPoolSubVault,
   setupVault,
 } from './_setup.ts';
 
@@ -56,7 +59,7 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
     market = await setupMarket(bk, admin);
     await setupVault(bk, admin);
     curator = await bk.fundedKeypair();
-    await setupRiskProfile(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });
+    await setupPoolSubVault(bk, admin, curator.publicKey, { maxLtvBps: 8_000 });
 
     depositor = await bk.fundedKeypair();
     depositorUsdcAta = Keypair.generate().publicKey;
@@ -70,7 +73,7 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
 
   /* ── GlobalPaused ─────────────────────────────────────── */
 
-  it('SetGlobalPause(true) blocks ClaimSeat, GlobalVaultDeposit, PlaceOrderForRiskProfile with GlobalPaused', async () => {
+  it('SetGlobalPause(true) blocks ClaimSeat, GlobalVaultDeposit, PlaceOrderForSubVault with GlobalPaused', async () => {
     await bk.send([setGlobalPauseInstruction({ admin: admin.publicKey, paused: true })], [admin]);
 
     // ClaimSeat (writes through global_config).
@@ -94,7 +97,7 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
             lendingPool: USDC_BANK,
             liquidityVault: USDC_LIQUIDITY_VAULT,
             marginfiProgram: MARGINFI_PROGRAM_ID,
-            profileId: 1,
+            subVaultId: 1,
             amountAtoms: 1_000n,
           }),
         ],
@@ -108,20 +111,22 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
     await expectCustomError(
       bk.send(
         [
-          placeOrderForRiskProfileInstruction({
+          placeOrderForSubVaultInstruction({
             feePayer: curator.publicKey,
             curator: curator.publicKey,
-            mint: USDC_MINT,
             market: market.publicKey,
-            profileId: 1,
-            rateBps: 500,
-            termSeconds: 30 * 86_400,
+            debtBank: USDC_BANK,
+            marginfiGroup: MARGINFI_GROUP,
+            collateralBank: SOL_BANK,
+            debtOracles: [USDC_ORACLE],
+            collateralOracles: [SOL_ORACLE],
+            subVaultId: 1,
           }),
         ],
         [curator],
       ),
       YdeltaError.GlobalPaused,
-      'PlaceOrderForRiskProfile while globally paused',
+      'PlaceOrderForSubVault while globally paused',
     );
 
     // Restore so subsequent tests start clean.
@@ -144,24 +149,26 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
       'ClaimSeat while market paused',
     );
 
-    // PlaceOrderForRiskProfile is market-scoped → rejects.
+    // PlaceOrderForSubVault is market-scoped → rejects.
     await expectCustomError(
       bk.send(
         [
-          placeOrderForRiskProfileInstruction({
+          placeOrderForSubVaultInstruction({
             feePayer: curator.publicKey,
             curator: curator.publicKey,
-            mint: USDC_MINT,
             market: market.publicKey,
-            profileId: 1,
-            rateBps: 500,
-            termSeconds: 30 * 86_400,
+            debtBank: USDC_BANK,
+            marginfiGroup: MARGINFI_GROUP,
+            collateralBank: SOL_BANK,
+            debtOracles: [USDC_ORACLE],
+            collateralOracles: [SOL_ORACLE],
+            subVaultId: 1,
           }),
         ],
         [curator],
       ),
       YdeltaError.MarketPaused,
-      'PlaceOrderForRiskProfile while market paused',
+      'PlaceOrderForSubVault while market paused',
     );
 
     // GlobalVaultDeposit is NOT market-scoped → still works.
@@ -176,7 +183,7 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
           lendingPool: USDC_BANK,
           liquidityVault: USDC_LIQUIDITY_VAULT,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          profileId: 1,
+          subVaultId: 1,
           amountAtoms: 1_000n,
         }),
         // Heavy ix CU prefix not needed for GlobalVaultDeposit at this volume.
@@ -192,8 +199,8 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
 
   /* ── VaultPaused ──────────────────────────────────────── */
 
-  it('SetVaultPause(true) blocks vault ixs (deposit, place_order_for_risk_profile) but admin transfers stay live', async () => {
-    await bk.send([setVaultPauseInstruction({ admin: admin.publicKey, mint: USDC_MINT, paused: true })], [admin]);
+  it('SetVaultPause(true) blocks vault ixs (deposit, place_order_for_sub_vault) but admin transfers stay live', async () => {
+    await bk.send([setVaultPauseInstruction({ admin: admin.publicKey, bank: USDC_BANK, paused: true })], [admin]);
 
     // GlobalVaultDeposit rejects.
     await expectCustomError(
@@ -208,7 +215,7 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
             lendingPool: USDC_BANK,
             liquidityVault: USDC_LIQUIDITY_VAULT,
             marginfiProgram: MARGINFI_PROGRAM_ID,
-            profileId: 1,
+            subVaultId: 1,
             amountAtoms: 1_000n,
           }),
         ],
@@ -218,27 +225,29 @@ describe('e2e: pause guards reject state mutations with the right Custom error',
       'GlobalVaultDeposit while vault paused',
     );
 
-    // PlaceOrderForRiskProfile rejects (vault-scoped).
+    // PlaceOrderForSubVault rejects (vault-scoped).
     await expectCustomError(
       bk.send(
         [
           cuBudgetIx(HEAVY_IX_CU_LIMIT),
-          placeOrderForRiskProfileInstruction({
+          placeOrderForSubVaultInstruction({
             feePayer: curator.publicKey,
             curator: curator.publicKey,
-            mint: USDC_MINT,
             market: market.publicKey,
-            profileId: 1,
-            rateBps: 500,
-            termSeconds: 30 * 86_400,
+            debtBank: USDC_BANK,
+            marginfiGroup: MARGINFI_GROUP,
+            collateralBank: SOL_BANK,
+            debtOracles: [USDC_ORACLE],
+            collateralOracles: [SOL_ORACLE],
+            subVaultId: 1,
           }),
         ],
         [curator],
       ),
       YdeltaError.VaultPaused,
-      'PlaceOrderForRiskProfile while vault paused',
+      'PlaceOrderForSubVault while vault paused',
     );
 
-    await bk.send([setVaultPauseInstruction({ admin: admin.publicKey, mint: USDC_MINT, paused: false })], [admin]);
+    await bk.send([setVaultPauseInstruction({ admin: admin.publicKey, bank: USDC_BANK, paused: false })], [admin]);
   });
 });

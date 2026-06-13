@@ -1,20 +1,20 @@
 /**
- * claim-repayment.ts — `ClaimRepaymentForRiskProfile` (tag 20).
- * Permissionless cranker. Drains a settled vault loan back into vault
- * shares and closes the loan PDA.
+ * claim-repayment.ts — `ClaimRepaymentForSubVault` (tag 20).
+ * Permissionless cranker. Sweeps a sub-vault's `pendingClaimAtoms` from
+ * the market's lender marginfi account back into the vault's own
+ * integration account.
  *
  * Reads:
  *   .local/claim-repayment-input.json {
  *     marketLabel: string,
- *     sequence: string | number,
- *     crankerRefund: string                  // who paid the loan rent at create
+ *     subVaultId: number
  *   }
  */
 import { PublicKey } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 import {
-  claimRepaymentForRiskProfileInstruction,
+  claimRepaymentForSubVaultInstruction,
   cuBudgetIx,
 } from '../src/instructions/index.js';
 import {
@@ -39,8 +39,7 @@ import type { MarketDump } from './_types.js';
 
 interface Input {
   marketLabel: string;
-  sequence: string | number;
-  crankerRefund: string;
+  subVaultId: number;
 }
 
 async function main(): Promise<void> {
@@ -58,23 +57,24 @@ async function main(): Promise<void> {
     { bank: debtBankState, pythFeedIdHex: market.debtPythFeedIdHex, pythShardId: market.debtPythShardId },
   ]);
 
-  const ix = claimRepaymentForRiskProfileInstruction({
+  const ix = claimRepaymentForSubVaultInstruction({
     payer: signer.publicKey,
     market: new PublicKey(market.market),
-    sequence: BigInt(input.sequence.toString()),
-    globalVault: globalVaultPda(debtMint)[0],
+    subVaultId: input.subVaultId,
+    // The vault PDA is bank-keyed (`[b"vault", bank]`).
+    globalVault: globalVaultPda(debtBank)[0],
     debtMint,
     debtBank,
     debtLiquidityVault: new PublicKey(market.debtLiquidityVault),
     debtBankLiquidityVaultAuthority: bankLiquidityVaultAuthority(debtBank),
-    bankOracle: debtBankState.oracleKeys[0],
+    // Only the bank's primary oracle is loaded by the vault-settle path.
+    bankOracles: [debtBankState.oracleKeys[0]],
     lenderMarginfiAccount: lenderIntegrationAccountPda(new PublicKey(market.market))[0],
     tokenProgram: TOKEN_PROGRAM_ID,
     marginfiGroup: new PublicKey(market.marginfiGroup),
     marginfiProgram: MARGINFI_PROGRAM_ID,
-    crankerRefund: new PublicKey(input.crankerRefund),
   });
-  log(`[claim-repayment] ${market.label} seq=${input.sequence}`);
+  log(`[claim-repayment] ${market.label} subVaultId=${input.subVaultId}`);
   const sig = await sendIxs(conn, signer, [cuBudgetIx(), ix]);
   log(`[claim-repayment] signature = ${sig}`);
   appendTxLog({
@@ -83,7 +83,7 @@ async function main(): Promise<void> {
     oracleCrank: crank.entries,
     summary: {
       marketLabel: input.marketLabel,
-      sequence: input.sequence.toString(),
+      subVaultId: input.subVaultId,
     },
   });
 }
