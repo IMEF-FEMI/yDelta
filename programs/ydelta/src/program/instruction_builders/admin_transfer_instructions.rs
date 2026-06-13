@@ -1,5 +1,5 @@
 //! Builds the two-step admin-handoff instructions for market, global-vault,
-//! and per-profile curator roles (`TransferMarketAdmin` / `AcceptMarketAdmin`
+//! and per-sub-vault curator roles (`TransferMarketAdmin` / `AcceptMarketAdmin`
 //! / `TransferGlobalVaultAdmin` / `AcceptGlobalVaultAdmin` / `TransferCurator`
 //! / `AcceptCurator`).
 
@@ -97,8 +97,8 @@ pub fn accept_global_vault_admin_instruction(bank: &Pubkey, pending_admin: &Pubk
 }
 
 /// Builds the `TransferCurator` instruction for the `sub_vault_id` curator
-/// role on the vault keyed by `mint`. `current_curator` (signer) stamps
-/// `new_curator` into the profile's `pending_curator`.
+/// role on the vault keyed by `bank`. `current_curator` (signer) stamps
+/// `new_curator` into the sub-vault's `pending_curator`.
 pub fn transfer_curator_instruction(
     bank: &Pubkey,
     current_curator: &Pubkey,
@@ -125,7 +125,7 @@ pub fn transfer_curator_instruction(
 }
 
 /// Builds the `AcceptCurator` instruction for the `sub_vault_id` curator role
-/// on the vault keyed by `mint`. `pending_curator` (signer) finalizes the
+/// on the vault keyed by `bank`. `pending_curator` (signer) finalizes the
 /// handoff.
 pub fn accept_curator_instruction(
     bank: &Pubkey,

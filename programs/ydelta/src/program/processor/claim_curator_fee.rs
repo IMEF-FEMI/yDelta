@@ -1,5 +1,5 @@
 //! `ClaimCuratorFee` instruction. Curator-gated withdrawal of a risk
-//! profile's `accumulated_curator_fee_atoms` to the curator's wallet.
+//! sub-vault's `accumulated_curator_fee_atoms` to the curator's wallet.
 //! Withdraws from the per-vault marginfi integration account; any
 //! over-withdraw surplus is redeposited back into marginfi.
 
@@ -28,8 +28,8 @@ pub struct ClaimCuratorFeeParams {
     pub sub_vault_id: u16,
 }
 
-/// Withdraw a profile's `accumulated_curator_fee_atoms` to the
-/// curator's wallet. Signer must equal the profile's `curator`; no-op
+/// Withdraw a sub-vault's `accumulated_curator_fee_atoms` to the
+/// curator's wallet. Signer must equal the sub-vault's `curator`; no-op
 /// when accumulated fees are zero. Decrements the accumulator by the
 /// actual paid-out amount.
 pub fn process_claim_curator_fee(
@@ -77,7 +77,7 @@ pub fn process_claim_curator_fee(
         require!(
             *payer.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,
-            "claim_curator_fee: signer is not profile.curator"
+            "claim_curator_fee: signer is not sub_vault.curator"
         )?;
         profile.accumulated_curator_fee_atoms
     };

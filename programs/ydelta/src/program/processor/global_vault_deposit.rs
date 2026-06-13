@@ -1,5 +1,5 @@
 //! `GlobalVaultDeposit` instruction. Lender deposits atoms into a risk
-//! profile, minting profile shares pro-rata against
+//! profile, minting sub-vault shares pro-rata against
 //! `profile.total_assets_atoms`. Atoms route through the vault staging
 //! account into marginfi. Rejects when `profile.is_sunset != 0`.
 

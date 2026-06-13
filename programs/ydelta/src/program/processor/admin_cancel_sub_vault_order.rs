@@ -33,7 +33,7 @@ pub struct AdminCancelSubVaultOrderParams {
     pub sub_vault_id: u16,
 }
 
-/// Vault-admin force-cancel a sunset profile's resting ask. Removes
+/// Vault-admin force-cancel a sunset sub-vault's resting ask. Removes
 /// the market resting order and the vault-side `SubVaultOrderRef`,
 /// then emits `CancelOrderForSubVaultLog`. Errors when the profile
 /// is not sunset or the order ref is missing.

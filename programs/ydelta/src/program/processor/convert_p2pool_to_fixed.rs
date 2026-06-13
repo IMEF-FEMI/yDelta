@@ -471,7 +471,7 @@ pub fn process_convert_p2pool_to_fixed(
     // the `encumbered_in_orders → deployed_principal` transition and the
     // weighted-rate folds itself — exactly as `do_vault_settle` would —
     // otherwise `encumbered_in_orders_atoms` stays permanently inflated
-    // and the crossed profile's idle pool is frozen for good.
+    // and the crossed sub-vault's idle pool is frozen for good.
     {
         let share_value_fp48 = read_bank_asset_share_value_fp48(debt_bank.info)?;
 
@@ -499,7 +499,7 @@ pub fn process_convert_p2pool_to_fixed(
             // in the new loan's contribution.
             accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
             // v1 D3b: the curator fee is per-sub-vault — fold the net
-            // weighted rate using THIS profile's fee, matching the
+            // weighted rate using THIS sub-vault's fee, matching the
             // snapshot the engine stamped on the cross's MatchedLoan.
             let curator_fee_bps: u16 = profile.curator_fee_bps;
             let principal = cross.filled_principal_atoms;

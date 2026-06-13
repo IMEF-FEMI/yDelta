@@ -81,7 +81,8 @@ pub fn create_market_instructions(
 
 /// Builds the `CreateMarket` instruction alone (assumes the `market` PDA is
 /// already allocated). `market_creator` (signer) becomes the initial admin;
-/// `params` carries fee config, grace period, and initial pause flag.
+/// `params` carries fee config and grace period; markets are live
+/// (unpaused) at creation.
 #[allow(clippy::too_many_arguments)]
 pub fn create_market_instruction(
     market: &Pubkey,

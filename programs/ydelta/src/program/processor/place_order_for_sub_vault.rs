@@ -43,7 +43,7 @@ pub struct PlaceOrderForSubVaultParams {
 }
 
 /// Rest a vault-owned ask on a market on behalf of a sub-vault. Signer is
-/// the profile's curator; blocked when the profile is sunset.
+/// the sub-vault's curator; blocked when the sub-vault is sunset.
 pub fn process_place_order_for_sub_vault(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -95,7 +95,7 @@ pub fn process_place_order_for_sub_vault(
         require!(
             *curator.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,
-            "place_order_for_sub_vault: signer is not profile.curator"
+            "place_order_for_sub_vault: signer is not sub_vault.curator"
         )?;
         (
             profile.spread_bps,

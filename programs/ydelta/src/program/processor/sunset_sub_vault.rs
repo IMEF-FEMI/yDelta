@@ -26,7 +26,7 @@ pub struct SunsetSubVaultParams {
     pub sub_vault_id: u16,
 }
 
-/// Set the profile's `is_sunset` flag, blocking deposits / new orders /
+/// Set the sub-vault's `is_sunset` flag, blocking deposits / new orders /
 /// updates / matches while keeping withdrawals and close-outs open.
 pub fn process_sunset_sub_vault(
     _program_id: &Pubkey,

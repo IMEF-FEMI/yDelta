@@ -167,10 +167,10 @@ pub struct VaultPosition {
     _pad0: [u8; 14],
     /// User's share balance in the profile.
     pub shares: u128,
-    /// Snapshot of the profile's `cumulative_supply_yield_index_scaled`
+    /// Snapshot of the sub-vault's `cumulative_supply_yield_index_scaled`
     /// at last touch.
     pub snapshot_supply_yield_index_scaled: u128,
-    /// Snapshot of the profile's `cumulative_delta_yield_index_scaled`
+    /// Snapshot of the sub-vault's `cumulative_delta_yield_index_scaled`
     /// at last touch.
     pub snapshot_delta_yield_index_scaled: u128,
     /// Unix-ts of the last update.

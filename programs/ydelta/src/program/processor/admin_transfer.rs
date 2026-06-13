@@ -154,7 +154,7 @@ pub struct TransferCuratorParams {
 }
 
 /// Initiates a sub-vault curator transfer. Signer must equal the
-/// profile's current `curator`; writes `params.new_curator` into
+/// sub-vault's current `curator`; writes `params.new_curator` into
 /// `pending_curator`.
 pub fn process_transfer_curator(
     _program_id: &Pubkey,
@@ -185,7 +185,7 @@ pub fn process_transfer_curator(
     )?;
     profile.pending_curator = params.new_curator;
     msg!(
-        "ydelta: curator transfer initiated for profile {}, pending -> {}",
+        "ydelta: curator transfer initiated for sub_vault {}, pending -> {}",
         params.sub_vault_id,
         params.new_curator
     );

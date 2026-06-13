@@ -33,7 +33,7 @@ pub struct CancelOrderForSubVaultParams {
 }
 
 /// Cancel a sub-vault's resting market ask. Signer must equal the
-/// profile's `curator`; errors if no `SubVaultOrderRef` exists for
+/// sub-vault's `curator`; errors if no `SubVaultOrderRef` exists for
 /// the `(market, sub_vault_id)` pair.
 pub fn process_cancel_order_for_sub_vault(
     _program_id: &Pubkey,
@@ -72,7 +72,7 @@ pub fn process_cancel_order_for_sub_vault(
         require!(
             *curator.info.key == profile_node.get_value().curator,
             YdeltaError::VaultCuratorRequired,
-            "cancel_order_for_sub_vault: signer is not profile.curator"
+            "cancel_order_for_sub_vault: signer is not sub_vault.curator"
         )?;
 
         let order_probe = SubVaultOrderRef::probe(market_key, params.sub_vault_id);

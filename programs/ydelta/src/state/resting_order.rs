@@ -1,8 +1,9 @@
-//! `RestingOrder` is the per-ask node that lives in a market's `Bookside`
-//! red-black tree. Bids never rest — they are taker-only and matched at
-//! `place_order` time — so every resting order is an ask placed by a
-//! sub-vault curator. Ord/Eq are tuned so the tree's max-index points
-//! at the best (lowest-rate, lowest-sequence) ask.
+//! `RestingOrder` is a node in one of a market's two `Bookside`
+//! red-black trees: the ask tree (sub-vault curator quotes) and the bid
+//! tree (borrower residuals that chose to rest). Side-aware `Ord` makes
+//! each tree's max-index point at that side's best order — the
+//! lowest-rate ask, the highest-rate bid — with sequence as the FIFO
+//! tiebreaker.
 
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -30,12 +31,13 @@ use super::constants::{NO_EXPIRATION_LAST_VALID_UNIX_TS, RESTING_ORDER_SIZE};
     TryFromPrimitive,
 )]
 #[repr(u8)]
-/// Order side: `Bid` = borrower side (takers only), `Ask` = lender side
-/// (the only side that rests on book).
+/// Order side: `Bid` = borrower side, `Ask` = lender side. Both sides
+/// can rest in their own tree (v1 two-sided book).
 pub enum Side {
-    /// Borrower-side taker. Bids never rest.
+    /// Borrower side. Crosses resting asks on placement; an unfilled
+    /// residual may rest in the bids tree.
     Bid = 0,
-    /// Lender-side ask. The only side that ever rests on book.
+    /// Lender side — a sub-vault's standing quote in the asks tree.
     Ask = 1,
 }
 
@@ -85,9 +87,9 @@ pub fn order_type_can_take(order_type: OrderType) -> bool {
     order_type != OrderType::PostOnly
 }
 
-/// Node stored in the market's ask `Bookside` tree. Holds the immutable
-/// match terms (rate, term, principal, collateral, expiry) plus the
-/// trader's seat index for accounting.
+/// Node stored in one of a market's `Bookside` trees (bid or ask). Holds
+/// the immutable match terms (rate, term, principal, collateral, expiry)
+/// plus the trader's seat index for accounting.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct RestingOrder {
@@ -100,8 +102,9 @@ pub struct RestingOrder {
     pub sequence_number: u64,
     /// Outstanding principal the maker is willing to lend.
     pub principal_atoms: u64,
-    /// Borrower-side collateral attached to the order (always 0 for vault
-    /// asks since they are quote-only).
+    /// Collateral attached to the order. Always 0 for vault asks (they
+    /// quote unbounded, zero-collateral); a resting bid carries the
+    /// borrower's real collateral, stamped at rest.
     pub collateral_atoms: u64,
     /// Unix-ts after which the order is considered expired; `0` means
     /// never expires.

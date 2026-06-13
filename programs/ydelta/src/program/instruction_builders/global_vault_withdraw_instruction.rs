@@ -1,5 +1,5 @@
 //! Builds the `YdeltaInstruction::GlobalVaultWithdraw` instruction: lender
-//! burns profile shares to redeem atoms from a vault.
+//! burns sub-vault shares to redeem atoms from a vault.
 
 use borsh::BorshSerialize;
 use solana_program::{
@@ -21,7 +21,7 @@ use crate::state::vault::{
 /// `mint`. `depositor` (signer) is the share holder; `depositor_token`
 /// receives the atoms. `lending_pool` / `lending_pool_oracle` /
 /// `liquidity_vault` / `bank_liquidity_vault_authority` drive the marginfi
-/// withdraw. `sub_vault_id` selects the source profile; `shares_to_burn` is
+/// withdraw. `sub_vault_id` selects the source sub-vault; `shares_to_burn` is
 /// the I80F48-raw share count to redeem.
 #[allow(clippy::too_many_arguments)]
 pub fn global_vault_withdraw_instruction(

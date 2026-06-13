@@ -1,5 +1,5 @@
 //! Builds the `YdeltaInstruction::ClaimRepaymentForSubVault` instruction:
-//! permissionless sweep of a profile's `pending_claim_atoms` from the
+//! permissionless sweep of a sub-vault's `pending_claim_atoms` from the
 //! market's `lender_marginfi_account` back into the vault's own
 //! `integration_account`.
 

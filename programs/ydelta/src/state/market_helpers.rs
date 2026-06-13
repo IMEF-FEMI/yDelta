@@ -27,7 +27,7 @@ use crate::state::vault::{
 };
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 
-/// One-atom dust cushion subtracted from per-profile idle capacity at
+/// One-atom dust cushion subtracted from per-sub-vault idle capacity at
 /// match time so the lender pool stays one atom above marginfi's
 /// share-rounding floor.
 pub const MARGINFI_ROUNDING_RESERVE_ATOMS: u64 = 1;
@@ -387,8 +387,8 @@ pub struct MatchResult {
     /// Number of resting orders consumed.
     pub num_fills: u32,
 
-    /// What to do with the residual (set by `match_borrower_bid` based
-    /// on the `FLAG_OB_ONLY` bit).
+    /// What to do with the residual (set by `match_borrower_bid` from
+    /// the `residual_mode` field).
     pub residual_action: ResidualAction,
 }
 
@@ -407,18 +407,18 @@ pub enum ResidualAction {
     Rest,
 }
 
-/// Borrower's choice for an unfilled residual (v1 D6, replaces the old
-/// `FLAG_OB_ONLY`): fall through to a marginfi P2Pool borrow (default),
-/// rest the remainder in the bids tree, or drop it.
+/// Borrower's choice for an unfilled residual: fall through to a marginfi
+/// P2Pool borrow (default), rest the remainder in the bids tree, or drop
+/// it.
 pub const RESIDUAL_MODE_P2POOL_FALLBACK: u8 = 0;
 /// Rest the unfilled residual as a bid (v1 D6).
 pub const RESIDUAL_MODE_REST: u8 = 1;
-/// Drop the unfilled residual (the old OB_ONLY behavior).
+/// Drop the unfilled residual entirely.
 pub const RESIDUAL_MODE_DROP: u8 = 2;
 
 /// Walks the ask bookside from best to worst rate, filling against
 /// sub-vault makers up to the taker's principal. Mutates seat counters
-/// and the profile's `encumbered_in_orders_atoms`, emits
+/// and the sub-vault's `encumbered_in_orders_atoms`, emits
 /// `MatchedLoanCreated` logs, and inserts a `MatchedLoan` node per fill.
 /// `vault_ai` is the resting-ask vault account; passing `None` skips
 /// every fill (used in tests).
@@ -1009,7 +1009,7 @@ impl Default for PlaceOrderResult {
 
 /// Borrower-side place_order driver. Encumbers the taker's collateral
 /// and principal-shadow on its seat, runs [`match_order`], then either
-/// opens a P2Pool `MatchedLoan` for the residual (when `OB_ONLY` is off)
+/// opens a P2Pool `MatchedLoan` for the residual (when `residual_mode` is `RESIDUAL_MODE_P2POOL_FALLBACK`)
 /// or unwinds the residual encumbrance.
 pub fn match_borrower_bid(
     fixed: &mut MarketFixed,
@@ -1262,7 +1262,7 @@ pub fn match_borrower_bid(
 
 /// Rests a curator's sub-vault ask on the book. Vault asks are
 /// unbounded (`principal_atoms = u64::MAX`) and zero-collateral: the
-/// per-fill cap comes from the profile's idle balance at match time.
+/// per-fill cap comes from the sub-vault's idle balance at match time.
 /// Returns the assigned per-market order sequence.
 pub fn rest_vault_ask(
     fixed: &mut MarketFixed,

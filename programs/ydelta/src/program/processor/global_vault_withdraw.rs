@@ -1,6 +1,6 @@
 //! `GlobalVaultWithdraw` instruction. Burn sub-vault shares to
 //! redeem realized principal atoms from the vault. Gated by the
-//! profile's idle pool (`total_principal - deployed - encumbered`);
+//! sub-vault's idle pool (`total_principal - deployed - encumbered`);
 //! the last-share burn additionally requires zero in-flight capital.
 
 use std::cell::RefMut;
@@ -31,7 +31,7 @@ use crate::validation::loaders::GlobalVaultWithdrawContext;
 /// Parameters for [`process_global_vault_withdraw`].
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct GlobalVaultWithdrawParams {
-    /// Profile shares to redeem. Must be `> 0` and `<= seat.shares`.
+    /// Sub-vault shares to redeem. Must be `> 0` and `<= seat.shares`.
     pub shares_to_burn: u128,
     /// Identifies the sub-vault to withdraw from.
     pub sub_vault_id: u16,

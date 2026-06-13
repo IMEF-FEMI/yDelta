@@ -1,6 +1,6 @@
 //! Builds the `YdeltaInstruction::UpdateSubVault` instruction:
-//! vault-admin patches a profile's mutable policy fields. Rejected on
-//! sunset profiles.
+//! vault-admin patches a sub-vault's mutable policy fields. Rejected on
+//! sunset sub-vaults.
 
 use borsh::BorshSerialize;
 use solana_program::{

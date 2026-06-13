@@ -1,6 +1,6 @@
 //! Builds the `YdeltaInstruction::PlaceOrderForSubVault` instruction:
 //! curator rests an unbounded vault ask on a market, auto-creating the
-//! per-(profile, market) seat and `SubVaultOrderRef` on first call.
+//! per-(sub-vault, market) seat and `SubVaultOrderRef` on first call.
 
 use borsh::BorshSerialize;
 use solana_program::{

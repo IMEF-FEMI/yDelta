@@ -1,5 +1,5 @@
 //! Builds the `YdeltaInstruction::ClaimCuratorFee` instruction: curator
-//! withdraws the profile's accumulated curator-fee atoms via marginfi
+//! withdraws the sub-vault's accumulated curator-fee atoms via marginfi
 //! withdraw into `curator_token`.
 
 use borsh::BorshSerialize;
@@ -17,7 +17,7 @@ use crate::state::vault::{
 };
 
 /// Builds the `ClaimCuratorFee` instruction for `sub_vault_id` on the vault
-/// keyed by `mint`. `payer` (signer) must equal the profile's curator;
+/// keyed by `bank`. `payer` (signer) must equal the sub-vault's curator;
 /// fees are routed to `curator_token` via marginfi's `debt_bank` /
 /// `liquidity_vault` / oracle path.
 #[allow(clippy::too_many_arguments)]

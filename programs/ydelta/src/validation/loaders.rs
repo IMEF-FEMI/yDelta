@@ -1187,7 +1187,7 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
 /// Account context for `ClaimRepaymentForSubVault` (tag 20). Wires
 /// the market's `lender_marginfi_account` source to the vault's
 /// `integration_account` destination so the keeper sweep can move
-/// `pending_claim_atoms` back into the profile's idle pool.
+/// `pending_claim_atoms` back into the sub-vault's idle pool.
 pub(crate) struct ClaimRepaymentForSubVaultContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
@@ -2240,7 +2240,7 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
 
 /// Account context for `GlobalVaultDeposit` (tag 10). Routes the
 /// depositor's ATA into the vault's marginfi integration account and
-/// mints fp48 profile shares against the selected `sub_vault_id`.
+/// mints fp48 sub-vault shares against the selected `sub_vault_id`.
 pub(crate) struct GlobalVaultDepositContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2556,7 +2556,7 @@ impl<'a, 'info> GlobalVaultWithdrawContext<'a, 'info> {
 
 #[allow(dead_code)]
 /// Account context for `ClaimCuratorFee` (tag 15). Curator-gated;
-/// transfers the profile's accumulated curator fee atoms from the
+/// transfers the sub-vault's accumulated curator fee atoms from the
 /// vault's marginfi account to the curator's ATA.
 pub(crate) struct ClaimCuratorFeeContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
@@ -3038,7 +3038,7 @@ impl<'a, 'info> CreatePoolSubVaultContext<'a, 'info> {
 }
 
 /// Account context for `RemoveSubVault` (tag 37). Vault-admin
-/// gated; removes a sunset, fully drained profile from the vault tree.
+/// gated; removes a sunset, fully drained sub-vault from the vault tree.
 pub(crate) struct RemoveSubVaultContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -3132,8 +3132,8 @@ impl<'a, 'info> ResumeSubVaultContext<'a, 'info> {
 }
 
 /// Account context for `AdminCancelSubVaultOrder` (tag 40).
-/// Vault-admin gated; force-cancels a sunset profile's resting ask
-/// (curator-only on non-sunset profiles).
+/// Vault-admin gated; force-cancels a sunset sub-vault's resting ask
+/// (curator-only on non-sunset sub-vaults).
 pub(crate) struct AdminCancelSubVaultOrderContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -3825,7 +3825,7 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
 #[allow(dead_code)]
 /// Account context for `CheckLtvLiquidatable` (tag 34). Read-only
 /// simulation; loads the loan + both oracles to reproduce the
-/// maintenance-LTV gate `LiquidateLoan` enforces.
+/// liquidation gate `LiquidateLoan` enforces.
 pub(crate) struct CheckLtvLiquidatableContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,

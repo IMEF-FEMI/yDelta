@@ -1,5 +1,5 @@
 //! `CreateVault` instruction. Permissionless one-shot initializer for
-//! a per-mint `GlobalVaultFixed` PDA, its staging token account, and
+//! a per-bank `GlobalVaultFixed` PDA, its staging token account, and
 //! its marginfi integration account. First caller becomes
 //! `global_vault_admin`. Emits `VaultCreatedLog`.
 

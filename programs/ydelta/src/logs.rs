@@ -313,7 +313,7 @@ pub struct SubVaultCreatedLog {
 }
 impl_discriminant!(SubVaultCreatedLog);
 
-/// Emitted from `process_remove_sub_vault` after a sunset profile is
+/// Emitted from `process_remove_sub_vault` after a sunset sub-vault is
 /// removed from the vault tree.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
@@ -413,7 +413,7 @@ pub struct CancelOrderForSubVaultLog {
 }
 impl_discriminant!(CancelOrderForSubVaultLog);
 
-/// Emitted from `process_global_vault_withdraw` after profile shares
+/// Emitted from `process_global_vault_withdraw` after sub-vault shares
 /// are burned and atoms returned to the depositor.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]

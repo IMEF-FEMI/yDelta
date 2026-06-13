@@ -1,5 +1,6 @@
 //! `LiquidateLoan` instruction. Permissionless when current LTV
-//! breaches the marginfi maintenance threshold. Liquidator pays debt
+//! breaches its stamped `liquidation_ltv_bps` (Fixed loans) or marginfi
+//! maint-weight health (P2Pool). Liquidator pays debt
 //! atoms in and seizes collateral plus a keeper bonus. Full repay
 //! closes the loan PDA; partial repay decrements live state in place.
 
@@ -574,7 +575,7 @@ pub fn process_liquidate_loan(
             }
             if did_full_repay {
                 // Vault asks take no seat-level debt encumbrance (the
-                // profile's atom counters are the lender ledger); just
+                // sub-vault's atom counters are the lender ledger); just
                 // retire the open-lend counter stamped at fill time.
                 lender_seat.open_lend_count = lender_seat
                     .open_lend_count

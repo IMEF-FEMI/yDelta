@@ -387,7 +387,7 @@ impl SubVault {
     /// Build a fresh sub-vault with the supplied identity / cap fields
     /// and all accounting fields zeroed. The v1 fields (`kind`,
     /// `spread_bps`, `liquidation_ltv_bps`, `curator_fee_bps`) start
-    /// zeroed; the creation processors stamp them (phase 2).
+    /// zeroed; the creation processors stamp them.
     pub fn new_empty(
         sub_vault_id: u16,
         curator: Pubkey,
@@ -469,9 +469,9 @@ pub struct SubVaultDepositorSeat {
     _pad0: [u8; 14],
     /// Depositor's share balance.
     pub shares: u128,
-    /// Snapshot of the profile's supply-yield index at last touch.
+    /// Snapshot of the sub-vault's supply-yield index at last touch.
     pub snapshot_supply_yield_index_scaled: u128,
-    /// Snapshot of the profile's delta-yield index at last touch.
+    /// Snapshot of the sub-vault's delta-yield index at last touch.
     pub snapshot_delta_yield_index_scaled: u128,
     /// Unix-ts of the last touch.
     pub last_updated_unix: i64,
@@ -618,9 +618,9 @@ pub type SubVaultDepositorSeatTree<'a> = RedBlackTree<'a, SubVaultDepositorSeat>
 pub type SubVaultDepositorSeatTreeReadOnly<'a> =
     RedBlackTreeReadOnly<'a, SubVaultDepositorSeat>;
 
-/// Mutable view of the profile order-ref tree.
+/// Mutable view of the sub-vault order-ref tree.
 pub type SubVaultOrderRefTree<'a> = RedBlackTree<'a, SubVaultOrderRef>;
-/// Read-only view of the profile order-ref tree.
+/// Read-only view of the sub-vault order-ref tree.
 pub type SubVaultOrderRefTreeReadOnly<'a> = RedBlackTreeReadOnly<'a, SubVaultOrderRef>;
 
 /// Returns a shared reference to the `SubVault` node at `index`.

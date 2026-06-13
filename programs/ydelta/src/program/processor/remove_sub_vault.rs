@@ -21,7 +21,7 @@ use crate::state::vault::{
 use crate::state::GLOBAL_VAULT_FIXED_SIZE;
 use crate::validation::loaders::RemoveSubVaultContext;
 
-/// Risk-profile removal parameters.
+/// Sub-vault removal parameters.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct RemoveSubVaultParams {
     /// Sub-vault ID to remove (1-based; 0 is the sentinel).

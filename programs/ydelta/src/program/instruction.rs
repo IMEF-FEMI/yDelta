@@ -1,7 +1,7 @@
 //! Instruction tag enum. The first byte of every transaction's
 //! `instruction_data` is one of these variants; the entrypoint dispatches
 //! to the matching processor in [`crate::program::processor`]. Tags are
-//! a contiguous `0..=40` range — see `tests::instruction_tags_are_contiguous`.
+//! a contiguous `0..=44` range — see `tests::instruction_tags_are_contiguous`.
 
 use num_enum::TryFromPrimitive;
 use shank::ShankInstruction;
@@ -28,7 +28,7 @@ pub enum YdeltaInstruction {
 
     /// Submit a borrower IOC bid. The matching engine crosses resting
     /// vault asks first; any unfilled residual either falls through to a
-    /// P2Pool marginfi-backed loan or drops (controlled by the OB_ONLY flag).
+    /// P2Pool marginfi-backed loan, rests as a bid, or drops (controlled by `residual_mode`).
     PlaceOrder = 4,
 
     /// Cranker step: promote a queued `MatchedLoan` node into a
@@ -46,24 +46,25 @@ pub enum YdeltaInstruction {
     /// matching `MarketPosition` row in the owner's `UserAccountFixed`.
     SyncMarketPosition = 7,
 
-    /// One-shot per mint: create the `GlobalVaultFixed` PDA and its
+    /// One-shot per bank: create the `GlobalVaultFixed` PDA and its
     /// marginfi integration account. First caller becomes `global_vault_admin`.
     CreateVault = 8,
 
-    /// Vault-admin gated: append a `SubVault` to the vault. Stamps
-    /// curator + LTV cap (optional, defaults to marginfi-derived) +
-    /// max term. Auto-assigns a monotonic `sub_vault_id` starting at 1.
+    /// Protocol-admin gated: append a Pool `SubVault` to the vault.
+    /// Stamps curator + spread + the required max/liquidation LTV pair +
+    /// max term + curator fee. Auto-assigns a monotonic `sub_vault_id`
+    /// starting at 1.
     CreatePoolSubVault = 9,
 
-    /// Lender deposits atoms into a sub-vault, minting profile shares.
+    /// Lender deposits atoms into a sub-vault, minting sub-vault shares.
     GlobalVaultDeposit = 10,
 
-    /// Burn profile shares to redeem atoms. Rejected when the burn would
-    /// drop idle below 0 or break the per-profile idle gate.
+    /// Burn sub-vault shares to redeem atoms. Rejected when the burn would
+    /// drop idle below 0 or break the per-sub-vault idle gate.
     GlobalVaultWithdraw = 11,
 
     /// Curator-gated: rest an unbounded vault ask on a market. Auto-
-    /// creates the per-(profile, market) `ClaimedSeat` and the
+    /// creates the per-(sub-vault, market) `ClaimedSeat` and the
     /// vault-side `SubVaultOrderRef` on first call.
     PlaceOrderForSubVault = 12,
 
@@ -75,7 +76,7 @@ pub enum YdeltaInstruction {
     /// followed by place in a single tx, with a fresh order sequence.
     UpdateOrderForSubVault = 14,
 
-    /// Curator-gated: withdraw the profile's accrued
+    /// Curator-gated: withdraw the sub-vault's accrued
     /// `accumulated_curator_fee_atoms` to the curator's wallet.
     ClaimCuratorFee = 15,
 
@@ -84,8 +85,9 @@ pub enum YdeltaInstruction {
     /// collateral. Full repay closes the loan PDA in-place.
     SettleMaturedLoan = 16,
 
-    /// Permissionless when current LTV breaches the maintenance threshold
-    /// at marginfi maint weights. Same close shape as `SettleMaturedLoan`.
+    /// Permissionless when live LTV breaches the loan's stamped
+    /// `liquidation_ltv_bps` (Fixed loans) or marginfi maint weights
+    /// (P2Pool). Same close shape as `SettleMaturedLoan`.
     LiquidateLoan = 17,
 
     /// Market-admin gated: update `MarketFixed.fee_config` fields. Each
@@ -96,7 +98,7 @@ pub enum YdeltaInstruction {
     /// to the admin's debt ATA via marginfi.withdraw.
     ProtocolFeeClaim = 19,
 
-    /// Permissionless: sweep a profile's `pending_claim_atoms` from the
+    /// Permissionless: sweep a sub-vault's `pending_claim_atoms` from the
     /// per-market `lender_marginfi_account` back into the vault's own
     /// `integration_account` (one-way profile → vault sweeper).
     ClaimRepaymentForSubVault = 20,
@@ -114,11 +116,11 @@ pub enum YdeltaInstruction {
     /// Finalize vault-admin handoff.
     AcceptGlobalVaultAdmin = 24,
 
-    /// Initiate per-profile curator handoff. Signer must equal the
-    /// current curator. Profile id passed in instruction data.
+    /// Initiate per-sub-vault curator handoff. Signer must equal the
+    /// current curator. Sub-vault id passed in instruction data.
     TransferCurator = 25,
 
-    /// Finalize per-profile curator handoff.
+    /// Finalize per-sub-vault curator handoff.
     AcceptCurator = 26,
 
     /// Market-admin gated: set `MarketFixed.is_paused`. Paused markets
@@ -139,8 +141,9 @@ pub enum YdeltaInstruction {
     /// every state-mutating ix that takes the global config account.
     SetGlobalPause = 31,
 
-    /// Vault-admin gated: update mutable `SubVault` policy fields
-    /// (`max_ltv_bps`, `max_term_seconds`). Rejected on sunset profiles.
+    /// Curator-gated (owner for Private): update mutable `SubVault` policy
+    /// fields (`spread_bps`, `max_ltv_bps`, `liquidation_ltv_bps`,
+    /// `max_term_seconds`). Rejected on sunset sub-vaults.
     UpdateSubVault = 32,
 
     /// Borrower-initiated upgrade of a P2Pool (variable-rate) loan into
@@ -149,7 +152,7 @@ pub enum YdeltaInstruction {
     ConvertP2PoolToFixed = 33,
 
     /// Read-only simulation. Returns `Ok(())` iff the loan would fail
-    /// the maintenance-LTV solvency check at current oracle prices
+    /// its stamped `liquidation_ltv_bps` solvency check at current oracle prices
     /// (i.e. `LiquidateLoan` would succeed).
     CheckLtvLiquidatable = 34,
 
@@ -176,7 +179,7 @@ pub enum YdeltaInstruction {
     ResumeSubVault = 39,
 
     /// Vault-admin gated: force-cancel a vault ask. Only allowed on
-    /// sunset profiles (during wind-down) — non-sunset profiles can only
+    /// sunset sub-vaults (during wind-down) — non-sunset sub-vaults can only
     /// be cancelled by the curator via `CancelOrderForSubVault`.
     AdminCancelSubVaultOrder = 40,
 

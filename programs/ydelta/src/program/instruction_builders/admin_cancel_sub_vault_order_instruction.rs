@@ -1,6 +1,6 @@
 //! Builds the `YdeltaInstruction::AdminCancelSubVaultOrder` instruction:
-//! vault-admin force-cancel of a sunset profile's resting vault ask on a
-//! market (wind-down escape hatch — non-sunset profiles must use
+//! vault-admin force-cancel of a sunset sub-vault's resting vault ask on a
+//! market (wind-down escape hatch — non-sunset sub-vaults must use
 //! `cancel_order_for_sub_vault_instruction`).
 
 use borsh::BorshSerialize;
@@ -16,7 +16,7 @@ use crate::state::vault::global_vault_pda;
 
 /// Builds the `AdminCancelSubVaultOrder` instruction. `payer` must be the
 /// vault admin; targets `sub_vault_id`'s resting ask on `market` for the
-/// vault keyed by `mint`.
+/// vault keyed by `bank`.
 pub fn admin_cancel_sub_vault_order_instruction(
     bank: &Pubkey,
     market: &Pubkey,

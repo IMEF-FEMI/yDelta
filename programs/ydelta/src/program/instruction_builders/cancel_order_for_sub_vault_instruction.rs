@@ -15,7 +15,7 @@ use crate::state::vault::global_vault_pda;
 
 /// Builds the `CancelOrderForSubVault` instruction. `curator` must sign;
 /// `fee_payer` covers tx fees. Removes the `sub_vault_id` resting ask on
-/// `market` for the vault keyed by `mint`.
+/// `market` for the vault keyed by `bank`.
 pub fn cancel_order_for_sub_vault_instruction(
     bank: &Pubkey,
     market: &Pubkey,

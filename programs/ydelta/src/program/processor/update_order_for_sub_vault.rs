@@ -1,6 +1,6 @@
 //! `UpdateOrderForSubVault` — atomic cancel-and-replace of the existing
 //! vault-owned ask for `(market, sub_vault_id)`. Signer is the profile's
-//! curator; blocked when the profile is sunset (curators may still cancel
+//! curator; blocked when the sub-vault is sunset (curators may still cancel
 //! during wind-down). Looks up the old order via the vault's
 //! `SubVaultOrderRef`, cancels it on the market, rests a new ask with the
 //! supplied params, and swaps the ref entry on the vault.
@@ -100,7 +100,7 @@ pub fn process_update_order_for_sub_vault(
         require!(
             *curator.info.key == profile.curator,
             YdeltaError::VaultCuratorRequired,
-            "update_order_for_sub_vault: signer is not profile.curator"
+            "update_order_for_sub_vault: signer is not sub_vault.curator"
         )?;
         sub_vault_spread_bps = profile.spread_bps;
         sub_vault_term_seconds = profile.max_term_seconds;

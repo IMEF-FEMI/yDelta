@@ -539,7 +539,7 @@ pub fn process_settle_matured_loan(
             }
             if did_full_repay {
                 // Vault asks take no seat-level debt encumbrance (the
-                // profile's atom counters are the lender ledger); just
+                // sub-vault's atom counters are the lender ledger); just
                 // retire the open-lend counter stamped at fill time.
                 lender_seat.open_lend_count = lender_seat
                     .open_lend_count

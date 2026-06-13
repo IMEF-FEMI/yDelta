@@ -15,8 +15,9 @@ use crate::validation::get_borrower_integration_account_address;
 
 /// Builds the `CheckLtvLiquidatable` simulation instruction for loan
 /// `(market, sequence)`. `payer` signs (fee-only). `debt_bank`,
-/// `collateral_bank`, and their oracle slices feed marginfi's maint-LTV
-/// pricing; `marginfi_program` is the program owning those banks.
+/// `collateral_bank`, and their oracle slices feed the liquidation gate
+/// (the loan's stamped `liquidation_ltv_bps` for Fixed loans, marginfi
+/// maint weights for P2Pool); `marginfi_program` owns those banks.
 #[allow(clippy::too_many_arguments)]
 pub fn check_ltv_liquidatable_instruction(
     market: &Pubkey,

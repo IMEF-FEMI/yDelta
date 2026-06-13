@@ -109,7 +109,7 @@ pub struct LoanFixed {
     pub origination_ltv_bps: u16,
     /// Liquidation trigger stamped from the sub-vault at match time;
     /// the LTV liquidation gate compares live oracle LTV against this
-    /// (v1 D17). 0 until the stamping lands (phase 5).
+    /// (v1 D17). Set at match; never zero on an active fixed loan.
     pub liquidation_ltv_bps: u16,
     _reserved_ltv: [u8; 12],
 

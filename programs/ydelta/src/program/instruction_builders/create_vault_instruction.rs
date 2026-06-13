@@ -1,4 +1,4 @@
-//! Builds the `YdeltaInstruction::CreateVault` instruction: one-shot-per-mint
+//! Builds the `YdeltaInstruction::CreateVault` instruction: one-shot-per-bank
 //! initialization of the `GlobalVaultFixed` PDA, its marginfi integration
 //! account, signer PDA, and staging ATA.
 
@@ -15,7 +15,7 @@ use crate::state::vault::{
     global_vault_staging_pda,
 };
 
-/// Builds the `CreateVault` instruction for the vault keyed by `mint`.
+/// Builds the `CreateVault` instruction for the vault keyed by `bank`.
 /// `payer` (signer) funds rent and becomes the initial `global_vault_admin`.
 /// `lending_pool` is the marginfi bank for `mint` that anchors the vault's
 /// integration account; `token_program` / `token_program_22` cover both SPL

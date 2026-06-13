@@ -13,8 +13,9 @@ use crate::require;
 use crate::state::loan::{accrue_loan, LoanFixed, LoanState, LOAN_FIXED_SIZE};
 use crate::validation::loaders::{CheckLtvLiquidatableContext, CheckMaturityLiquidatableContext};
 
-/// Asserts the loan breaches the maintenance LTV threshold at current
-/// marginfi maint weights + oracle prices. Returns `Ok(())` only when
+/// Asserts the loan breaches its liquidation threshold at current oracle
+/// prices — the stamped `liquidation_ltv_bps` for Fixed loans, marginfi
+/// maint-weight health for P2Pool. Returns `Ok(())` only when
 /// `liquidate_loan` would also accept the trigger; errors otherwise.
 pub fn process_check_ltv_liquidatable(
     _program_id: &Pubkey,

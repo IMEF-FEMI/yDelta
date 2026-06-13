@@ -24,7 +24,7 @@ pub struct ResumeSubVaultParams {
     pub sub_vault_id: u16,
 }
 
-/// Clear the profile's `is_sunset` flag, re-enabling deposits, new orders,
+/// Clear the sub-vault's `is_sunset` flag, re-enabling deposits, new orders,
 /// updates, and matches.
 pub fn process_resume_sub_vault(
     _program_id: &Pubkey,

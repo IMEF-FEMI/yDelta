@@ -15,9 +15,10 @@ use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
 /// Builds the `UpdateOrderForSubVault` instruction. `curator` must sign;
-/// `fee_payer` covers tx fees. Replaces the `sub_vault_id` resting ask on
-/// `market` with `new_rate_bps` (basis points), `new_term_seconds`
-/// (seconds), and `new_flags`.
+/// `fee_payer` covers tx fees. Parameterless re-sync (v1 D4): cancels the
+/// `sub_vault_id` resting ask on `market` and re-rests it at `live bank
+/// lending APR + sub_vault.spread_bps` for `sub_vault.max_term_seconds`,
+/// carrying `new_flags`. Takes no rate or term argument.
 #[allow(clippy::too_many_arguments)]
 pub fn update_order_for_sub_vault_instruction(
     bank: &Pubkey,

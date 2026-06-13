@@ -227,7 +227,7 @@ pub struct MarketFixed {
     pub num_bytes_allocated: u32,
 
     /// Root of the bid `Bookside` red-black tree (restored in v1, D6 —
-    /// borrower residuals may rest; engine wiring lands in phase 4).
+    /// borrower residuals may rest here).
     pub bids_root_index: DataIndex,
 
     /// Max-index of the bid tree (points at the best — highest-rate —
