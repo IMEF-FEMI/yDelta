@@ -39,9 +39,9 @@ pub struct FeeConfig {
     /// Protocol slice of a liquidation in bps.
     pub liquidation_protocol_bps: u16,
 
-    /// Extra over-collateralization required at match time (in bps over
-    /// the bare LTV requirement).
-    pub ltv_buffer_bps: u16,
+    /// Reserved (was `ltv_buffer_bps` — removed in v1 D17: origination
+    /// LTV is sub-vault-only, no market-level top-up).
+    _pad_ltv: [u8; 2],
     _padding_for_u32: [u8; 4],
 
     /// Grace window in seconds added to `matures_at` before settle and
@@ -55,9 +55,6 @@ const_assert_eq!(size_of::<FeeConfig>() % 8, 0);
 /// Default grace window stamped onto a fresh market (24 hours).
 pub const DEFAULT_GRACE_PERIOD_SECONDS: u32 = 86_400;
 
-/// Default LTV top-up buffer stamped onto a fresh market (2%).
-pub const DEFAULT_LTV_BUFFER_BPS: u16 = 200;
-
 impl Default for FeeConfig {
     fn default() -> Self {
         Self {
@@ -66,7 +63,7 @@ impl Default for FeeConfig {
             curator_split_bps: 0,
             liquidation_keeper_bps: 0,
             liquidation_protocol_bps: 0,
-            ltv_buffer_bps: DEFAULT_LTV_BUFFER_BPS,
+            _pad_ltv: [0; 2],
             _padding_for_u32: [0; 4],
             grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
             _padding_tail: [0; 4],

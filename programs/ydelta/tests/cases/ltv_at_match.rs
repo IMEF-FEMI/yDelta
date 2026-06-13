@@ -1,28 +1,26 @@
-//! Per-match LTV check fires at the matching engine using real
-//! oracle prices + bank weights from the loaded mainnet fixtures.
+//! Per-match LTV gate at the matching engine using real oracle prices
+//! from the loaded mainnet fixtures. v1 D17: the sub-vault's
+//! `max_ltv_bps` is the ONLY origination gate — marginfi weights are
+//! not consulted — and a failing bid is SKIPPED (the scan walks on),
+//! never aborted.
 //!
 //! In the quote-only model the lender is a vault sub-vault resting
 //! an unbounded ask; the borrower crosses it with an IOC bid carrying
-//! `collateral_atoms`. The match-time gate checks
-//! `actual_ltv <= profile.max_ltv_bps`. Tests vary the borrower's
-//! collateral to span the LTV-required boundary.
+//! `collateral_atoms`. The gate checks
+//! `actual_ltv <= profile.max_ltv_bps` at live oracle prices.
 //!
 //! The market is USDC(6-dec) debt / wSOL(9-dec) collateral. The
 //! required-collateral helper normalizes for the 3-decimal gap. These
-//! tests compute the true requirement from the fixture oracle prices +
-//! bank weights rather than hard-coding it, then post collateral
-//! relative to that boundary:
+//! tests compute the true requirement from the fixture oracle prices
+//! rather than hard-coding it, then post collateral relative to that
+//! boundary:
 //!   - over-collateralized: comfortably ABOVE the true requirement,
 //!   - under-collateralized: ~10× BELOW the true requirement.
 
 use solana_sdk::signer::Signer;
 
-use marginfi_mocks::state::BankConfigView;
-use ydelta::program::YdeltaError;
-use ydelta::protocol::marginfi::wrapped_i80f48_to_u128;
-use ydelta::state::ltv::get_required_quote_collateral_to_back_debt;
+use ydelta::state::ltv::required_collateral_at_ltv_cap;
 
-use crate::assert_custom_error;
 use crate::test_utils::marginfi_fixture::mainnet;
 use crate::test_utils::market_fixture::MarketFixture;
 
@@ -60,38 +58,25 @@ fn decode_swb_price(data: &[u8]) -> u128 {
 }
 
 /// Compute the TRUE match-time required collateral (lamports of wSOL)
-/// to back `debt_atoms` of USDC, reading the fixture oracle prices and
-/// the marginfi init-weights straight off the loaded fixture accounts.
-/// Mirrors exactly what the matching engine computes on-chain — debt
-/// 6 decimals, collateral 9 decimals.
+/// to back `debt_atoms` of USDC at the sub-vault's `max_ltv_bps` cap,
+/// reading the fixture oracle prices straight off the loaded fixture
+/// accounts. Mirrors exactly what the matching engine computes on-chain
+/// (v1 D17 single gate) — debt 6 decimals, collateral 9 decimals.
 async fn true_required_collateral(
     fixture: &MarketFixture,
     debt_atoms: u64,
-    ltv_buffer_bps: u16,
+    max_ltv_bps: u16,
 ) -> u64 {
     let usdc_oracle_data = fixture.account_data(mainnet::usdc_oracle()).await;
     let sol_oracle_data = fixture.account_data(mainnet::sol_oracle()).await;
     let debt_price_fp48 = ydelta::math::Fp48::from_raw(decode_pyth_price(&usdc_oracle_data));
     let collateral_price_fp48 = ydelta::math::Fp48::from_raw(decode_swb_price(&sol_oracle_data));
 
-    let usdc_bank_data = fixture.account_data(mainnet::usdc_bank()).await;
-    let sol_bank_data = fixture.account_data(mainnet::sol_bank()).await;
-    let usdc_cfg = BankConfigView::try_from_account_data(&usdc_bank_data).unwrap();
-    let sol_cfg = BankConfigView::try_from_account_data(&sol_bank_data).unwrap();
-    let debt_liability_weight_init = ydelta::math::Fp48::from_raw(
-        wrapped_i80f48_to_u128(usdc_cfg.liability_weight_init()).unwrap(),
-    );
-    let collateral_asset_weight_init = ydelta::math::Fp48::from_raw(
-        wrapped_i80f48_to_u128(sol_cfg.asset_weight_init()).unwrap(),
-    );
-
-    get_required_quote_collateral_to_back_debt(
+    required_collateral_at_ltv_cap(
         debt_atoms,
         debt_price_fp48,
         collateral_price_fp48,
-        debt_liability_weight_init,
-        collateral_asset_weight_init,
-        ltv_buffer_bps,
+        max_ltv_bps,
         /*debt_mint_decimals=*/ 6,
         /*collateral_mint_decimals=*/ 9,
     )
@@ -130,10 +115,9 @@ async fn match_passes_with_overcollateralized_bid() {
     fixture.refresh_blockhash().await;
 
     let principal_atoms: u64 = 1_000_000;
-    // `MarketFixture::new` / `provide_vault_liquidity` set `ltv_buffer_bps`
-    // to 0, so compute the requirement at a zero buffer to match the
-    // on-chain gate exactly.
-    let required = true_required_collateral(&fixture, principal_atoms, 0).await;
+    // Compute the requirement at the sub-vault's 80% cap — the single
+    // on-chain origination gate (v1 D17).
+    let required = true_required_collateral(&fixture, principal_atoms, 8_000).await;
     assert!(
         required > 1_000_000,
         "requirement for $1 of debt against ~$100-200 SOL must be \
@@ -167,11 +151,13 @@ async fn match_passes_with_overcollateralized_bid() {
 }
 
 #[tokio::test]
-async fn match_rejected_with_undercollateralized_bid() {
+async fn undercollateralized_bid_is_skipped_not_filled() {
     // Post collateral in the genuinely-dangerous band: ~10× UNDER the
     // true requirement. A 10×-under loan is the realistic attack — a
     // decimal-blind requirement formula would let it through, while the
-    // decimal-normalized gate correctly rejects it.
+    // decimal-normalized gate correctly rejects it. v1 D17: the failing
+    // bid is SKIPPED (no abort) and the Drop residual mode discards it,
+    // so the ix succeeds but no loan is minted.
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
@@ -198,7 +184,7 @@ async fn match_rejected_with_undercollateralized_bid() {
     fixture.refresh_blockhash().await;
 
     let principal_atoms: u64 = 1_000_000;
-    let required = true_required_collateral(&fixture, principal_atoms, 0).await;
+    let required = true_required_collateral(&fixture, principal_atoms, 8_000).await;
     // ~10× under the true requirement — the dangerous middle band.
     // A decimal-blind requirement would be ~1000× smaller, so
     // `required / 10` would land ~100× ABOVE that bar and the cross
@@ -219,13 +205,20 @@ async fn match_rejected_with_undercollateralized_bid() {
             30 * 86_400,
             principal_atoms,
             collateral_atoms,
-            // OB_ONLY so the rejection isn't masked by the P2Pool fallback.
+            // Drop the residual so the skip isn't masked by the P2Pool
+            // fallback (which has its own marginfi-weights gate).
             ydelta::state::market_helpers::RESIDUAL_MODE_DROP,
         )
         .await;
-    assert_custom_error!(result, YdeltaError::CollateralBelowMatchLTV);
+    result.expect("v1 D17: a failing bid is skipped, never aborted");
 
-    // No match landed.
+    // No match landed and nothing was reserved on the sub-vault.
     let market = fixture.read_market_fixed().await;
     assert_eq!(market.matched_loan_sequence, 0);
+    let profile = fixture.read_sub_vault(1).await;
+    assert_eq!(profile.encumbered_in_orders_atoms, 0);
+    assert_eq!(profile.open_loans_count, 0);
+    // The dropped residual released the borrower's collateral.
+    let seat = fixture.read_seat(&bob.pubkey()).await;
+    assert_eq!(seat.collateral_encumbered_shares, 0);
 }

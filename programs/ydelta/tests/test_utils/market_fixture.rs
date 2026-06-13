@@ -142,12 +142,7 @@ impl MarketFixture {
     pub async fn create_second_market(&self) {
         let market2 = Keypair::new();
         let payer = self.payer.insecure_clone();
-        // See `create_market_account` below for why `ltv_buffer_bps`
-        // is held at 0 here despite the protocol default of 200.
-        let params = CreateMarketParams {
-            ltv_buffer_bps: Some(0),
-            ..CreateMarketParams::default()
-        };
+        let params = CreateMarketParams::default();
         let ixs = create_market_instructions(
             &market2.pubkey(),
             &mainnet::usdc_mint(),
@@ -193,15 +188,7 @@ impl MarketFixture {
 
     async fn create_market_account(&self) {
         let payer = self.payer.insecure_clone();
-        // Override `ltv_buffer_bps` back to 0 — the protocol default
-        // moved to 200 (2%) once `create_market` started seeding a safe
-        // `FeeConfig::default()`, but existing LTV-sensitive tests in
-        // this suite were authored against a zero buffer. Holding the
-        // buffer at 0 here avoids re-tuning every case.
-        let params = CreateMarketParams {
-            ltv_buffer_bps: Some(0),
-            ..CreateMarketParams::default()
-        };
+        let params = CreateMarketParams::default();
         let ixs = create_market_instructions(
             &self.market.pubkey(),
             &mainnet::usdc_mint(),

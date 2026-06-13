@@ -67,7 +67,7 @@ pub fn process_place_order_for_sub_vault(
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    let (spread_bps, term_seconds, profile_max_ltv_bps, profile_curator_fee_bps): (u16, u32, u16, u16) = {
+    let (spread_bps, term_seconds, profile_max_ltv_bps, profile_liquidation_ltv_bps, profile_curator_fee_bps): (u16, u32, u16, u16, u16) = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
@@ -101,6 +101,7 @@ pub fn process_place_order_for_sub_vault(
             profile.spread_bps,
             profile.max_term_seconds,
             profile.max_ltv_bps,
+            profile.liquidation_ltv_bps,
             profile.curator_fee_bps,
         )
     };
@@ -215,6 +216,7 @@ pub fn process_place_order_for_sub_vault(
             profile_curator_fee_bps,
             *curator.info.key,
             profile_max_ltv_bps,
+            profile_liquidation_ltv_bps,
             now,
             u32::MAX,
         )?;
@@ -296,6 +298,7 @@ pub(crate) fn take_resting_bids<'a, 'info>(
     ask_curator_fee_bps: u16,
     ask_curator: Pubkey,
     profile_max_ltv_bps: u16,
+    profile_liquidation_ltv_bps: u16,
     now: i64,
     max_fills: u32,
 ) -> Result<crate::state::market_helpers::MatchRestingBidsResult, solana_program::program_error::ProgramError>
@@ -307,7 +310,7 @@ pub(crate) fn take_resting_bids<'a, 'info>(
 
     // Anything crossable at all? Cheap pre-check avoids the oracle reads
     // on the (common) empty-bids path.
-    let (bids_count, fee_floor_bps, origination_bps, ltv_buffer_bps, dmd, cmd) = {
+    let (bids_count, fee_floor_bps, origination_bps, dmd, cmd) = {
         let market_data = market.info.try_borrow_data()?;
         let fixed_size = std::mem::size_of::<MarketFixed>();
         let header: &MarketFixed = bytemuck::from_bytes(&market_data[..fixed_size]);
@@ -316,7 +319,6 @@ pub(crate) fn take_resting_bids<'a, 'info>(
             crate::state::market_helpers::count_resting_bids(header, dynamic),
             header.fee_config.protocol_fee_bps_floor,
             header.fee_config.origination_bps,
-            header.fee_config.ltv_buffer_bps,
             header.debt_mint_decimals,
             header.collateral_mint_decimals,
         )
@@ -338,10 +340,6 @@ pub(crate) fn take_resting_bids<'a, 'info>(
             collateral_oracle_ais,
         ))?,
     );
-    let (_d_asset, debt_liability_weight_init_raw) =
-        MarginfiV18Adapter.init_weight(&[debt_bank.info.clone()])?;
-    let (collateral_asset_weight_init_raw, _c_liab) =
-        MarginfiV18Adapter.init_weight(&[collateral_bank.info.clone()])?;
     let lender_debt_snapshot_fp48 = {
         let data = debt_bank.info.try_borrow_data()?;
         let bank = marginfi_mocks::state::Bank::try_from_account_data(&data)
@@ -364,19 +362,13 @@ pub(crate) fn take_resting_bids<'a, 'info>(
             ask_curator_fee_bps,
             ask_curator,
             profile_max_ltv_bps,
+            profile_liquidation_ltv_bps,
             fee_floor_bps,
             origination_bps,
             now_unix_ts: now,
             lender_debt_share_price_snapshot_fp48: lender_debt_snapshot_fp48,
             debt_oracle_price_fp48,
             collateral_oracle_price_fp48,
-            debt_liability_weight_init_fp48: crate::math::Fp48::from_raw(
-                debt_liability_weight_init_raw,
-            ),
-            collateral_asset_weight_init_fp48: crate::math::Fp48::from_raw(
-                collateral_asset_weight_init_raw,
-            ),
-            ltv_buffer_bps,
             debt_mint_decimals: dmd,
             collateral_mint_decimals: cmd,
             max_fills,

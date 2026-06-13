@@ -70,6 +70,7 @@ pub fn process_update_order_for_sub_vault(
     let sub_vault_spread_bps: u16;
     let sub_vault_term_seconds: u32;
     let sub_vault_max_ltv_bps: u16;
+    let sub_vault_liquidation_ltv_bps: u16;
     let sub_vault_curator_fee_bps: u16;
     let old_order_sequence: u64 = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
@@ -104,6 +105,7 @@ pub fn process_update_order_for_sub_vault(
         sub_vault_spread_bps = profile.spread_bps;
         sub_vault_term_seconds = profile.max_term_seconds;
         sub_vault_max_ltv_bps = profile.max_ltv_bps;
+        sub_vault_liquidation_ltv_bps = profile.liquidation_ltv_bps;
         sub_vault_curator_fee_bps = profile.curator_fee_bps;
 
         let order_probe = SubVaultOrderRef::probe(market_key, params.sub_vault_id);
@@ -250,6 +252,7 @@ pub fn process_update_order_for_sub_vault(
         sub_vault_curator_fee_bps,
         *curator.info.key,
         sub_vault_max_ltv_bps,
+        sub_vault_liquidation_ltv_bps,
         now,
         u32::MAX,
     )?;

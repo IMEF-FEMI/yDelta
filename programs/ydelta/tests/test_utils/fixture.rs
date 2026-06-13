@@ -449,16 +449,7 @@ impl TestFixture {
 
     async fn create_market_account(&mut self) {
         let payer = self.payer_keypair();
-        // Override `ltv_buffer_bps` back to 0 — the protocol default
-        // moved to 200 (2%) once `create_market` started seeding a safe
-        // `FeeConfig::default()`, but existing tests in this suite
-        // were authored against a zero buffer (their LTV math is
-        // calibrated against the bare oracle minimum). Holding the
-        // buffer at 0 here avoids re-tuning every LTV-sensitive case.
-        let params = CreateMarketParams {
-            ltv_buffer_bps: Some(0),
-            ..CreateMarketParams::default()
-        };
+        let params = CreateMarketParams::default();
         let ixs = create_market_instructions(
             &self.market.pubkey(),
             &self.debt_mint.pubkey(),

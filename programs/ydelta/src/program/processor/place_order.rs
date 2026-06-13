@@ -162,7 +162,6 @@ pub fn process_place_order(
                 collateral_oracle_price_fp48,
                 debt_liability_weight_init_fp48,
                 collateral_asset_weight_init_fp48,
-                enforce_ltv: true,
                 ask_floor_rate_bps,
             },
             vault_account,

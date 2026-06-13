@@ -1,6 +1,8 @@
 //! LTV math used at match time and liquidation time. Computes the
-//! quote-collateral needed to back a borrow and gates liquidation on
-//! `collateral < required_at_maint_weights`.
+//! quote-collateral needed to back a borrow. v1 D17: Fixed loans gate
+//! origination on the sub-vault's `max_ltv_bps` and liquidation on the
+//! loan's stamped `liquidation_ltv_bps`; marginfi weights gate only the
+//! P2Pool paths (fallback origination, P2Pool liquidation health).
 
 use solana_program::{
     account_info::AccountInfo, clock::Clock, program_error::ProgramError, pubkey::Pubkey,
@@ -25,17 +27,16 @@ fn pow10_u128(exp: u32) -> Result<u128, ProgramError> {
 }
 
 /// Computes the collateral (in collateral atoms) required to back
-/// `debt_atoms_traded` at the supplied prices and weights, applying an
-/// optional bps top-up buffer and normalizing across mint-decimal
-/// differences. Returns `u64::MAX` (fail-closed) when any input is zero
-/// so callers compare it as "always under-collateralized".
+/// `debt_atoms_traded` at the supplied prices and weights, normalizing
+/// across mint-decimal differences. Returns `u64::MAX` (fail-closed)
+/// when any input is zero so callers compare it as "always
+/// under-collateralized".
 pub fn get_required_quote_collateral_to_back_debt(
     debt_atoms_traded: u64,
     debt_price_fp48: crate::math::Fp48,
     coll_price_fp48: crate::math::Fp48,
     liability_weight_init_fp48: crate::math::Fp48,
     coll_asset_weight_init_fp48: crate::math::Fp48,
-    ltv_buffer_bps: u16,
     debt_mint_decimals: u8,
     collateral_mint_decimals: u8,
 ) -> Result<u64, ProgramError> {
@@ -52,24 +53,9 @@ pub fn get_required_quote_collateral_to_back_debt(
     let num1 = debt_atoms_fp48.checked_mul(debt_price_fp48)?;
     let num2 = num1.checked_mul(liability_weight_init_fp48)?;
 
-    let buffered = if ltv_buffer_bps > 0 {
-        let buf_factor = 10_000u128
-            .checked_add(ltv_buffer_bps as u128)
-            .ok_or(crate::program::YdeltaError::MathOverflow)?;
-        // num2 fp48 × buf_factor / 10_000, preserving fp48 scale.
-        crate::math::Fp48::from_raw(crate::math::mul_div(
-            num2.raw(),
-            buf_factor,
-            10_000u128,
-            false,
-        )?)
-    } else {
-        num2
-    };
-
     let denom = coll_price_fp48.checked_mul(coll_asset_weight_init_fp48)?;
 
-    let result_fp48 = buffered.checked_div(denom)?;
+    let result_fp48 = num2.checked_div(denom)?;
 
     let normalized_fp48: u128 = if collateral_mint_decimals >= debt_mint_decimals {
         let factor = pow10_u128((collateral_mint_decimals - debt_mint_decimals) as u32)?;
@@ -84,6 +70,33 @@ pub fn get_required_quote_collateral_to_back_debt(
         return Ok(u64::MAX);
     }
     Ok(atoms_u128 as u64)
+}
+
+/// Collateral required so the position's LTV stays at or under
+/// `ltv_cap_bps` at the supplied oracle prices (v1 D17: the sub-vault
+/// cap is the only origination gate, and the stamped liquidation cap is
+/// the only Fixed-loan liquidation gate). Implemented by feeding the cap
+/// in as the collateral weight with a unit liability weight:
+/// `required = debt_value / (cap × coll_price)`. Returns `u64::MAX`
+/// (fail-closed) on a zero cap or degenerate price.
+pub fn required_collateral_at_ltv_cap(
+    debt_atoms_traded: u64,
+    debt_price_fp48: crate::math::Fp48,
+    coll_price_fp48: crate::math::Fp48,
+    ltv_cap_bps: u16,
+    debt_mint_decimals: u8,
+    collateral_mint_decimals: u8,
+) -> Result<u64, ProgramError> {
+    let cap_weight_fp48 = crate::math::to_scaled(ltv_cap_bps as u128)? / 10_000u128;
+    get_required_quote_collateral_to_back_debt(
+        debt_atoms_traded,
+        debt_price_fp48,
+        coll_price_fp48,
+        crate::math::Fp48::ONE,
+        crate::math::Fp48::from_raw(cap_weight_fp48),
+        debt_mint_decimals,
+        collateral_mint_decimals,
+    )
 }
 
 /// Reads the borrower's marginfi liability-share count against
@@ -140,14 +153,19 @@ pub fn loan_live_outstanding_atoms(
     }
 }
 
-/// Gates LTV-based liquidation. Reads oracle prices and maintenance
-/// weights from the supplied account infos, computes required collateral
-/// at maint weights, and errors with `LoanStillSolvent` when the loan's
-/// `collateral >= required`. Rejects degenerate oracles up-front via
-/// `OracleDegenerate` so a zero feed can never auto-liquidate a healthy
-/// loan.
+/// Gates LTV-based liquidation (v1 D17 / §5.6). For **Fixed** loans the
+/// threshold is the loan's STAMPED `liquidation_ltv_bps` — curator
+/// updates never move thresholds on open loans, and marginfi maint
+/// weights are not consulted. **P2Pool** loans keep marginfi-derived
+/// health (their liability genuinely lives on marginfi): required
+/// collateral at maint weights. Either way, errors with
+/// `LoanStillSolvent` when `collateral >= required`, and rejects
+/// degenerate oracles up-front via `OracleDegenerate` so a zero feed can
+/// never auto-liquidate a healthy loan.
 #[allow(clippy::too_many_arguments)]
 pub fn assert_ltv_breach<'info>(
+    loan_type: LoanType,
+    stamped_liquidation_ltv_bps: u16,
     outstanding_atoms: u64,
     collateral_atoms: u64,
     debt_bank_ai: &AccountInfo<'info>,
@@ -173,42 +191,71 @@ pub fn assert_ltv_breach<'info>(
         crate::math::Fp48::from_raw(MarginfiV18Adapter.oracle_price(debt_oracle_args)?);
     let collateral_price_fp48 =
         crate::math::Fp48::from_raw(MarginfiV18Adapter.oracle_price(collateral_oracle_args)?);
-    let (_debt_asset_weight_maint, debt_liability_weight_maint_raw) =
-        MarginfiV18Adapter.maint_weight(&[debt_bank_ai.clone()])?;
-    let debt_liability_weight_maint = crate::math::Fp48::from_raw(debt_liability_weight_maint_raw);
-    let (collateral_asset_weight_maint_raw, _) =
-        MarginfiV18Adapter.maint_weight(&[collateral_bank_ai.clone()])?;
-    let collateral_asset_weight_maint = crate::math::Fp48::from_raw(collateral_asset_weight_maint_raw);
-
     require!(
-        !collateral_price_fp48.is_zero()
-            && !collateral_asset_weight_maint.is_zero()
-            && !debt_price_fp48.is_zero()
-            && !debt_liability_weight_maint.is_zero(),
+        !collateral_price_fp48.is_zero() && !debt_price_fp48.is_zero(),
         YdeltaError::OracleDegenerate,
-        "degenerate oracle/weight (debt_price={}, liab_weight={}, \
-         coll_price={}, coll_weight={}) — refusing to evaluate the \
-         liquidation gate; cannot prove a breach",
+        "degenerate oracle (debt_price={}, coll_price={}) — refusing to \
+         evaluate the liquidation gate; cannot prove a breach",
         debt_price_fp48.raw(),
-        debt_liability_weight_maint.raw(),
-        collateral_price_fp48.raw(),
-        collateral_asset_weight_maint.raw()
+        collateral_price_fp48.raw()
     )?;
 
-    let required_collateral_atoms = get_required_quote_collateral_to_back_debt(
-        outstanding_atoms,
-        debt_price_fp48,
-        collateral_price_fp48,
-        debt_liability_weight_maint,
-        collateral_asset_weight_maint,
-        0,
-        debt_mint_decimals,
-        collateral_mint_decimals,
-    )?;
+    let required_collateral_atoms = match loan_type {
+        LoanType::Fixed => {
+            // Stamped-cap gate: every v1 Fixed loan is sub-vault-lent and
+            // carries a non-zero stamp (liq ≥ max_ltv + MIN_LIQ_GAP_BPS).
+            // A zero stamp is state corruption — refuse to evaluate
+            // rather than fall back to a threshold the lender never set.
+            require!(
+                stamped_liquidation_ltv_bps > 0,
+                YdeltaError::InvalidArgument,
+                "fixed loan has no stamped liquidation_ltv_bps — refusing \
+                 to evaluate the liquidation gate"
+            )?;
+            required_collateral_at_ltv_cap(
+                outstanding_atoms,
+                debt_price_fp48,
+                collateral_price_fp48,
+                stamped_liquidation_ltv_bps,
+                debt_mint_decimals,
+                collateral_mint_decimals,
+            )?
+        }
+        LoanType::P2Pool => {
+            let (_debt_asset_weight_maint, debt_liability_weight_maint_raw) =
+                MarginfiV18Adapter.maint_weight(&[debt_bank_ai.clone()])?;
+            let debt_liability_weight_maint =
+                crate::math::Fp48::from_raw(debt_liability_weight_maint_raw);
+            let (collateral_asset_weight_maint_raw, _) =
+                MarginfiV18Adapter.maint_weight(&[collateral_bank_ai.clone()])?;
+            let collateral_asset_weight_maint =
+                crate::math::Fp48::from_raw(collateral_asset_weight_maint_raw);
+            require!(
+                !collateral_asset_weight_maint.is_zero()
+                    && !debt_liability_weight_maint.is_zero(),
+                YdeltaError::OracleDegenerate,
+                "degenerate maint weight (liab_weight={}, coll_weight={}) — \
+                 refusing to evaluate the liquidation gate; cannot prove a \
+                 breach",
+                debt_liability_weight_maint.raw(),
+                collateral_asset_weight_maint.raw()
+            )?;
+            get_required_quote_collateral_to_back_debt(
+                outstanding_atoms,
+                debt_price_fp48,
+                collateral_price_fp48,
+                debt_liability_weight_maint,
+                collateral_asset_weight_maint,
+                debt_mint_decimals,
+                collateral_mint_decimals,
+            )?
+        }
+    };
     require!(
         collateral_atoms < required_collateral_atoms,
         YdeltaError::LoanStillSolvent,
-        "collateral {} >= required {} at maint weights — loan still solvent",
+        "collateral {} >= required {} at the liquidation threshold — loan \
+         still solvent",
         collateral_atoms,
         required_collateral_atoms
     )
@@ -258,7 +305,6 @@ mod tests {
         coll_price_fp48: crate::math::Fp48,
         liab_weight_fp48: crate::math::Fp48,
         coll_weight_fp48: crate::math::Fp48,
-        ltv_buffer_bps: u16,
     ) -> Result<u64, ProgramError> {
         get_required_quote_collateral_to_back_debt(
             debt_atoms,
@@ -266,7 +312,6 @@ mod tests {
             coll_price_fp48,
             liab_weight_fp48,
             coll_weight_fp48,
-            ltv_buffer_bps,
             6,
             6,
         )
@@ -274,66 +319,74 @@ mod tests {
 
     #[test]
     fn unit_prices_unit_weights_no_buffer() {
-        let r = req(1_000_000, fp48(1), fp48(1), fp48(1), fp48(1), 0).unwrap();
+        let r = req(1_000_000, fp48(1), fp48(1), fp48(1), fp48(1)).unwrap();
         assert_eq!(r, 1_000_000);
     }
 
     #[test]
     fn liability_weight_inflates_required() {
-        let r = req(1_000_000, fp48(1), fp48(1), fp48_div(125, 100), fp48(1), 0).unwrap();
+        let r = req(1_000_000, fp48(1), fp48(1), fp48_div(125, 100), fp48(1)).unwrap();
         assert_eq!(r, 1_250_000);
     }
 
     #[test]
     fn collateral_weight_below_one_inflates_required() {
-        let r = req(1_000_000, fp48(1), fp48(1), fp48(1), fp48_div(8, 10), 0).unwrap();
+        let r = req(1_000_000, fp48(1), fp48(1), fp48(1), fp48_div(8, 10)).unwrap();
         assert_eq!(r, 1_250_001);
     }
 
     #[test]
-    fn ltv_buffer_adds_top_up() {
-        let bare = req(1_000_000, fp48(1), fp48(1), fp48(1), fp48(1), 0).unwrap();
-        let buffered = req(1_000_000, fp48(1), fp48(1), fp48(1), fp48(1), 200).unwrap();
-        assert_eq!(bare, 1_000_000);
-        assert_eq!(buffered, 1_020_000);
+    fn ltv_cap_helper_requires_inverse_of_cap() {
+        // 80% cap at unit prices: $1 of debt needs 1/0.8 = 1.25
+        // collateral. The bps→fp48 cap weight floors just under 0.8, so
+        // the requirement ceils to 1_250_001 (same as a bare 0.8 coll
+        // weight — see `collateral_weight_below_one_inflates_required`).
+        let r = required_collateral_at_ltv_cap(1_000_000, fp48(1), fp48(1), 8_000, 6, 6).unwrap();
+        assert_eq!(r, 1_250_001);
+        // 100% cap degenerates to exactly the debt value (weight == ONE).
+        let r = required_collateral_at_ltv_cap(1_000_000, fp48(1), fp48(1), 10_000, 6, 6).unwrap();
+        assert_eq!(r, 1_000_000);
+        // Zero cap fails closed.
+        let r = required_collateral_at_ltv_cap(1_000_000, fp48(1), fp48(1), 0, 6, 6).unwrap();
+        assert_eq!(r, u64::MAX);
     }
 
     #[test]
     fn debt_more_expensive_than_collateral_inflates_required() {
-        let r = req(1_000, fp48(100), fp48(1), fp48(1), fp48(1), 0).unwrap();
+        let r = req(1_000, fp48(100), fp48(1), fp48(1), fp48(1)).unwrap();
         assert_eq!(r, 100_000);
     }
 
     #[test]
     fn required_collateral_rounds_up_not_down() {
-        let r = req(1, fp48(1), fp48(3), fp48(1), fp48(1), 0).unwrap();
+        let r = req(1, fp48(1), fp48(3), fp48(1), fp48(1)).unwrap();
         assert_eq!(
             r, 1,
             "fractional required-collateral must ceil to 1, not floor to 0"
         );
 
-        let r2 = req(10, fp48(1), fp48(3), fp48(1), fp48(1), 0).unwrap();
+        let r2 = req(10, fp48(1), fp48(3), fp48(1), fp48(1)).unwrap();
         assert_eq!(r2, 4, "10/3 required collateral must ceil to 4");
 
-        let exact = req(9, fp48(1), fp48(3), fp48(1), fp48(1), 0).unwrap();
+        let exact = req(9, fp48(1), fp48(3), fp48(1), fp48(1)).unwrap();
         assert_eq!(exact, 3, "9/3 is exact — ceil leaves it at 3");
     }
 
     #[test]
     fn zero_collateral_price_returns_u64_max() {
-        let r = req(1_000, fp48(1), crate::math::Fp48::ZERO, fp48(1), fp48(1), 0).unwrap();
+        let r = req(1_000, fp48(1), crate::math::Fp48::ZERO, fp48(1), fp48(1)).unwrap();
         assert_eq!(r, u64::MAX);
     }
 
     #[test]
     fn zero_collateral_weight_returns_u64_max() {
-        let r = req(1_000, fp48(1), fp48(1), fp48(1), crate::math::Fp48::ZERO, 0).unwrap();
+        let r = req(1_000, fp48(1), fp48(1), fp48(1), crate::math::Fp48::ZERO).unwrap();
         assert_eq!(r, u64::MAX);
     }
 
     #[test]
     fn zero_debt_price_returns_u64_max_not_zero() {
-        let r = req(1_000_000, crate::math::Fp48::ZERO, fp48(1), fp48(1), fp48(1), 0).unwrap();
+        let r = req(1_000_000, crate::math::Fp48::ZERO, fp48(1), fp48(1), fp48(1)).unwrap();
         assert_eq!(
             r,
             u64::MAX,
@@ -343,7 +396,7 @@ mod tests {
 
     #[test]
     fn zero_liability_weight_returns_u64_max_not_zero() {
-        let r = req(1_000_000, fp48(1), fp48(1), crate::math::Fp48::ZERO, fp48(1), 0).unwrap();
+        let r = req(1_000_000, fp48(1), fp48(1), crate::math::Fp48::ZERO, fp48(1)).unwrap();
         assert_eq!(
             r,
             u64::MAX,
@@ -359,7 +412,6 @@ mod tests {
             crate::math::Fp48::ZERO,
             crate::math::Fp48::ZERO,
             crate::math::Fp48::ZERO,
-            0,
         )
         .unwrap();
         assert_eq!(r, u64::MAX);
@@ -377,7 +429,6 @@ mod tests {
             sol_price,
             fp48(1),
             fp48(1),
-            0,
             6,
             6,
         )
@@ -391,7 +442,6 @@ mod tests {
             sol_price,
             fp48(1),
             fp48(1),
-            0,
             6,
             9,
         )
@@ -415,7 +465,6 @@ mod tests {
             fp48(1),
             fp48(1),
             fp48(1),
-            0,
             9,
             6,
         )
@@ -435,7 +484,6 @@ mod tests {
                 fp48(1),
                 fp48(1),
                 fp48(1),
-                0,
                 dec,
                 dec,
             )
@@ -452,7 +500,6 @@ mod tests {
             fp48(3),
             fp48(1),
             fp48(1),
-            0,
             6,
             9,
         )
@@ -467,7 +514,7 @@ mod tests {
     fn degenerate_oracle_required_is_not_a_safe_liquidation_sentinel() {
         let solvent_collateral: u64 = 1_000_000;
 
-        let healthy_required = req(1_000_000, fp48(1), fp48(1), fp48(1), fp48(1), 0).unwrap();
+        let healthy_required = req(1_000_000, fp48(1), fp48(1), fp48(1), fp48(1)).unwrap();
         assert!(solvent_collateral >= healthy_required);
         assert!(
             !(solvent_collateral < healthy_required),
@@ -475,7 +522,7 @@ mod tests {
         );
 
         let degenerate_required =
-            req(1_000_000, fp48(1), fp48(1), fp48(1), crate::math::Fp48::ZERO, 0).unwrap();
+            req(1_000_000, fp48(1), fp48(1), fp48(1), crate::math::Fp48::ZERO).unwrap();
         assert_eq!(degenerate_required, u64::MAX);
         assert!(
             solvent_collateral < degenerate_required,

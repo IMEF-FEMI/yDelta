@@ -105,10 +105,10 @@ pub fn process_match_crank(
             })?;
             continue;
         }
-        // Per-ask sub-vault policy reads (cap + fee + curator for the
-        // D9 self-cross skip); sunset/idle are re-checked live inside
-        // the engine.
-        let (max_ltv_bps, curator_fee_bps, ask_curator): (u16, u16, Pubkey) = {
+        // Per-ask sub-vault policy reads (LTV pair + fee + curator for
+        // the D9 self-cross skip); sunset/idle are re-checked live
+        // inside the engine.
+        let (max_ltv_bps, liquidation_ltv_bps, curator_fee_bps, ask_curator): (u16, u16, u16, Pubkey) = {
             let vault_data = vault.info.try_borrow_data()?;
             let (fixed_bytes, vault_dyn) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
             let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
@@ -119,7 +119,7 @@ pub fn process_match_crank(
                 continue;
             }
             let p = get_helper_sub_vault(vault_dyn, idx).get_value();
-            (p.max_ltv_bps, p.curator_fee_bps, p.curator)
+            (p.max_ltv_bps, p.liquidation_ltv_bps, p.curator_fee_bps, p.curator)
         };
 
         let res = take_resting_bids(
@@ -137,6 +137,7 @@ pub fn process_match_crank(
             curator_fee_bps,
             ask_curator,
             max_ltv_bps,
+            liquidation_ltv_bps,
             now,
             budget,
         )?;

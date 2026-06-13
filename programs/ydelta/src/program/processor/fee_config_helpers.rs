@@ -42,7 +42,6 @@ pub fn validate_fee_config_overrides(params: &FeeConfigOverrides) -> ProgramResu
     check_bps(params.curator_split_bps)?;
     check_bps(params.liquidation_keeper_bps)?;
     check_bps(params.liquidation_protocol_bps)?;
-    check_bps(params.ltv_buffer_bps)?;
 
     if let Some(v) = params.liquidation_keeper_bps {
         require!(
@@ -84,9 +83,6 @@ pub fn apply_fee_config_overrides(target: &mut FeeConfig, params: &FeeConfigOver
     }
     if let Some(v) = params.liquidation_protocol_bps {
         target.liquidation_protocol_bps = v;
-    }
-    if let Some(v) = params.ltv_buffer_bps {
-        target.ltv_buffer_bps = v;
     }
     if let Some(v) = params.grace_period_seconds {
         target.grace_period_seconds = v;

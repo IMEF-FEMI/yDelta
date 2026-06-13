@@ -177,21 +177,20 @@ pub fn process_convert_p2pool_to_fixed(
         MarginfiV18Adapter.init_weight(&[collateral_bank.info.clone()])?;
     let collateral_asset_weight_init_fp48 =
         crate::math::Fp48::from_raw(collateral_asset_weight_init_raw);
-    let (ltv_buffer_bps, debt_mint_decimals, collateral_mint_decimals): (u16, u8, u8) = {
+    let (debt_mint_decimals, collateral_mint_decimals): (u8, u8) = {
         let m = market.get_fixed()?;
-        (
-            m.fee_config.ltv_buffer_bps,
-            m.debt_mint_decimals,
-            m.collateral_mint_decimals,
-        )
+        (m.debt_mint_decimals, m.collateral_mint_decimals)
     };
+    // v1 D17: marginfi init weights gate only marginfi-backed positions.
+    // The source P2Pool loan IS one, so its health is checked here before
+    // the refinance scan; per-cross gating inside the engine is against
+    // each ask's sub-vault cap.
     let required_collateral = get_required_quote_collateral_to_back_debt(
         live_outstanding_atoms,
         debt_oracle_price_fp48,
         collateral_oracle_price_fp48,
         debt_liability_weight_init_fp48,
         collateral_asset_weight_init_fp48,
-        ltv_buffer_bps,
         debt_mint_decimals,
         collateral_mint_decimals,
     )?;
@@ -237,14 +236,12 @@ pub fn process_convert_p2pool_to_fixed(
                 max_acceptable_rate_bps: params.max_acceptable_rate_bps,
                 fee_floor_bps,
                 now_unix_ts,
-                // Per-cross LTV-gate inputs — the same oracle
-                // prices / init weights / decimals already snapshotted
-                // for the aggregate market-level check above.
+                // Per-cross LTV-gate inputs — the same oracle prices /
+                // decimals already snapshotted for the marginfi-side
+                // health check above (v1 D17: per-cross gating is
+                // sub-vault-cap-only).
                 debt_oracle_price_fp48,
                 collateral_oracle_price_fp48,
-                debt_liability_weight_init_fp48,
-                collateral_asset_weight_init_fp48,
-                ltv_buffer_bps,
                 debt_mint_decimals,
                 collateral_mint_decimals,
                 ask_floor_rate_bps,
