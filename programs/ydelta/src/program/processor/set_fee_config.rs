@@ -37,8 +37,6 @@ pub struct SetFeeConfigParams {
     pub liquidation_keeper_bps: Option<u16>,
     /// Liquidation share in bps of repaid principal that accrues to protocol.
     pub liquidation_protocol_bps: Option<u16>,
-    /// Extra LTV buffer in bps subtracted from the auto-LTV ceiling.
-    pub ltv_buffer_bps: Option<u16>,
     /// Grace period in seconds applied after maturity before settle is allowed.
     pub grace_period_seconds: Option<u32>,
 }

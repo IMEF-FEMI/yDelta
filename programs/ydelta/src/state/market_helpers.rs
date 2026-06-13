@@ -362,21 +362,12 @@ pub struct MatchArgs {
     /// nodes.
     pub taker_share_price_snapshot_fp48: crate::math::Fp48,
 
-    /// Debt-side oracle price for LTV gating.
+    /// Debt-side oracle price for LTV gating (v1 D17: against the
+    /// per-ask sub-vault `max_ltv_bps` cap only).
     pub debt_oracle_price_fp48: crate::math::Fp48,
 
     /// Collateral-side oracle price for LTV gating.
     pub collateral_oracle_price_fp48: crate::math::Fp48,
-
-    /// Marginfi `liability_weight_init` for the debt bank.
-    pub debt_liability_weight_init_fp48: crate::math::Fp48,
-
-    /// Marginfi `asset_weight_init` for the collateral bank.
-    pub collateral_asset_weight_init_fp48: crate::math::Fp48,
-
-    /// When `true`, gate each fill on the LTV requirement; otherwise
-    /// match without an oracle check.
-    pub enforce_ltv: bool,
 
     /// Live marginfi lending APR in bps (ceil), computed once per ix by
     /// the processor. Asks whose stored rate is below this are skipped
@@ -499,6 +490,7 @@ pub fn match_order(
         let sub_vault_id: u16;
 
         let mut profile_max_ltv_bps: u16 = 0;
+        let mut profile_liquidation_ltv_bps: u16 = 0;
         let mut profile_max_term_seconds: u32 = 0;
         let mut profile_curator_fee_bps: u16 = 0;
         let mut profile_curator: Pubkey = Pubkey::default();
@@ -535,6 +527,7 @@ pub fn match_order(
                         0
                     } else {
                         profile_max_ltv_bps = p.max_ltv_bps;
+                        profile_liquidation_ltv_bps = p.liquidation_ltv_bps;
                         profile_max_term_seconds = p.max_term_seconds;
                         profile_curator_fee_bps = p.curator_fee_bps;
                         profile_curator = p.curator;
@@ -581,50 +574,23 @@ pub fn match_order(
             .checked_add(matched_collateral_maker)
             .ok_or(ProgramError::ArithmeticOverflow)?;
 
-        if args.enforce_ltv {
-            let required_collateral =
-                crate::state::ltv::get_required_quote_collateral_to_back_debt(
-                    matched_principal,
-                    args.debt_oracle_price_fp48,
-                    args.collateral_oracle_price_fp48,
-                    args.debt_liability_weight_init_fp48,
-                    args.collateral_asset_weight_init_fp48,
-                    fixed.fee_config.ltv_buffer_bps,
-                    fixed.debt_mint_decimals,
-                    fixed.collateral_mint_decimals,
-                )?;
-            require!(
-                total_collateral_for_match >= required_collateral,
-                YdeltaError::CollateralBelowMatchLTV,
-                "matched collateral {} < required {} at oracle prices",
-                total_collateral_for_match,
-                required_collateral
+        // v1 D17: the sub-vault's `max_ltv_bps` is the ONLY origination
+        // gate — marginfi weights no longer constrain fixed fills. The
+        // cap is per-ask policy, not a property of the bid: a stricter
+        // profile skips and the scan walks on to asks whose cap the
+        // bid's collateral does satisfy. A zero cap fails closed (skip).
+        {
+            let required_at_profile_cap = crate::state::ltv::required_collateral_at_ltv_cap(
+                matched_principal,
+                args.debt_oracle_price_fp48,
+                args.collateral_oracle_price_fp48,
+                profile_max_ltv_bps,
+                fixed.debt_mint_decimals,
+                fixed.collateral_mint_decimals,
             )?;
-
-            // Stored cap only — the marginfi-auto sentinel was removed
-            // (v1 D17): the curator's cap is the lender-side LTV policy.
-            if profile_max_ltv_bps > 0 {
-                let collateral_asset_weight_fp48 =
-                    crate::math::to_scaled(profile_max_ltv_bps as u128)?
-                        / 10_000u128;
-                let required_at_profile_cap =
-                    crate::state::ltv::get_required_quote_collateral_to_back_debt(
-                        matched_principal,
-                        args.debt_oracle_price_fp48,
-                        args.collateral_oracle_price_fp48,
-                        crate::math::Fp48::ONE,
-                        crate::math::Fp48::from_raw(collateral_asset_weight_fp48),
-                        0,
-                        fixed.debt_mint_decimals,
-                        fixed.collateral_mint_decimals,
-                    )?;
-                // The profile cap is per-ask policy, not a property of the
-                // bid: a stricter profile skips and the scan walks on to
-                // asks whose cap the bid's collateral does satisfy.
-                if total_collateral_for_match < required_at_profile_cap {
-                    current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
-                    continue;
-                }
+            if total_collateral_for_match < required_at_profile_cap {
+                current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+                continue;
             }
         }
 
@@ -701,6 +667,10 @@ pub fn match_order(
         // v1 D3b: the curator fee lives on the sub-vault, snapshotted at
         // match so later changes never touch open loans.
         node.curator_fee_bps_snapshot = profile_curator_fee_bps;
+        // v1 D17: stamp the sub-vault's LTV pair — curator updates never
+        // move thresholds on open loans.
+        node.origination_ltv_bps = profile_max_ltv_bps;
+        node.liquidation_ltv_bps = profile_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 = lender_debt_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 = borrower_collateral_snapshot;
         let node_index = get_free_address_on_market_fixed_for_matched_loan(fixed, dynamic);
@@ -975,13 +945,13 @@ pub struct PlaceOrderArgs {
     pub debt_oracle_price_fp48: crate::math::Fp48,
     /// Collateral oracle price.
     pub collateral_oracle_price_fp48: crate::math::Fp48,
-    /// Marginfi `liability_weight_init` for the debt bank.
+    /// Marginfi `liability_weight_init` for the debt bank — used ONLY by
+    /// the P2Pool-fallback pre-check (v1 D17: marginfi weights never gate
+    /// fixed fills).
     pub debt_liability_weight_init_fp48: crate::math::Fp48,
-    /// Marginfi `asset_weight_init` for the collateral bank.
+    /// Marginfi `asset_weight_init` for the collateral bank (fallback
+    /// pre-check only).
     pub collateral_asset_weight_init_fp48: crate::math::Fp48,
-
-    /// Gate match fills on the LTV requirement.
-    pub enforce_ltv: bool,
 
     /// Live marginfi lending APR in bps (ceil) — the v1 D5 ask floor.
     pub ask_floor_rate_bps: u16,
@@ -1118,9 +1088,6 @@ pub fn match_borrower_bid(
             taker_share_price_snapshot_fp48: snapshot,
             debt_oracle_price_fp48: args.debt_oracle_price_fp48,
             collateral_oracle_price_fp48: args.collateral_oracle_price_fp48,
-            debt_liability_weight_init_fp48: args.debt_liability_weight_init_fp48,
-            collateral_asset_weight_init_fp48: args.collateral_asset_weight_init_fp48,
-            enforce_ltv: args.enforce_ltv,
             ask_floor_rate_bps: args.ask_floor_rate_bps,
         },
         vault_ai,
@@ -1147,6 +1114,30 @@ pub fn match_borrower_bid(
         match_result.remaining_principal > 0,
     ) {
         (ResidualAction::P2PoolBorrow, true) => {
+            // v1 D17: the fallback opens a REAL marginfi borrow, so
+            // marginfi's init weights gate it (and only it). Pre-check
+            // here for a clean error instead of an opaque CPI health
+            // failure deep in the borrow.
+            {
+                let required_collateral =
+                    crate::state::ltv::get_required_quote_collateral_to_back_debt(
+                        match_result.remaining_principal,
+                        args.debt_oracle_price_fp48,
+                        args.collateral_oracle_price_fp48,
+                        args.debt_liability_weight_init_fp48,
+                        args.collateral_asset_weight_init_fp48,
+                        fixed.debt_mint_decimals,
+                        fixed.collateral_mint_decimals,
+                    )?;
+                require!(
+                    match_result.remaining_collateral >= required_collateral,
+                    YdeltaError::FallbackLtvInsufficient,
+                    "P2Pool fallback: residual collateral {} < required {} \
+                     at marginfi init weights",
+                    match_result.remaining_collateral,
+                    required_collateral
+                )?;
+            }
             {
                 let seat = get_mut_helper_seat(dynamic, args.taker_seat_index).get_mut_value();
                 seat.open_borrow_count = seat
@@ -1537,20 +1528,12 @@ pub struct MatchP2PoolRefinanceArgs {
     /// Now-timestamp.
     pub now_unix_ts: i64,
 
-    /// Debt oracle price.
+    /// Debt oracle price (v1 D17: per-cross gating is against the
+    /// per-ask sub-vault `max_ltv_bps` cap only).
     pub debt_oracle_price_fp48: crate::math::Fp48,
 
     /// Collateral oracle price.
     pub collateral_oracle_price_fp48: crate::math::Fp48,
-
-    /// Marginfi `liability_weight_init` for the debt bank.
-    pub debt_liability_weight_init_fp48: crate::math::Fp48,
-
-    /// Marginfi `asset_weight_init` for the collateral bank.
-    pub collateral_asset_weight_init_fp48: crate::math::Fp48,
-
-    /// LTV top-up buffer in bps.
-    pub ltv_buffer_bps: u16,
 
     /// Debt mint decimals.
     pub debt_mint_decimals: u8,
@@ -1652,6 +1635,7 @@ pub fn match_p2pool_residual_against_asks(
         let lender_sub_vault_id: u16;
 
         let mut profile_max_ltv_bps: u16 = 0;
+        let mut profile_liquidation_ltv_bps: u16 = 0;
         let mut profile_curator_fee_bps: u16 = 0;
         let mut profile_curator: Pubkey = Pubkey::default();
         {
@@ -1687,6 +1671,7 @@ pub fn match_p2pool_residual_against_asks(
                         0
                     } else {
                         profile_max_ltv_bps = p.max_ltv_bps;
+                        profile_liquidation_ltv_bps = p.liquidation_ltv_bps;
                         profile_curator_fee_bps = p.curator_fee_bps;
                         profile_curator = p.curator;
                         p.total_principal_atoms
@@ -1718,47 +1703,23 @@ pub fn match_p2pool_residual_against_asks(
                 args.principal_cap_atoms,
                 false,
             )?;
+            // v1 D17: the sub-vault's `max_ltv_bps` is the ONLY
+            // origination gate on the refinance cross (the marginfi-side
+            // health of the source P2Pool position is checked by the
+            // processor before the scan). Zero cap fails closed (skip).
             {
-                let required_collateral =
-                    crate::state::ltv::get_required_quote_collateral_to_back_debt(
+                let required_at_profile_cap =
+                    crate::state::ltv::required_collateral_at_ltv_cap(
                         matched_principal,
                         args.debt_oracle_price_fp48,
                         args.collateral_oracle_price_fp48,
-                        args.debt_liability_weight_init_fp48,
-                        args.collateral_asset_weight_init_fp48,
-                        args.ltv_buffer_bps,
+                        profile_max_ltv_bps,
                         args.debt_mint_decimals,
                         args.collateral_mint_decimals,
                     )?;
-                require!(
-                    matched_collateral_for_gate >= required_collateral,
-                    YdeltaError::CollateralBelowMatchLTV,
-                    "convert refinance: cross collateral {} < required {} \
-                     at oracle prices",
-                    matched_collateral_for_gate,
-                    required_collateral
-                )?;
-
-                // Stored cap only — marginfi-auto sentinel removed (v1 D17).
-                if profile_max_ltv_bps > 0 {
-                    let collateral_asset_weight_fp48 =
-                        crate::math::to_scaled(profile_max_ltv_bps as u128)?
-                            / 10_000u128;
-                    let required_at_profile_cap =
-                        crate::state::ltv::get_required_quote_collateral_to_back_debt(
-                            matched_principal,
-                            args.debt_oracle_price_fp48,
-                            args.collateral_oracle_price_fp48,
-                            crate::math::Fp48::ONE,
-                            crate::math::Fp48::from_raw(collateral_asset_weight_fp48),
-                            0,
-                            args.debt_mint_decimals,
-                            args.collateral_mint_decimals,
-                        )?;
-                    if matched_collateral_for_gate < required_at_profile_cap {
-                        current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
-                        continue;
-                    }
+                if matched_collateral_for_gate < required_at_profile_cap {
+                    current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
+                    continue;
                 }
             }
 
@@ -1824,6 +1785,9 @@ pub fn match_p2pool_residual_against_asks(
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_PRESETTLED
             | crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
         node.curator_fee_bps_snapshot = profile_curator_fee_bps;
+        // v1 D17: stamp the sub-vault's LTV pair.
+        node.origination_ltv_bps = profile_max_ltv_bps;
+        node.liquidation_ltv_bps = profile_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 = maker_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 =
             args.borrower_collateral_share_price_snapshot_fp48;
@@ -1915,8 +1879,12 @@ pub struct MatchRestingBidsArgs {
     pub ask_term_seconds: u32,
     /// Sub-vault's curator fee, stamped on each fill (v1 D3b).
     pub ask_curator_fee_bps: u16,
-    /// Sub-vault's origination LTV cap (v1 D17 single gate, phase 5).
+    /// Sub-vault's origination LTV cap — the ONLY origination gate
+    /// (v1 D17); stamped onto each fill as `origination_ltv_bps`.
     pub profile_max_ltv_bps: u16,
+    /// Sub-vault's liquidation threshold, stamped onto each fill (v1
+    /// D17: curator updates never move thresholds on open loans).
+    pub profile_liquidation_ltv_bps: u16,
     /// The taking sub-vault's curator — bids owned by the same wallet
     /// are skipped (v1 D9 owner-level self-cross).
     pub ask_curator: Pubkey,
@@ -1933,12 +1901,6 @@ pub struct MatchRestingBidsArgs {
     pub debt_oracle_price_fp48: crate::math::Fp48,
     /// Collateral oracle price.
     pub collateral_oracle_price_fp48: crate::math::Fp48,
-    /// Marginfi `liability_weight_init` for the debt bank.
-    pub debt_liability_weight_init_fp48: crate::math::Fp48,
-    /// Marginfi `asset_weight_init` for the collateral bank.
-    pub collateral_asset_weight_init_fp48: crate::math::Fp48,
-    /// Market LTV top-up buffer in bps.
-    pub ltv_buffer_bps: u16,
     /// Debt mint decimals.
     pub debt_mint_decimals: u8,
     /// Collateral mint decimals.
@@ -2072,42 +2034,22 @@ pub fn match_resting_bids(
             crate::math::mul_div_u64(bid.collateral_atoms, fill, bid.principal_atoms, false)?
         };
 
-        // LTV gates at live oracle prices — a failing bid is skipped
-        // (its collateral may satisfy a looser ask later).
+        // v1 D17: the sub-vault's `max_ltv_bps` is the ONLY origination
+        // gate, at live oracle prices — a failing bid is skipped (its
+        // collateral may satisfy a looser ask later). Zero cap fails
+        // closed (skip).
         {
-            let required_collateral =
-                crate::state::ltv::get_required_quote_collateral_to_back_debt(
-                    fill,
-                    args.debt_oracle_price_fp48,
-                    args.collateral_oracle_price_fp48,
-                    args.debt_liability_weight_init_fp48,
-                    args.collateral_asset_weight_init_fp48,
-                    args.ltv_buffer_bps,
-                    args.debt_mint_decimals,
-                    args.collateral_mint_decimals,
-                )?;
-            if consumed_collateral < required_collateral {
+            let required_at_profile_cap = crate::state::ltv::required_collateral_at_ltv_cap(
+                fill,
+                args.debt_oracle_price_fp48,
+                args.collateral_oracle_price_fp48,
+                args.profile_max_ltv_bps,
+                args.debt_mint_decimals,
+                args.collateral_mint_decimals,
+            )?;
+            if consumed_collateral < required_at_profile_cap {
                 current_bid_index = next_bid_index;
                 continue;
-            }
-            if args.profile_max_ltv_bps > 0 {
-                let collateral_asset_weight_fp48 =
-                    crate::math::to_scaled(args.profile_max_ltv_bps as u128)? / 10_000u128;
-                let required_at_profile_cap =
-                    crate::state::ltv::get_required_quote_collateral_to_back_debt(
-                        fill,
-                        args.debt_oracle_price_fp48,
-                        args.collateral_oracle_price_fp48,
-                        crate::math::Fp48::ONE,
-                        crate::math::Fp48::from_raw(collateral_asset_weight_fp48),
-                        0,
-                        args.debt_mint_decimals,
-                        args.collateral_mint_decimals,
-                    )?;
-                if consumed_collateral < required_at_profile_cap {
-                    current_bid_index = next_bid_index;
-                    continue;
-                }
             }
         }
 
@@ -2167,6 +2109,9 @@ pub fn match_resting_bids(
         node.loan_type = 0;
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
         node.curator_fee_bps_snapshot = args.ask_curator_fee_bps;
+        // v1 D17: stamp the sub-vault's LTV pair.
+        node.origination_ltv_bps = args.profile_max_ltv_bps;
+        node.liquidation_ltv_bps = args.profile_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 =
             args.lender_debt_share_price_snapshot_fp48;
         node.borrower_collateral_share_price_snapshot_fp48 = bid.share_price_snapshot();

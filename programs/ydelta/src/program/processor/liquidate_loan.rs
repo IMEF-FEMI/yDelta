@@ -102,7 +102,7 @@ pub fn process_liquidate_loan(
         )
     };
 
-    let (_, collateral_atoms, borrower_seat_index, loan_type) = {
+    let (_, collateral_atoms, borrower_seat_index, loan_type, stamped_liquidation_ltv_bps) = {
         let loan_data: &mut RefMut<&mut [u8]> = &mut loan.info.try_borrow_mut_data()?;
         let header: &mut LoanFixed = bytemuck::from_bytes_mut(&mut loan_data[..LOAN_FIXED_SIZE]);
         require!(
@@ -116,6 +116,7 @@ pub fn process_liquidate_loan(
             header.collateral_atoms,
             header.borrower_seat_index,
             header.loan_type()?,
+            header.liquidation_ltv_bps,
         )
     };
 
@@ -133,6 +134,8 @@ pub fn process_liquidate_loan(
     let collateral_oracle_args =
         crate::validation::oracle_price_args(collateral_bank.info, &collateral_oracle_ais);
     crate::state::ltv::assert_ltv_breach(
+        loan_type,
+        stamped_liquidation_ltv_bps,
         outstanding_live_atoms,
         collateral_atoms,
         debt_bank.info,
@@ -188,7 +191,6 @@ pub fn process_liquidate_loan(
         collateral_price_fp48,
         FP48_ONE,
         FP48_ONE,
-        0,
         debt_mint_decimals,
         collateral_mint_decimals,
     )?;

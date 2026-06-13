@@ -17,7 +17,6 @@ async fn admin_can_update_liquidation_keeper_bps() {
     // the admin. Build the ix with payer as signer.
     let mut params = SetFeeConfigParams::default();
     params.liquidation_keeper_bps = Some(750);
-    params.ltv_buffer_bps = Some(200);
 
     let ix = set_fee_config_instruction(&fixture.market.pubkey(), &fixture.payer.pubkey(), params);
     let kp = fixture.payer.insecure_clone();
@@ -25,7 +24,6 @@ async fn admin_can_update_liquidation_keeper_bps() {
 
     let market = fixture.read_market_fixed().await;
     assert_eq!(market.fee_config.liquidation_keeper_bps, 750);
-    assert_eq!(market.fee_config.ltv_buffer_bps, 200);
 }
 
 #[tokio::test]

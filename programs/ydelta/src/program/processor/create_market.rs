@@ -44,8 +44,6 @@ pub struct CreateMarketParams {
     pub liquidation_keeper_bps: Option<u16>,
     /// Protocol's share of liquidation proceeds, in bps of repaid debt.
     pub liquidation_protocol_bps: Option<u16>,
-    /// Safety margin baked into the match-time LTV gate, in bps.
-    pub ltv_buffer_bps: Option<u16>,
     /// Seconds past `matures_at` before settle/liquidation is permissionless.
     pub grace_period_seconds: Option<u32>,
 }
@@ -58,7 +56,6 @@ impl From<&CreateMarketParams> for crate::program::processor::set_fee_config::Se
             curator_split_bps: p.curator_split_bps,
             liquidation_keeper_bps: p.liquidation_keeper_bps,
             liquidation_protocol_bps: p.liquidation_protocol_bps,
-            ltv_buffer_bps: p.ltv_buffer_bps,
             grace_period_seconds: p.grace_period_seconds,
         }
     }

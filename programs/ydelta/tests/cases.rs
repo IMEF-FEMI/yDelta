@@ -52,6 +52,8 @@ mod cases {
     #[cfg(feature = "test-sbf")]
     mod ltv_at_match;
     #[cfg(feature = "test-sbf")]
+    mod ltv_decoupling;
+    #[cfg(feature = "test-sbf")]
     mod ob_only_flag;
     #[cfg(feature = "test-sbf")]
     mod oracle_price;

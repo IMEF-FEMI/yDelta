@@ -44,7 +44,7 @@ pub fn process_check_ltv_liquidatable(
         )
     };
 
-    let (collateral_atoms, outstanding_live_atoms): (u64, u64) = {
+    let (collateral_atoms, outstanding_live_atoms, loan_type, stamped_liquidation_ltv_bps) = {
         let loan_data = loan.info.try_borrow_data()?;
         let mut header: LoanFixed =
             *bytemuck::from_bytes::<LoanFixed>(&loan_data[..LOAN_FIXED_SIZE]);
@@ -59,13 +59,20 @@ pub fn process_check_ltv_liquidatable(
             borrower_marginfi_account.info,
             debt_bank.info,
         )?;
-        (header.collateral_atoms, outstanding)
+        (
+            header.collateral_atoms,
+            outstanding,
+            header.loan_type()?,
+            header.liquidation_ltv_bps,
+        )
     };
 
     let debt_oracle_args = crate::validation::oracle_price_args(debt_bank.info, &debt_oracle_ais);
     let collateral_oracle_args =
         crate::validation::oracle_price_args(collateral_bank.info, &collateral_oracle_ais);
     crate::state::ltv::assert_ltv_breach(
+        loan_type,
+        stamped_liquidation_ltv_bps,
         outstanding_live_atoms,
         collateral_atoms,
         debt_bank.info,
