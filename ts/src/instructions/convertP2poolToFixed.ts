@@ -49,7 +49,7 @@ export function convertP2poolToFixedInstruction(
   const borrowerMa = borrowerIntegrationAccountPda(args.market)[0];
   const marketSigner = marketSignerPda(args.market)[0];
   const marketDebtVault = marketTokenVaultPda(args.market, args.debtMint)[0];
-  const vault = globalVaultPda(args.debtMint)[0];
+  const vault = globalVaultPda(args.debtBank)[0];
   const vaultSigner = globalVaultSignerPda(vault)[0];
   const vaultIntegrationAccount = globalVaultIntegrationAccountPda(vault)[0];
 

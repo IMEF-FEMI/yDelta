@@ -21,7 +21,7 @@ import { InstructionTag } from './_tags.js';
 export interface ClaimCuratorFeeArgs {
   curator: PublicKey;
   mint: PublicKey;
-  profileId: number;
+  subVaultId: number;
   curatorToken: PublicKey;
   debtBank: PublicKey;
   liquidityVault: PublicKey;
@@ -36,13 +36,15 @@ export interface ClaimCuratorFeeArgs {
 export function claimCuratorFeeInstruction(
   args: ClaimCuratorFeeArgs,
 ): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  // v1: vaults are bank-keyed (`[b"vault", bank]`); `mint` is still passed
+  // as a readonly account for the marginfi withdraw path.
+  const vault = globalVaultPda(args.debtBank)[0];
   const signerPda = globalVaultSignerPda(vault)[0];
   const staging = globalVaultStagingPda(vault)[0];
   const integration = globalVaultIntegrationAccountPda(vault)[0];
   const data = new Writer()
     .u8(InstructionTag.ClaimCuratorFee)
-    .u8(args.profileId)
+    .u16(args.subVaultId)
     .toBuffer();
   const keys = [
     signerRw(args.curator),

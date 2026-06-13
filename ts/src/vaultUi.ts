@@ -1,18 +1,18 @@
 /**
  * Vault UI helpers — atoms-and-UI-units snapshots derived from a decoded
  * `GlobalVault`. Mirrors the lifecycle invariants in section 3 of the README:
- * a profile's principal decomposes into idle + deployed + encumbered, all of
+ * a sub-vault's principal decomposes into idle + deployed + encumbered, all of
  * which physically sit on marginfi and earn supply yield.
  */
 import { atomsToUi } from './conversions.js';
-import type { RiskProfile } from './accounts/riskProfile.js';
+import type { SubVault } from './accounts/subVault.js';
 import type { GlobalVault } from './accounts/vault.js';
 
-export interface ProfileBalances {
-  profileId: number;
+export interface SubVaultBalances {
+  subVaultId: number;
   /** Total principal contributed by depositors. */
   totalPrincipalAtoms: bigint;
-  /** Profile NAV — total_assets_atoms (principal + accrued yield). */
+  /** Sub-vault NAV — total_assets_atoms (principal + accrued yield). */
   totalAssetsAtoms: bigint;
   /** Currently lent out across all loans. */
   deployedPrincipalAtoms: bigint;
@@ -24,7 +24,7 @@ export interface ProfileBalances {
   accumulatedCuratorFeeAtoms: bigint;
 }
 
-export interface ProfileBalancesUi extends ProfileBalances {
+export interface SubVaultBalancesUi extends SubVaultBalances {
   totalPrincipalUi: number;
   totalAssetsUi: number;
   deployedPrincipalUi: number;
@@ -33,27 +33,27 @@ export interface ProfileBalancesUi extends ProfileBalances {
   accumulatedCuratorFeeUi: number;
 }
 
-/** Compute the idle / deployed / encumbered decomposition for one profile. */
-export function profileBalances(profile: RiskProfile): ProfileBalances {
+/** Compute the idle / deployed / encumbered decomposition for one sub-vault. */
+export function subVaultBalances(subVault: SubVault): SubVaultBalances {
   const idle =
-    profile.totalPrincipalAtoms >= profile.deployedPrincipalAtoms
-      ? profile.totalPrincipalAtoms - profile.deployedPrincipalAtoms
+    subVault.totalPrincipalAtoms >= subVault.deployedPrincipalAtoms
+      ? subVault.totalPrincipalAtoms - subVault.deployedPrincipalAtoms
       : 0n;
   return {
-    profileId: profile.profileId,
-    totalPrincipalAtoms: profile.totalPrincipalAtoms,
-    totalAssetsAtoms: profile.totalAssetsAtoms,
-    deployedPrincipalAtoms: profile.deployedPrincipalAtoms,
-    encumberedInOrdersAtoms: profile.encumberedInOrdersAtoms,
+    subVaultId: subVault.subVaultId,
+    totalPrincipalAtoms: subVault.totalPrincipalAtoms,
+    totalAssetsAtoms: subVault.totalAssetsAtoms,
+    deployedPrincipalAtoms: subVault.deployedPrincipalAtoms,
+    encumberedInOrdersAtoms: subVault.encumberedInOrdersAtoms,
     idleAtoms: idle,
-    totalShares: profile.totalShares,
-    accumulatedCuratorFeeAtoms: profile.accumulatedCuratorFeeAtoms,
+    totalShares: subVault.totalShares,
+    accumulatedCuratorFeeAtoms: subVault.accumulatedCuratorFeeAtoms,
   };
 }
 
-/** Same as `profileBalances` plus UI-float projections at the given mint decimals. */
-export function profileBalancesUi(profile: RiskProfile, decimals: number): ProfileBalancesUi {
-  const base = profileBalances(profile);
+/** Same as `subVaultBalances` plus UI-float projections at the given mint decimals. */
+export function subVaultBalancesUi(subVault: SubVault, decimals: number): SubVaultBalancesUi {
+  const base = subVaultBalances(subVault);
   return {
     ...base,
     totalPrincipalUi: atomsToUi(base.totalPrincipalAtoms, decimals),
@@ -66,7 +66,7 @@ export function profileBalancesUi(profile: RiskProfile, decimals: number): Profi
 }
 
 /**
- * Sum aggregates across every profile in the vault. The on-chain header
+ * Sum aggregates across every sub-vault in the vault. The on-chain header
  * intentionally carries NO mirrored running sums — see the doc-comment on
  * `GlobalVaultFixed` — so this is the canonical way to compute a vault-wide
  * total.
@@ -78,7 +78,7 @@ export interface VaultTotals {
   totalEncumberedAtoms: bigint;
   totalIdleAtoms: bigint;
   totalShares: bigint;
-  profileCount: number;
+  subVaultCount: number;
 }
 
 export function vaultTotals(vault: GlobalVault): VaultTotals {
@@ -88,8 +88,8 @@ export function vaultTotals(vault: GlobalVault): VaultTotals {
   let totalEncumberedAtoms = 0n;
   let totalIdleAtoms = 0n;
   let totalShares = 0n;
-  for (const { profile } of vault.riskProfiles) {
-    const b = profileBalances(profile);
+  for (const { subVault } of vault.subVaults) {
+    const b = subVaultBalances(subVault);
     totalPrincipalAtoms += b.totalPrincipalAtoms;
     totalAssetsAtoms += b.totalAssetsAtoms;
     totalDeployedAtoms += b.deployedPrincipalAtoms;
@@ -104,7 +104,7 @@ export function vaultTotals(vault: GlobalVault): VaultTotals {
     totalEncumberedAtoms,
     totalIdleAtoms,
     totalShares,
-    profileCount: vault.riskProfiles.length,
+    subVaultCount: vault.subVaults.length,
   };
 }
 

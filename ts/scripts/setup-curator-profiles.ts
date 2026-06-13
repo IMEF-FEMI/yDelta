@@ -1,15 +1,18 @@
 /**
- * setup-curator-profiles.ts — create N risk profiles in a vault, each
+ * setup-curator-profiles.ts — create N pool sub-vaults in a vault, each
  * bound to a curator from `.local/curators.json`.
  *
  * Reads:
  *   .local/setup-curator-profiles-input.json {
  *     mint: string,
- *     curatorLabel?: string,                 // default for all profiles
- *     profiles: [{
- *       curatorLabel?: string,               // overrides default per profile
+ *     curatorLabel?: string,                 // default for all sub-vaults
+ *     subVaults: [{
+ *       curatorLabel?: string,               // overrides default per sub-vault
+ *       spreadBps: number,
  *       maxLtvBps: number,
- *       maxTermSeconds: number
+ *       liquidationLtvBps: number,
+ *       maxTermSeconds: number,
+ *       curatorFeeBps: number
  *     }]
  *   }
  *   .local/vaults.json
@@ -18,35 +21,36 @@
  * Writes:
  *   .local/curator-setup.json {
  *     mint,
- *     profiles: [{
- *       profileId, curator, curatorLabel, maxLtvBps, maxTermSeconds, signature?
+ *     subVaults: [{
+ *       subVaultId, kind, curator, curatorLabel, spreadBps, maxLtvBps,
+ *       liquidationLtvBps, maxTermSeconds, curatorFeeBps, signature?
  *     }],
  *     createdAtUnix
  *   }
  *   .local/risk-profiles.json   (keyed by mint)
  *
- * ## profile_id is program-assigned
+ * ## sub_vault_id is program-assigned
  *
- * The on-chain `create_risk_profile` ix assigns `profile_id` from the
- * vault's monotonic `next_profile_id` counter — callers cannot request
- * a specific id. Input profiles therefore no longer specify `profileId`.
+ * The on-chain `create_pool_sub_vault` ix assigns `sub_vault_id` from the
+ * vault's monotonic `next_sub_vault_id` counter — callers cannot request
+ * a specific id. Input sub-vaults therefore no longer specify an id.
  * For each create the script:
- *   1. Reads the vault's live `next_profile_id` (pre-create snapshot).
- *   2. Sends `create_risk_profile`.
+ *   1. Reads the vault's live `next_sub_vault_id` (pre-create snapshot).
+ *   2. Sends `create_pool_sub_vault`.
  *   3. Records the snapshot as the assigned id.
  *
  * ## Idempotency
  *
  * Re-runs match input rows against already-recorded rows by the
- * (curatorLabel, maxLtvBps, maxTermSeconds) tuple. A row whose triple
- * matches an existing record is skipped — it's already on-chain. Rows
- * with new triples are created. This is intentionally **append-only**:
- * the input file is a "we want at least these profiles" declaration,
- * not a full reconciliation target.
+ * (curatorLabel, spreadBps, maxLtvBps, liquidationLtvBps, maxTermSeconds,
+ * curatorFeeBps) tuple. A row whose tuple matches an existing record is
+ * skipped — it's already on-chain. Rows with new tuples are created. This
+ * is intentionally **append-only**: the input file is a "we want at least
+ * these sub-vaults" declaration, not a full reconciliation target.
  */
 import { PublicKey } from '@solana/web3.js';
 
-import { createRiskProfileInstruction } from '../src/instructions/index.js';
+import { createPoolSubVaultInstruction } from '../src/instructions/index.js';
 import { decodeGlobalVaultHeader } from '../src/accounts/vault.js';
 import { globalVaultPda } from '../src/pdas.js';
 import {
@@ -59,64 +63,70 @@ import {
   sendIxs,
   writeJson,
 } from './_runner.js';
-import type { CuratorDump, ProfileDump, VaultDump } from './_types.js';
+import type { CuratorDump, SubVaultDump, VaultDump } from './_types.js';
 
-interface InputProfile {
+interface InputSubVault {
   curatorLabel?: string;
+  spreadBps: number;
   maxLtvBps: number;
+  liquidationLtvBps: number;
   maxTermSeconds: number;
+  curatorFeeBps: number;
 }
 
 interface Input {
   mint: string;
   curatorLabel?: string;
-  profiles: InputProfile[];
+  subVaults: InputSubVault[];
 }
 
-type CuratorSetupProfile = ProfileDump;
+type CuratorSetupSubVault = SubVaultDump;
 
 interface CuratorSetup {
   mint: string;
-  profiles: CuratorSetupProfile[];
+  subVaults: CuratorSetupSubVault[];
   createdAtUnix: number;
 }
 
-function resolveCuratorForProfile(
+function resolveCuratorForSubVault(
   curators: CuratorDump[],
   topLevelCuratorLabel: string | undefined,
-  profile: InputProfile,
+  subVault: InputSubVault,
   rowIndex: number,
 ): CuratorDump {
-  const label = profile.curatorLabel ?? topLevelCuratorLabel;
+  const label = subVault.curatorLabel ?? topLevelCuratorLabel;
   if (!label) {
     throw new Error(
-      `profiles[${rowIndex}]: missing curatorLabel. ` +
-        `Set it per profile or provide a top-level curatorLabel for single-curator setups.`,
+      `subVaults[${rowIndex}]: missing curatorLabel. ` +
+        `Set it per sub-vault or provide a top-level curatorLabel for single-curator setups.`,
     );
   }
   const curator = curators.find((c) => c.label === label);
   if (!curator) {
     throw new Error(
-      `curators.json: no curator with label ${label} for profiles[${rowIndex}]`,
+      `curators.json: no curator with label ${label} for subVaults[${rowIndex}]`,
     );
   }
   return curator;
 }
 
 function recordedMatches(
-  recorded: CuratorSetupProfile[],
-  wanted: Omit<CuratorSetupProfile, 'profileId' | 'signature'>,
-): CuratorSetupProfile | undefined {
+  recorded: CuratorSetupSubVault[],
+  wanted: Omit<CuratorSetupSubVault, 'subVaultId' | 'kind' | 'signature'>,
+): CuratorSetupSubVault | undefined {
   return recorded.find(
     (r) =>
       r.curatorLabel === wanted.curatorLabel &&
       r.curator === wanted.curator &&
+      r.spreadBps === wanted.spreadBps &&
       r.maxLtvBps === wanted.maxLtvBps &&
-      r.maxTermSeconds === wanted.maxTermSeconds,
+      r.liquidationLtvBps === wanted.liquidationLtvBps &&
+      r.maxTermSeconds === wanted.maxTermSeconds &&
+      r.curatorFeeBps === wanted.curatorFeeBps,
   );
 }
 
-async function readNextProfileId(
+async function readNextSubVaultId(
   conn: ReturnType<typeof loadConnection>,
   vaultPda: PublicKey,
 ): Promise<number> {
@@ -127,14 +137,15 @@ async function readNextProfileId(
     );
   }
   const header = decodeGlobalVaultHeader(info.data);
-  return header.nextProfileId;
+  return header.nextSubVaultId;
 }
 
 async function main(): Promise<void> {
   const input = readJson<Input>('setup-curator-profiles-input.json');
   const vaults = readJson<Record<string, VaultDump>>('vaults.json');
   const curators = readJson<CuratorDump[]>('curators.json');
-  if (!vaults[input.mint]) {
+  const vault = vaults[input.mint];
+  if (!vault) {
     throw new Error(`vaults.json: no vault for mint ${input.mint} (run create-vault first)`);
   }
   if (curators.length === 0) {
@@ -144,7 +155,7 @@ async function main(): Promise<void> {
   const existing = readJsonOptional<CuratorSetup>('curator-setup.json');
   const setup: CuratorSetup = existing ?? {
     mint: input.mint,
-    profiles: [],
+    subVaults: [],
     createdAtUnix: Math.floor(Date.now() / 1000),
   };
   if (setup.mint !== input.mint) {
@@ -155,72 +166,83 @@ async function main(): Promise<void> {
 
   const conn = loadConnection();
   const signer = loadSigner();
-  const mint = new PublicKey(input.mint);
-  const vaultPda = globalVaultPda(mint)[0];
+  // The vault PDA is bank-keyed (`[b"vault", bank]`); resolve the bank from
+  // the recorded vault dump rather than the mint.
+  const bank = new PublicKey(vault.bank);
+  const vaultPda = globalVaultPda(bank)[0];
 
-  for (let i = 0; i < input.profiles.length; i++) {
-    const p = input.profiles[i]!;
-    const curator = resolveCuratorForProfile(curators, input.curatorLabel, p, i);
-    const wantedTriple = {
+  for (let i = 0; i < input.subVaults.length; i++) {
+    const p = input.subVaults[i]!;
+    const curator = resolveCuratorForSubVault(curators, input.curatorLabel, p, i);
+    const wantedTuple = {
       curator: curator.pubkey,
       curatorLabel: curator.label,
+      spreadBps: p.spreadBps,
       maxLtvBps: p.maxLtvBps,
+      liquidationLtvBps: p.liquidationLtvBps,
       maxTermSeconds: p.maxTermSeconds,
+      curatorFeeBps: p.curatorFeeBps,
     };
 
-    const already = recordedMatches(setup.profiles, wantedTriple);
+    const already = recordedMatches(setup.subVaults, wantedTuple);
     if (already) {
       log(
-        `[setup-curator-profiles] (curator=${curator.label}, ltv=${p.maxLtvBps}bps, ` +
-          `term=${p.maxTermSeconds}s) already recorded as profileId=${already.profileId}; skipping`,
+        `[setup-curator-profiles] (curator=${curator.label}, spread=${p.spreadBps}bps, ` +
+          `ltv=${p.maxLtvBps}bps, liqLtv=${p.liquidationLtvBps}bps, term=${p.maxTermSeconds}s, ` +
+          `fee=${p.curatorFeeBps}bps) already recorded as subVaultId=${already.subVaultId}; skipping`,
       );
       continue;
     }
 
-    // Snapshot the vault's next_profile_id BEFORE submitting. The
-    // program assigns this exact id to the new profile (the counter is
+    // Snapshot the vault's next_sub_vault_id BEFORE submitting. The
+    // program assigns this exact id to the new sub-vault (the counter is
     // bumped inside the ix, but we capture it first so we know what
     // landed without re-reading or log-parsing).
-    const assignedProfileId = await readNextProfileId(conn, vaultPda);
+    const assignedSubVaultId = await readNextSubVaultId(conn, vaultPda);
 
     log(
       `[setup-curator-profiles] mint=${input.mint} curator=${curator.pubkey} ` +
-        `maxLtv=${p.maxLtvBps}bps maxTerm=${p.maxTermSeconds}s → profileId=${assignedProfileId}`,
+        `spread=${p.spreadBps}bps maxLtv=${p.maxLtvBps}bps liqLtv=${p.liquidationLtvBps}bps ` +
+        `maxTerm=${p.maxTermSeconds}s curatorFee=${p.curatorFeeBps}bps → subVaultId=${assignedSubVaultId}`,
     );
-    const ix = createRiskProfileInstruction({
+    const ix = createPoolSubVaultInstruction({
       payer: signer.publicKey,
-      mint,
+      bank,
       curator: new PublicKey(curator.pubkey),
+      spreadBps: p.spreadBps,
       maxLtvBps: p.maxLtvBps,
+      liquidationLtvBps: p.liquidationLtvBps,
       maxTermSeconds: p.maxTermSeconds,
+      curatorFeeBps: p.curatorFeeBps,
     });
     const sig = await sendIxs(conn, signer, [ix]);
     log(`[setup-curator-profiles]   signature = ${sig}`);
 
-    const created: CuratorSetupProfile = {
-      profileId: assignedProfileId,
-      ...wantedTriple,
+    const created: CuratorSetupSubVault = {
+      subVaultId: assignedSubVaultId,
+      kind: 'Pool',
+      ...wantedTuple,
       signature: sig,
     };
-    setup.profiles.push(created);
+    setup.subVaults.push(created);
     appendTxLog({
       script: 'setup-curator-profiles',
       signatures: [sig],
       summary: {
         mint: input.mint,
-        profileId: assignedProfileId,
+        subVaultId: assignedSubVaultId,
         curator: curator.pubkey,
       },
     });
   }
 
-  setup.profiles.sort((a, b) => a.profileId - b.profileId);
+  setup.subVaults.sort((a, b) => a.subVaultId - b.subVaultId);
   writeJson('curator-setup.json', setup);
 
-  const profilesByMint =
-    readJsonOptional<Record<string, ProfileDump[]>>('risk-profiles.json') ?? {};
-  profilesByMint[input.mint] = setup.profiles;
-  writeJson('risk-profiles.json', profilesByMint);
+  const subVaultsByMint =
+    readJsonOptional<Record<string, SubVaultDump[]>>('risk-profiles.json') ?? {};
+  subVaultsByMint[input.mint] = setup.subVaults;
+  writeJson('risk-profiles.json', subVaultsByMint);
   log(`[setup-curator-profiles] wrote .local/curator-setup.json and risk-profiles.json`);
 }
 

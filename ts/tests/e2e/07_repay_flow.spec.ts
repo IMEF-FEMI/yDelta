@@ -9,19 +9,20 @@
  *        lender-side bookkeeping is a separate cranker step.
  *
  *   Lender / keeper side (permissionless, anyone can fire):
- *     2. `ClaimRepaymentForRiskProfile` — moves the lender's seat shares
- *        encumbered → withdrawable, drains the realised atoms back into
- *        the vault's marginfi integration account, updates the profile
- *        aggregates, and CLOSES the loan PDA (rent → original cranker).
+ *     2. `ClaimRepaymentForSubVault` — stateless sweep: drains the realised
+ *        atoms (sub-vault `pending_claim_atoms`) out of the per-market
+ *        `lender_marginfi_account` back into the vault's own integration
+ *        account, and decrements the seat shares + `pending_claim_atoms`.
+ *        v1: the loan PDA is already closed by full `Repay` (rent → original
+ *        cranker); this sweep never touches a loan PDA and takes no sequence.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
-  claimRepaymentForRiskProfileInstruction,
+  claimRepaymentForSubVaultInstruction,
   cuBudgetIx,
   decodeGlobalVault,
-  decodeLoanFixed,
   decodeMarket,
   globalVaultIntegrationAccountPda,
   globalVaultPda,
@@ -30,7 +31,6 @@ import {
   HEAVY_IX_CU_LIMIT,
   lenderIntegrationAccountPda,
   loanPda,
-  LoanState,
   marketSignerPda,
   marketTokenVaultPda,
   processMatchedLoanInstruction,
@@ -62,7 +62,7 @@ describe('e2e: borrower repays + cranker realises (loan PDA closes)', () => {
     loanKey = loanPda(handles.market.publicKey, handles.matchedLoanSequence)[0];
 
     // Crank the match into a Loan PDA.
-    const vault = globalVaultPda(USDC_MINT)[0];
+    const vault = globalVaultPda(USDC_BANK)[0];
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
@@ -103,10 +103,11 @@ describe('e2e: borrower repays + cranker realises (loan PDA closes)', () => {
     });
   });
 
-  it('Repay zeroes outstanding, flips state→Repaid, and debits the borrower ATA by exactly repay_atoms', async () => {
+  it('Repay zeroes outstanding, closes the loan PDA, and debits the borrower ATA by exactly repay_atoms', async () => {
     const ataPre = (await bk.tokenAccountBalance(handles.borrowerUsdcAta))!;
     expect(ataPre).toBe(1_000_000_000n); // matches the top-up in beforeAll
 
+    const vault = globalVaultPda(USDC_BANK)[0];
     await bk.send(
       [
         repayInstruction({
@@ -123,20 +124,26 @@ describe('e2e: borrower repays + cranker realises (loan PDA closes)', () => {
           marginfiProgram: MARGINFI_PROGRAM_ID,
           repayAtoms: handles.principalAtoms,
           crankerRefund: cranker.publicKey,
+          // Fixed (vault-lender) loan: the processor reads the lender vault on
+          // full repay to apply the sub-vault decrements + bump
+          // `pending_claim_atoms`.
+          globalVault: vault,
         }),
       ],
       [handles.borrower],
     );
 
-    // Loan PDA still exists; outstanding decremented to 0 and `state`
-    // flips to `Repaid`. The PDA closes at lender-side `ClaimRepayment`
-    // time, not at borrower repay time (fixed-term lock-up: lender cannot
-    // drain until maturity even after the borrower paid back early).
-    const loanAcc = await bk.getAccount(loanKey);
-    expect(loanAcc).not.toBeNull();
-    const loan = decodeLoanFixed(loanAcc!.data);
-    expect(loan.outstandingDebtAtoms).toBe(0n);
-    expect(loan.state).toBe(LoanState.Repaid);
+    // v1: a full Repay zeroes outstanding AND closes the loan PDA in the same
+    // ix (rent → the original cranker). The realised atoms land in the
+    // sub-vault's `pending_claim_atoms` bucket, swept by the lender-side
+    // `ClaimRepaymentForSubVault` step below.
+    expect(await bk.getAccount(loanKey)).toBeNull();
+
+    // Sub-vault: deployed → 0 (decremented at close), pending_claim grew.
+    const v = decodeGlobalVault((await bk.getAccount(vault))!.data);
+    const subVault = v.subVaults[0].subVault;
+    expect(subVault.deployedPrincipalAtoms).toBe(0n);
+    expect(subVault.pendingClaimAtoms).toBeGreaterThan(0n);
 
     // The borrower's ATA was debited by EXACTLY repay_atoms — no over-
     // transfer, no skimming.
@@ -144,47 +151,52 @@ describe('e2e: borrower repays + cranker realises (loan PDA closes)', () => {
     expect(ataPost).toBe(ataPre - handles.principalAtoms);
   });
 
-  it('ClaimRepaymentForRiskProfile closes the loan + frees up profile.deployed', async () => {
-    // Fast-forward past the 30-day term so the maturity gate clears.
-    await bk.warpForward(30 * 86_400 + 60);
+  it('ClaimRepaymentForSubVault sweeps pending_claim back into the vault integration account', async () => {
+    const vault = globalVaultPda(USDC_BANK)[0];
+    const pendingPre = decodeGlobalVault((await bk.getAccount(vault))!.data).subVaults[0].subVault
+      .pendingClaimAtoms;
+    expect(pendingPre).toBeGreaterThan(0n);
 
-    const vault = globalVaultPda(USDC_MINT)[0];
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
         cuBudgetIx(HEAVY_IX_CU_LIMIT),
-        claimRepaymentForRiskProfileInstruction({
+        claimRepaymentForSubVaultInstruction({
           payer: cranker.publicKey,
           market: handles.market.publicKey,
-          sequence: handles.matchedLoanSequence,
+          subVaultId: 1,
           globalVault: vault,
           debtMint: USDC_MINT,
           debtBank: USDC_BANK,
           debtLiquidityVault: USDC_LIQUIDITY_VAULT,
           debtBankLiquidityVaultAuthority: bankLiquidityVaultAuthority(USDC_BANK),
-          bankOracle: USDC_ORACLE,
+          bankOracles: [USDC_ORACLE],
           lenderMarginfiAccount: lenderIntegrationAccountPda(handles.market.publicKey)[0],
           tokenProgram: SPL_TOKEN_PROGRAM_ID,
           marginfiGroup: MARGINFI_GROUP,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          crankerRefund: cranker.publicKey,
         }),
       ],
       [cranker],
     );
 
-    // Loan PDA closed.
-    const loanAcc = await bk.getAccount(loanKey);
-    expect(loanAcc).toBeNull();
-
-    // Profile is back to all-idle. The vault is whole.
+    // Loan PDA was already closed at full-repay time; the sweep never touches
+    // it. The sub-vault is back to all-idle: pending_claim drained, nothing
+    // deployed or encumbered.
+    expect(await bk.getAccount(loanKey)).toBeNull();
     const v = decodeGlobalVault((await bk.getAccount(vault))!.data);
-    const profile = v.riskProfiles[0].profile;
-    expect(profile.deployedPrincipalAtoms).toBe(0n);
-    expect(profile.encumberedInOrdersAtoms).toBe(0n);
+    const subVault = v.subVaults[0].subVault;
+    // The sweep drains pending_claim down to AT MOST 1 atom of marginfi
+    // share-round-down dust (the withdraw converts shares→atoms rounding
+    // DOWN, so `saturating_sub(actual_atoms)` can strand ≤ 1 atom — the
+    // program's own idle invariant tolerates this, never forcing it to 0).
+    expect(subVault.pendingClaimAtoms).toBeLessThan(pendingPre);
+    expect(subVault.pendingClaimAtoms).toBeLessThanOrEqual(1n);
+    expect(subVault.deployedPrincipalAtoms).toBe(0n);
+    expect(subVault.encumberedInOrdersAtoms).toBe(0n);
 
     // Asks tree still has the curator's unbounded resting ask — the
-    // profile is ready to fund another match without re-quoting.
+    // sub-vault is ready to fund another match without re-quoting.
     const m = decodeMarket((await bk.getAccount(handles.market.publicKey))!.data);
     expect(m.asks).toHaveLength(1);
     expect(m.asks[0].order.rateBps).toBe(handles.askRateBps);

@@ -1,30 +1,31 @@
 /**
  * `GlobalVaultFixed` (320-byte header) + dynamic region holding three
- * RB-trees: `risk_profiles` (512-byte blocks), `claimed_seats`
- * (RiskProfileDepositorSeat — 160-byte blocks), `market_orders`
- * (RiskProfileOrderRef — 160-byte blocks). The latter two share a
- * 160-byte free list; profiles get their own 512-byte free list.
+ * RB-trees: `sub_vaults` (512-byte blocks), `claimed_seats`
+ * (SubVaultDepositorSeat — 160-byte blocks), `market_orders`
+ * (SubVaultOrderRef — 160-byte blocks). The latter two share a
+ * 160-byte free list; sub-vaults get their own 512-byte free list.
  */
 import { PublicKey } from '@solana/web3.js';
 
 import {
   isNil,
   readPubkey,
+  readU16,
   readU32,
   readU8,
   view,
 } from './_read.js';
 import {
-  RISK_PROFILE_DEPOSITOR_SEAT_SIZE,
-  RISK_PROFILE_ORDER_REF_SIZE,
-  RISK_PROFILE_SIZE,
-  RiskProfile,
-  RiskProfileDepositorSeat,
-  RiskProfileOrderRef,
-  decodeRiskProfile,
-  decodeRiskProfileDepositorSeat,
-  decodeRiskProfileOrderRef,
-} from './riskProfile.js';
+  SUB_VAULT_DEPOSITOR_SEAT_SIZE,
+  SUB_VAULT_ORDER_REF_SIZE,
+  SUB_VAULT_SIZE,
+  SubVault,
+  SubVaultDepositorSeat,
+  SubVaultOrderRef,
+  decodeSubVault,
+  decodeSubVaultDepositorSeat,
+  decodeSubVaultOrderRef,
+} from './subVault.js';
 import { walkDescending, walkFreeList } from './trees.js';
 
 export const GLOBAL_VAULT_FIXED_SIZE = 320;
@@ -36,14 +37,15 @@ export interface GlobalVaultHeader {
   integrationPool: PublicKey;
   integrationAccount: PublicKey;
   globalVaultSigner: PublicKey;
+  /** Marginfi bank this vault is keyed to (the vault PDA is `[b"vault", lendingPool]`). */
   lendingPool: PublicKey;
-  riskProfilesRootIndex: number;
+  subVaultsRootIndex: number;
   claimedSeatsRootIndex: number;
   marketOrdersRootIndex: number;
   profileFreeListHeadIndex: number;
   nodeFreeListHeadIndex: number;
   numBytesAllocated: number;
-  riskProfileCount: number;
+  subVaultCount: number;
   globalVaultSignerBump: number;
   version: number;
   claimedSeatCount: number;
@@ -51,20 +53,21 @@ export interface GlobalVaultHeader {
   pendingGlobalVaultAdmin: PublicKey;
   isPaused: boolean;
   /**
-   * Monotonic counter for the next `profile_id` to assign on
-   * `CreateRiskProfile`. Bumped on every successful create; **never**
-   * decremented on `RemoveRiskProfile`, so this value is the id the
-   * next create will receive (callers can pre-read it to predict the
-   * assignment).
+   * Monotonic counter for the next `sub_vault_id` to assign on
+   * `CreatePoolSubVault` / `CreatePrivateSubVault`. Bumped on every
+   * successful create; **never** decremented on `RemoveSubVault`, so
+   * this value is the id the next create will receive (callers can
+   * pre-read it to predict the assignment). Starts at 1; 0 is the
+   * sentinel/invalid id.
    */
-  nextProfileId: number;
+  nextSubVaultId: number;
 }
 
 export interface GlobalVault {
   header: GlobalVaultHeader;
-  riskProfiles: Array<{ index: number; profile: RiskProfile }>;
-  depositorSeats: Array<{ index: number; seat: RiskProfileDepositorSeat }>;
-  marketOrders: Array<{ index: number; order: RiskProfileOrderRef }>;
+  subVaults: Array<{ index: number; subVault: SubVault }>;
+  depositorSeats: Array<{ index: number; seat: SubVaultDepositorSeat }>;
+  marketOrders: Array<{ index: number; order: SubVaultOrderRef }>;
 }
 
 /* ── Header ──────────────────────────────────────────────── */
@@ -87,20 +90,20 @@ export function decodeGlobalVaultHeader(data: Uint8Array | Buffer): GlobalVaultH
     integrationAccount: readPubkey(dv, 104),
     globalVaultSigner: readPubkey(dv, 136),
     lendingPool: readPubkey(dv, 168),
-    riskProfilesRootIndex: readU32(dv, 200),
+    subVaultsRootIndex: readU32(dv, 200),
     claimedSeatsRootIndex: readU32(dv, 204),
     marketOrdersRootIndex: readU32(dv, 208),
     profileFreeListHeadIndex: readU32(dv, 212),
     nodeFreeListHeadIndex: readU32(dv, 216),
     numBytesAllocated: readU32(dv, 220),
-    riskProfileCount: readU8(dv, 224),
-    globalVaultSignerBump: readU8(dv, 225),
-    version: readU8(dv, 226),
+    subVaultCount: readU16(dv, 224),
+    globalVaultSignerBump: readU8(dv, 226),
+    version: readU8(dv, 227),
     claimedSeatCount: readU32(dv, 228),
     openOrderCount: readU32(dv, 232),
     pendingGlobalVaultAdmin: readPubkey(dv, 240),
     isPaused: readU8(dv, 304) !== 0,
-    nextProfileId: readU8(dv, 305),
+    nextSubVaultId: readU16(dv, 306),
   };
 }
 
@@ -113,42 +116,42 @@ export function vaultDynamicRegion(data: Uint8Array | Buffer): DataView {
   return new DataView(sub.buffer, sub.byteOffset, sub.byteLength);
 }
 
-export function* iterRiskProfiles(
+export function* iterSubVaults(
   data: Uint8Array | Buffer,
   rootIndex?: number,
-): Generator<{ index: number; profile: RiskProfile }> {
+): Generator<{ index: number; subVault: SubVault }> {
   const header = rootIndex === undefined ? decodeGlobalVaultHeader(data) : null;
-  const root = rootIndex ?? header!.riskProfilesRootIndex;
+  const root = rootIndex ?? header!.subVaultsRootIndex;
   if (isNil(root)) return;
   const dynamic = vaultDynamicRegion(data);
-  for (const node of walkDescending(dynamic, root, RISK_PROFILE_SIZE)) {
-    yield { index: node.index, profile: decodeRiskProfile(node.payload) };
+  for (const node of walkDescending(dynamic, root, SUB_VAULT_SIZE)) {
+    yield { index: node.index, subVault: decodeSubVault(node.payload) };
   }
 }
 
 export function* iterDepositorSeats(
   data: Uint8Array | Buffer,
   rootIndex?: number,
-): Generator<{ index: number; seat: RiskProfileDepositorSeat }> {
+): Generator<{ index: number; seat: SubVaultDepositorSeat }> {
   const header = rootIndex === undefined ? decodeGlobalVaultHeader(data) : null;
   const root = rootIndex ?? header!.claimedSeatsRootIndex;
   if (isNil(root)) return;
   const dynamic = vaultDynamicRegion(data);
-  for (const node of walkDescending(dynamic, root, RISK_PROFILE_DEPOSITOR_SEAT_SIZE)) {
-    yield { index: node.index, seat: decodeRiskProfileDepositorSeat(node.payload) };
+  for (const node of walkDescending(dynamic, root, SUB_VAULT_DEPOSITOR_SEAT_SIZE)) {
+    yield { index: node.index, seat: decodeSubVaultDepositorSeat(node.payload) };
   }
 }
 
 export function* iterMarketOrders(
   data: Uint8Array | Buffer,
   rootIndex?: number,
-): Generator<{ index: number; order: RiskProfileOrderRef }> {
+): Generator<{ index: number; order: SubVaultOrderRef }> {
   const header = rootIndex === undefined ? decodeGlobalVaultHeader(data) : null;
   const root = rootIndex ?? header!.marketOrdersRootIndex;
   if (isNil(root)) return;
   const dynamic = vaultDynamicRegion(data);
-  for (const node of walkDescending(dynamic, root, RISK_PROFILE_ORDER_REF_SIZE)) {
-    yield { index: node.index, order: decodeRiskProfileOrderRef(node.payload) };
+  for (const node of walkDescending(dynamic, root, SUB_VAULT_ORDER_REF_SIZE)) {
+    yield { index: node.index, order: decodeSubVaultOrderRef(node.payload) };
   }
 }
 
@@ -168,7 +171,7 @@ export function decodeGlobalVault(data: Uint8Array | Buffer): GlobalVault {
   const header = decodeGlobalVaultHeader(data);
   return {
     header,
-    riskProfiles: [...iterRiskProfiles(data, header.riskProfilesRootIndex)],
+    subVaults: [...iterSubVaults(data, header.subVaultsRootIndex)],
     depositorSeats: [...iterDepositorSeats(data, header.claimedSeatsRootIndex)],
     marketOrders: [...iterMarketOrders(data, header.marketOrdersRootIndex)],
   };

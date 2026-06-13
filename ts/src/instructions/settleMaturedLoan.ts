@@ -38,6 +38,12 @@ export interface SettleMaturedLoanArgs {
   marginfiProgram: PublicKey;
   repayAtomsMax: bigint | BN | number;
   crankerRefund: PublicKey;
+  /**
+   * Lender's global vault (`[b"vault", debtBank]`). REQUIRED for Fixed
+   * loans — the full-settle lender credit lands on the vault-owned seat.
+   * Omit only for P2Pool loans.
+   */
+  globalVault?: PublicKey;
 }
 
 export function settleMaturedLoanInstruction(
@@ -79,6 +85,7 @@ export function settleMaturedLoanInstruction(
       ro(args.marginfiGroup),
       ro(args.marginfiProgram),
       rw(args.crankerRefund),
+      ...(args.globalVault ? [rw(args.globalVault)] : []),
     ],
     data,
   );

@@ -5,7 +5,7 @@
  * (`adminTransfers`, `globalConfigAdmin`, `checkLiquidatable`) grouping the
  * tags that the Rust source bundles together.
  *
- * 41 instructions total — tags 0..=40, contiguous (see `_tags.ts`).
+ * 45 instructions total — tags 0..=44, contiguous (see `_tags.ts`).
  */
 export { InstructionTag } from './_tags.js';
 export { cuBudgetIx, withCuBudget } from './_helpers.js';
@@ -43,11 +43,14 @@ export { syncMarketPositionInstruction } from './syncMarketPosition.js';
 export { createVaultInstruction } from './createVault.js';
 export type { CreateVaultArgs } from './createVault.js';
 
-export { createRiskProfileInstruction } from './createRiskProfile.js';
-export type { CreateRiskProfileArgs } from './createRiskProfile.js';
+export { createPoolSubVaultInstruction } from './createPoolSubVault.js';
+export type { CreatePoolSubVaultArgs } from './createPoolSubVault.js';
 
-export { removeRiskProfileInstruction } from './removeRiskProfile.js';
-export type { RemoveRiskProfileArgs } from './removeRiskProfile.js';
+export { createPrivateSubVaultInstruction } from './createPrivateSubVault.js';
+export type { CreatePrivateSubVaultArgs } from './createPrivateSubVault.js';
+
+export { removeSubVaultInstruction } from './removeSubVault.js';
+export type { RemoveSubVaultArgs } from './removeSubVault.js';
 
 export { globalVaultDepositInstruction } from './globalVaultDeposit.js';
 export type { GlobalVaultDepositArgs } from './globalVaultDeposit.js';
@@ -55,13 +58,13 @@ export type { GlobalVaultDepositArgs } from './globalVaultDeposit.js';
 export { globalVaultWithdrawInstruction } from './globalVaultWithdraw.js';
 export type { GlobalVaultWithdrawArgs } from './globalVaultWithdraw.js';
 
-export { placeOrderForRiskProfileInstruction } from './placeOrderForRiskProfile.js';
-export type { PlaceOrderForRiskProfileArgs } from './placeOrderForRiskProfile.js';
+export { placeOrderForSubVaultInstruction } from './placeOrderForSubVault.js';
+export type { PlaceOrderForSubVaultArgs } from './placeOrderForSubVault.js';
 
-export { cancelOrderForRiskProfileInstruction } from './cancelOrderForRiskProfile.js';
+export { cancelOrderForSubVaultInstruction } from './cancelOrderForSubVault.js';
 
-export { updateOrderForRiskProfileInstruction } from './updateOrderForRiskProfile.js';
-export type { UpdateOrderForRiskProfileArgs } from './updateOrderForRiskProfile.js';
+export { updateOrderForSubVaultInstruction } from './updateOrderForSubVault.js';
+export type { UpdateOrderForSubVaultArgs } from './updateOrderForSubVault.js';
 
 export { claimCuratorFeeInstruction } from './claimCuratorFee.js';
 export type { ClaimCuratorFeeArgs } from './claimCuratorFee.js';
@@ -78,8 +81,8 @@ export type { SetFeeConfigArgs } from './setFeeConfig.js';
 export { protocolFeeClaimInstruction } from './protocolFeeClaim.js';
 export type { ProtocolFeeClaimArgs } from './protocolFeeClaim.js';
 
-export { claimRepaymentForRiskProfileInstruction } from './claimRepaymentForRiskProfile.js';
-export type { ClaimRepaymentForRiskProfileArgs } from './claimRepaymentForRiskProfile.js';
+export { claimRepaymentForSubVaultInstruction } from './claimRepaymentForSubVault.js';
+export type { ClaimRepaymentForSubVaultArgs } from './claimRepaymentForSubVault.js';
 
 export {
   transferMarketAdminInstruction,
@@ -101,8 +104,8 @@ export {
   setGlobalPauseInstruction,
 } from './globalConfigAdmin.js';
 
-export { updateRiskProfileInstruction } from './updateRiskProfile.js';
-export type { UpdateRiskProfileArgs } from './updateRiskProfile.js';
+export { updateSubVaultInstruction } from './updateSubVault.js';
+export type { UpdateSubVaultArgs } from './updateSubVault.js';
 
 export { convertP2poolToFixedInstruction } from './convertP2poolToFixed.js';
 export type { ConvertP2PoolToFixedArgs } from './convertP2poolToFixed.js';
@@ -118,11 +121,20 @@ export type {
 
 export { setVaultPauseInstruction } from './setVaultPause.js';
 
-export { sunsetRiskProfileInstruction } from './sunsetRiskProfile.js';
-export type { SunsetRiskProfileArgs } from './sunsetRiskProfile.js';
+export { sunsetSubVaultInstruction } from './sunsetSubVault.js';
+export type { SunsetSubVaultArgs } from './sunsetSubVault.js';
 
-export { resumeRiskProfileInstruction } from './resumeRiskProfile.js';
-export type { ResumeRiskProfileArgs } from './resumeRiskProfile.js';
+export { resumeSubVaultInstruction } from './resumeSubVault.js';
+export type { ResumeSubVaultArgs } from './resumeSubVault.js';
 
-export { adminCancelRiskProfileOrderInstruction } from './adminCancelRiskProfileOrder.js';
-export type { AdminCancelRiskProfileOrderArgs } from './adminCancelRiskProfileOrder.js';
+export { adminCancelSubVaultOrderInstruction } from './adminCancelSubVaultOrder.js';
+export type { AdminCancelSubVaultOrderArgs } from './adminCancelSubVaultOrder.js';
+
+export { cancelOrderInstruction } from './cancelOrder.js';
+export type { CancelOrderArgs } from './cancelOrder.js';
+
+export { matchCrankInstruction } from './matchCrank.js';
+export type { MatchCrankArgs } from './matchCrank.js';
+
+export { updateOrderInstruction } from './updateOrder.js';
+export type { UpdateOrderArgs } from './updateOrder.js';

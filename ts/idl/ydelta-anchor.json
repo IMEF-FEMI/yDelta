@@ -4,7 +4,7 @@
     "name": "ydelta",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Quote-only fixed-rate lending on Solana. 41 instructions, tags 0..=40. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` and read raw byte offsets."
+    "description": "Quote-only fixed-rate lending on Solana. 45 instructions, tags 0..=44. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` and read raw byte offsets. v1 adds a two-sided order book: borrowers rest bids (tags 42/44 cancel/update, tag 4 residual-mode rest) and sub-vaults rest asks (tags 12/14), crossed by a permissionless match crank (tag 43)."
   },
   "instructions": [
     {
@@ -119,12 +119,6 @@
           }
         },
         {
-          "name": "curatorFeeBps",
-          "type": {
-            "option": "u16"
-          }
-        },
-        {
           "name": "liquidationKeeperBps",
           "type": {
             "option": "u16"
@@ -132,12 +126,6 @@
         },
         {
           "name": "liquidationProtocolBps",
-          "type": {
-            "option": "u16"
-          }
-        },
-        {
-          "name": "ltvBufferBps",
           "type": {
             "option": "u16"
           }
@@ -518,8 +506,12 @@
           }
         },
         {
-          "name": "flags",
+          "name": "residualMode",
           "type": "u8"
+        },
+        {
+          "name": "lastValidUnixTs",
+          "type": "i64"
         },
         {
           "name": "rateBps",
@@ -892,7 +884,7 @@
       "args": []
     },
     {
-      "name": "createRiskProfile",
+      "name": "createPoolSubVault",
       "discriminator": [
         9
       ],
@@ -924,14 +916,24 @@
           "type": "pubkey"
         },
         {
+          "name": "spreadBps",
+          "type": "u16"
+        },
+        {
           "name": "maxLtvBps",
-          "type": {
-            "option": "u16"
-          }
+          "type": "u16"
+        },
+        {
+          "name": "liquidationLtvBps",
+          "type": "u16"
         },
         {
           "name": "maxTermSeconds",
           "type": "u32"
+        },
+        {
+          "name": "curatorFeeBps",
+          "type": "u16"
         }
       ]
     },
@@ -1023,8 +1025,8 @@
           "type": "u64"
         },
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         }
       ]
     },
@@ -1126,13 +1128,13 @@
           "type": "u128"
         },
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         }
       ]
     },
     {
-      "name": "placeOrderForRiskProfile",
+      "name": "placeOrderForSubVault",
       "discriminator": [
         12
       ],
@@ -1163,6 +1165,31 @@
           "signer": false
         },
         {
+          "name": "debtBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
           "name": "systemProgram",
           "writable": false,
           "signer": false
@@ -1170,16 +1197,8 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
-        },
-        {
-          "name": "rateBps",
+          "name": "subVaultId",
           "type": "u16"
-        },
-        {
-          "name": "termSeconds",
-          "type": "u32"
         },
         {
           "name": "flags",
@@ -1188,7 +1207,7 @@
       ]
     },
     {
-      "name": "cancelOrderForRiskProfile",
+      "name": "cancelOrderForSubVault",
       "discriminator": [
         13
       ],
@@ -1226,13 +1245,13 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         }
       ]
     },
     {
-      "name": "updateOrderForRiskProfile",
+      "name": "updateOrderForSubVault",
       "discriminator": [
         14
       ],
@@ -1263,6 +1282,31 @@
           "signer": false
         },
         {
+          "name": "debtBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
           "name": "systemProgram",
           "writable": false,
           "signer": false
@@ -1270,16 +1314,8 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
-        },
-        {
-          "name": "newRateBps",
+          "name": "subVaultId",
           "type": "u16"
-        },
-        {
-          "name": "newTermSeconds",
-          "type": "u32"
         },
         {
           "name": "newFlags",
@@ -1371,8 +1407,8 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         }
       ]
     },
@@ -1691,12 +1727,6 @@
           }
         },
         {
-          "name": "curatorFeeBps",
-          "type": {
-            "option": "u16"
-          }
-        },
-        {
           "name": "liquidationKeeperBps",
           "type": {
             "option": "u16"
@@ -1704,12 +1734,6 @@
         },
         {
           "name": "liquidationProtocolBps",
-          "type": {
-            "option": "u16"
-          }
-        },
-        {
-          "name": "ltvBufferBps",
           "type": {
             "option": "u16"
           }
@@ -1807,7 +1831,7 @@
       "args": []
     },
     {
-      "name": "claimRepaymentForRiskProfile",
+      "name": "claimRepaymentForSubVault",
       "discriminator": [
         20
       ],
@@ -1824,11 +1848,6 @@
         },
         {
           "name": "market",
-          "writable": true,
-          "signer": false
-        },
-        {
-          "name": "loan",
           "writable": true,
           "signer": false
         },
@@ -1906,14 +1925,14 @@
           "name": "marginfiProgram",
           "writable": false,
           "signer": false
-        },
-        {
-          "name": "crankerRefund",
-          "writable": true,
-          "signer": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "subVaultId",
+          "type": "u16"
+        }
+      ]
     },
     {
       "name": "transferMarketAdmin",
@@ -2045,8 +2064,8 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         },
         {
           "name": "newCurator",
@@ -2078,8 +2097,8 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         }
       ]
     },
@@ -2209,7 +2228,7 @@
       ]
     },
     {
-      "name": "updateRiskProfile",
+      "name": "updateSubVault",
       "discriminator": [
         32
       ],
@@ -2237,8 +2256,8 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         },
         {
           "name": "newMaxLtvBps",
@@ -2247,9 +2266,21 @@
           }
         },
         {
+          "name": "newLiquidationLtvBps",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
           "name": "newMaxTermSeconds",
           "type": {
             "option": "u32"
+          }
+        },
+        {
+          "name": "newSpreadBps",
+          "type": {
+            "option": "u16"
           }
         }
       ]
@@ -2516,7 +2547,7 @@
       ]
     },
     {
-      "name": "removeRiskProfile",
+      "name": "removeSubVault",
       "discriminator": [
         37
       ],
@@ -2539,13 +2570,13 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         }
       ]
     },
     {
-      "name": "sunsetRiskProfile",
+      "name": "sunsetSubVault",
       "discriminator": [
         38
       ],
@@ -2568,13 +2599,13 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         }
       ]
     },
     {
-      "name": "resumeRiskProfile",
+      "name": "resumeSubVault",
       "discriminator": [
         39
       ],
@@ -2597,13 +2628,13 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
         }
       ]
     },
     {
-      "name": "adminCancelRiskProfileOrder",
+      "name": "adminCancelSubVaultOrder",
       "discriminator": [
         40
       ],
@@ -2631,8 +2662,210 @@
       ],
       "args": [
         {
-          "name": "profileId",
-          "type": "u8"
+          "name": "subVaultId",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "createPrivateSubVault",
+      "discriminator": [
+        41
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "spreadBps",
+          "type": "u16"
+        },
+        {
+          "name": "maxLtvBps",
+          "type": "u16"
+        },
+        {
+          "name": "liquidationLtvBps",
+          "type": "u16"
+        },
+        {
+          "name": "maxTermSeconds",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "cancelOrder",
+      "discriminator": [
+        42
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "orderSequence",
+          "type": "u64"
+        },
+        {
+          "name": "seatIndexHint",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "matchCrank",
+      "discriminator": [
+        43
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "debtBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "marginfiGroup",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralBank",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "debtOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "collateralOracles[]",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "systemProgram",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "maxFills",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "updateOrder",
+      "discriminator": [
+        44
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "globalConfig",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "userAccount",
+          "writable": true,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "orderSequence",
+          "type": "u64"
+        },
+        {
+          "name": "seatIndexHint",
+          "type": {
+            "option": "u32"
+          }
+        },
+        {
+          "name": "newRateBps",
+          "type": "u16"
+        },
+        {
+          "name": "newTermSeconds",
+          "type": "u32"
+        },
+        {
+          "name": "newLastValidUnixTs",
+          "type": "i64"
         }
       ]
     }
@@ -2678,7 +2911,7 @@
       ]
     },
     {
-      "name": "RiskProfile",
+      "name": "SubVault",
       "discriminator": [
         0,
         0,
@@ -2691,7 +2924,7 @@
       ]
     },
     {
-      "name": "RiskProfileDepositorSeat",
+      "name": "SubVaultDepositorSeat",
       "discriminator": [
         0,
         0,
@@ -2704,7 +2937,7 @@
       ]
     },
     {
-      "name": "RiskProfileOrderRef",
+      "name": "SubVaultOrderRef",
       "discriminator": [
         0,
         0,
@@ -2915,8 +3148,8 @@
     },
     {
       "code": 26,
-      "name": "VaultProfileNotFound",
-      "msg": "VaultProfileNotFound"
+      "name": "SubVaultNotFound",
+      "msg": "SubVaultNotFound"
     },
     {
       "code": 28,
@@ -2935,8 +3168,8 @@
     },
     {
       "code": 32,
-      "name": "VaultProfileOrderExists",
-      "msg": "VaultProfileOrderExists"
+      "name": "SubVaultOrderExists",
+      "msg": "SubVaultOrderExists"
     },
     {
       "code": 33,
@@ -2945,23 +3178,23 @@
     },
     {
       "code": 34,
-      "name": "VaultProfileNotEmpty",
-      "msg": "VaultProfileNotEmpty"
+      "name": "SubVaultNotEmpty",
+      "msg": "SubVaultNotEmpty"
     },
     {
       "code": 36,
-      "name": "VaultProfileIdExists",
-      "msg": "VaultProfileIdExists"
+      "name": "SubVaultIdExists",
+      "msg": "SubVaultIdExists"
     },
     {
       "code": 37,
-      "name": "VaultProfileLtvOutOfRange",
-      "msg": "VaultProfileLtvOutOfRange"
+      "name": "SubVaultLtvOutOfRange",
+      "msg": "SubVaultLtvOutOfRange"
     },
     {
       "code": 38,
-      "name": "VaultProfileTermInvalid",
-      "msg": "VaultProfileTermInvalid"
+      "name": "SubVaultTermInvalid",
+      "msg": "SubVaultTermInvalid"
     },
     {
       "code": 39,
@@ -3040,13 +3273,18 @@
     },
     {
       "code": 54,
-      "name": "VaultProfileSunset",
-      "msg": "VaultProfileSunset"
+      "name": "SubVaultSunset",
+      "msg": "SubVaultSunset"
     },
     {
       "code": 55,
-      "name": "VaultProfileNotSunset",
-      "msg": "VaultProfileNotSunset"
+      "name": "SubVaultNotSunset",
+      "msg": "SubVaultNotSunset"
+    },
+    {
+      "code": 56,
+      "name": "FallbackLtvInsufficient",
+      "msg": "FallbackLtvInsufficient"
     }
   ],
   "types": []

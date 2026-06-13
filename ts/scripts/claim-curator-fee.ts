@@ -1,11 +1,11 @@
 /**
  * claim-curator-fee.ts — `ClaimCuratorFee` (tag 15). Curator sweeps
- * accumulated fees from a risk profile to their ATA. No-op if zero.
+ * accumulated fees from a sub-vault to their ATA. No-op if zero.
  *
  * Reads:
  *   .local/claim-curator-fee-input.json {
  *     mint: string,
- *     profileId: number,
+ *     subVaultId: number,
  *     curatorTokenAta: string
  *   }
  *   .local/vaults.json, .local/risk-profiles.json, .local/curators.json
@@ -28,24 +28,24 @@ import {
   resolveBankByMint,
 } from './_marginfi.js';
 import { crankStaleBankOracles } from './_oracleCrank.js';
-import type { CuratorDump, ProfileDump, VaultDump } from './_types.js';
-import { resolveCuratorForProfile } from './_types.js';
+import type { CuratorDump, SubVaultDump, VaultDump } from './_types.js';
+import { resolveCuratorForSubVault } from './_types.js';
 
 interface Input {
   mint: string;
-  profileId: number;
+  subVaultId: number;
   curatorTokenAta: string;
 }
 
 async function main(): Promise<void> {
   const input = readJson<Input>('claim-curator-fee-input.json');
   const vaults = readJson<Record<string, VaultDump>>('vaults.json');
-  const profiles = readJson<Record<string, ProfileDump[]>>('risk-profiles.json');
+  const subVaults = readJson<Record<string, SubVaultDump[]>>('risk-profiles.json');
   const curators = readJson<CuratorDump[]>('curators.json');
 
   const vault = vaults[input.mint];
   if (!vault) throw new Error(`vaults.json: no vault for mint ${input.mint}`);
-  const curatorEntry = resolveCuratorForProfile(profiles, curators, input.mint, input.profileId);
+  const curatorEntry = resolveCuratorForSubVault(subVaults, curators, input.mint, input.subVaultId);
   const curator = readKeypairFromBase58(curatorEntry.secretKeyBase58);
 
   const conn = loadConnection();
@@ -56,12 +56,14 @@ async function main(): Promise<void> {
     { bank, pythFeedIdHex: bankEntry.pythFeedIdHex, pythShardId: bankEntry.pythShardId },
   ]);
 
-  log(`[claim-curator-fee] curator=${curator.publicKey.toBase58()} profileId=${input.profileId}`);
+  log(`[claim-curator-fee] curator=${curator.publicKey.toBase58()} subVaultId=${input.subVaultId}`);
 
   const ix = claimCuratorFeeInstruction({
     curator: curator.publicKey,
+    // v1: the vault PDA is bank-keyed (`[b"vault", bank]`); the mint is still
+    // passed as a readonly account for the marginfi withdraw path.
     mint: new PublicKey(input.mint),
-    profileId: input.profileId,
+    subVaultId: input.subVaultId,
     curatorToken: new PublicKey(input.curatorTokenAta),
     debtBank: bankPk,
     liquidityVault: bank.liquidityVault,
@@ -78,7 +80,7 @@ async function main(): Promise<void> {
     oracleCrank: crank.entries,
     summary: {
       mint: input.mint,
-      profileId: input.profileId,
+      subVaultId: input.subVaultId,
       curator: curator.publicKey.toBase58(),
     },
   });

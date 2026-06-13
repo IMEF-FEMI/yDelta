@@ -60,7 +60,7 @@ describe('e2e: cranker promotes the matched loan to a Loan PDA', () => {
   });
 
   it('ProcessMatchedLoan stamps a Fixed/Active Loan PDA + drains vault → market', async () => {
-    const vault = globalVaultPda(USDC_MINT)[0];
+    const vault = globalVaultPda(USDC_BANK)[0];
     const [loanKey] = loanPda(handles.market.publicKey, handles.matchedLoanSequence);
 
     // Vault-lender match → cranker must supply the full vault-settle block.
@@ -117,11 +117,11 @@ describe('e2e: cranker promotes the matched loan to a Loan PDA', () => {
     const m = decodeMarket((await bk.getAccount(handles.market.publicKey))!.data);
     expect(m.matchedLoans).toHaveLength(0);
 
-    // Profile bookkeeping: encumbered → 0, deployed = principal.
+    // Sub-vault bookkeeping: encumbered → 0, deployed = principal.
     const v = decodeGlobalVault((await bk.getAccount(vault))!.data);
-    const profile = v.riskProfiles[0].profile;
-    expect(profile.encumberedInOrdersAtoms).toBe(0n);
-    expect(profile.deployedPrincipalAtoms).toBe(handles.principalAtoms);
+    const subVault = v.subVaults[0].subVault;
+    expect(subVault.encumberedInOrdersAtoms).toBe(0n);
+    expect(subVault.deployedPrincipalAtoms).toBe(handles.principalAtoms);
 
     // Borrower seat: `process_matched_loan` credits the borrower's
     // `debt_withdrawable_shares` with EXACTLY (principal − origination_atoms)

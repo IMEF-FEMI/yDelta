@@ -8,7 +8,7 @@ export * from './marginfi.js';
 export * from './oracle.js';
 export * from './readers.js';
 export * from './vaultUi.js';
-export * from './riskProfileUi.js';
+export * from './subVaultUi.js';
 export * from './predictors.js';
 export * from './aggregators.js';
 export * from './ltv.js';

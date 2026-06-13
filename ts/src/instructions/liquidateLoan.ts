@@ -39,6 +39,12 @@ export interface LiquidateLoanArgs {
   marginfiProgram: PublicKey;
   repayAtomsMax: bigint | BN | number;
   crankerRefund: PublicKey;
+  /**
+   * Lender's global vault (`[b"vault", debtBank]`). REQUIRED for Fixed
+   * loans — the full-close lender credit lands on the vault-owned seat.
+   * Omit only for P2Pool loans.
+   */
+  globalVault?: PublicKey;
 }
 
 export function liquidateLoanInstruction(args: LiquidateLoanArgs): TransactionInstruction {
@@ -78,6 +84,7 @@ export function liquidateLoanInstruction(args: LiquidateLoanArgs): TransactionIn
       ro(args.marginfiGroup),
       ro(args.marginfiProgram),
       rw(args.crankerRefund),
+      ...(args.globalVault ? [rw(args.globalVault)] : []),
     ],
     data,
   );

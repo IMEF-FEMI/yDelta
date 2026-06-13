@@ -2,11 +2,11 @@
   "version": "0.1.0",
   "name": "ydelta",
   "programId": "Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas",
-  "description": "Quote-only fixed-rate lending on Solana. 41 instructions, tags 0..=40. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` and read raw byte offsets.",
+  "description": "Quote-only fixed-rate lending on Solana. 45 instructions, tags 0..=44. Instruction data is borsh-encoded after a 1-byte tag header. State accounts are bytemuck `#[repr(C)]` Pod — NOT borsh — so account decoders live in `ts/src/accounts/` and read raw byte offsets. v1 adds a two-sided order book: borrowers rest bids (tags 42/44 cancel/update, tag 4 residual-mode rest) and sub-vaults rest asks (tags 12/14), crossed by a permissionless match crank (tag 43).",
   "conventions": {
     "instructionDataHeader": "1-byte u8 tag (see `tag` per instruction). Tail is borsh-encoded except for `SettleMaturedLoan` and `LiquidateLoan`, whose tail is a bare little-endian u64 (`repay_atoms_max`).",
-    "amounts": "All atoms are bigint at the wire level. All bps fields are u16. All term_seconds are u32. All u128 fields (shares, fp48 share-values) are LE 16 bytes.",
-    "computeBudget": "Heavy ixs (`PlaceOrder`, `ProcessMatchedLoan` with vaultSettle, `LiquidateLoan`, `SettleMaturedLoan`, `ClaimRepaymentForRiskProfile`) need `ComputeBudgetProgram.setComputeUnitLimit(600_000)` prepended."
+    "amounts": "All atoms are bigint at the wire level. All bps fields are u16. All term_seconds are u32. All u128 fields (shares, fp48 share-values) are LE 16 bytes. `sub_vault_id` is u16 everywhere (v1 widened it from u8).",
+    "computeBudget": "Heavy ixs (`PlaceOrder`, `ProcessMatchedLoan` with vaultSettle, `LiquidateLoan`, `SettleMaturedLoan`, `ClaimRepaymentForSubVault`, `MatchCrank`) need `ComputeBudgetProgram.setComputeUnitLimit(600_000)` prepended."
   },
   "instructions": [
     {
@@ -35,10 +35,8 @@
         { "name": "protocol_fee_bps_floor", "type": { "option": "u16" } },
         { "name": "origination_bps", "type": { "option": "u16" } },
         { "name": "curator_split_bps", "type": { "option": "u16" } },
-        { "name": "curator_fee_bps", "type": { "option": "u16" } },
         { "name": "liquidation_keeper_bps", "type": { "option": "u16" } },
         { "name": "liquidation_protocol_bps", "type": { "option": "u16" } },
-        { "name": "ltv_buffer_bps", "type": { "option": "u16" } },
         { "name": "grace_period_seconds", "type": { "option": "u32" } }
       ]
     },
@@ -113,6 +111,7 @@
       "name": "PlaceOrder",
       "tag": 4,
       "heavy": true,
+      "note": "v1 D6: residual_mode picks the unfilled-residual path — 0 P2PoolFallback (default), 1 Rest (rest the residual as a borrower bid; last_valid_unix_ts is its expiry, 0 = never), 2 Drop. Replaces the v0 OB_ONLY `flags` byte.",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true },
         { "name": "global_config", "writable": false },
@@ -134,11 +133,12 @@
         { "name": "system_program (2)", "writable": false },
         { "name": "lender_marginfi_account", "writable": true },
         { "name": "market_debt_vault", "writable": true },
-        { "name": "global_vault", "writable": true, "pda": ["b\"vault\"", "debt_mint"], "optional": true, "note": "Slot must be present; loader downgrades to None if data_len != GLOBAL_VAULT_FIXED_SIZE." }
+        { "name": "global_vault", "writable": true, "pda": ["b\"vault\"", "debt_bank"], "optional": true, "note": "Slot must be present; loader downgrades to None if data_len != GLOBAL_VAULT_FIXED_SIZE." }
       ],
       "args": [
         { "name": "seat_index_hint", "type": { "option": "u32" } },
-        { "name": "flags", "type": "u8" },
+        { "name": "residual_mode", "type": "u8" },
+        { "name": "last_valid_unix_ts", "type": "i64" },
         { "name": "rate_bps", "type": "u16" },
         { "name": "term_seconds", "type": "u32" },
         { "name": "principal_atoms", "type": "u64" },
@@ -240,19 +240,22 @@
       "args": []
     },
     {
-      "name": "CreateRiskProfile",
+      "name": "CreatePoolSubVault",
       "tag": 9,
-      "note": "profile_id is assigned by the program from vault.next_profile_id (1-based, monotonic, never reused; 0 is the sentinel/invalid id). The assigned id is reported back via RiskProfileCreatedLog.profile_id. max_ltv_bps: Some(v) requires 0 < v < 10_000; None stores the LTV_AUTO_FROM_MARGINFI sentinel (u16::MAX = 65535) and the match engine derives the cap at fill time as floor(coll_asset_weight / debt_liability_weight × 10_000) − LTV_AUTO_BUFFER_BPS (500).",
+      "note": "Protocol-admin gated: appends a Pool SubVault. The program auto-assigns sub_vault_id from vault.next_sub_vault_id (1-based, monotonic, never reused; 0 is the sentinel/invalid id). max_ltv_bps / liquidation_ltv_bps are always explicit (1..=9_999, liq > max); the curator-fee split is per-sub-vault.",
       "accounts": [
-        { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal GlobalConfig.protocol_admin" },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true },
         { "name": "system_program", "writable": false }
       ],
       "args": [
         { "name": "curator", "type": "publicKey" },
-        { "name": "max_ltv_bps", "type": { "option": "u16" } },
-        { "name": "max_term_seconds", "type": "u32" }
+        { "name": "spread_bps", "type": "u16" },
+        { "name": "max_ltv_bps", "type": "u16" },
+        { "name": "liquidation_ltv_bps", "type": "u16" },
+        { "name": "max_term_seconds", "type": "u32" },
+        { "name": "curator_fee_bps", "type": "u16" }
       ]
     },
     {
@@ -277,7 +280,7 @@
       ],
       "args": [
         { "name": "amount_atoms", "type": "u64" },
-        { "name": "profile_id", "type": "u8" }
+        { "name": "sub_vault_id", "type": "u16" }
       ]
     },
     {
@@ -304,30 +307,34 @@
       ],
       "args": [
         { "name": "shares_to_burn", "type": "u128" },
-        { "name": "profile_id", "type": "u8" }
+        { "name": "sub_vault_id", "type": "u16" }
       ]
     },
     {
-      "name": "PlaceOrderForRiskProfile",
+      "name": "PlaceOrderForSubVault",
       "tag": 12,
       "splitPayer": true,
+      "note": "v1 D4: takes NO rate or term — the processor derives rate = live bank lending APR + sub_vault.spread_bps and uses sub_vault.max_term_seconds. debt_bank + marginfi_group + collateral_bank must match the market header; debt_oracles[] / collateral_oracles[] feed the cross check.",
       "accounts": [
         { "name": "fee_payer", "signer": true, "writable": true },
         { "name": "curator", "signer": true, "writable": false },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true },
         { "name": "market", "writable": true },
+        { "name": "debt_bank", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "collateral_bank", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
         { "name": "system_program", "writable": false }
       ],
       "args": [
-        { "name": "profile_id", "type": "u8" },
-        { "name": "rate_bps", "type": "u16" },
-        { "name": "term_seconds", "type": "u32" },
+        { "name": "sub_vault_id", "type": "u16" },
         { "name": "flags", "type": "u8" }
       ]
     },
     {
-      "name": "CancelOrderForRiskProfile",
+      "name": "CancelOrderForSubVault",
       "tag": 13,
       "splitPayer": true,
       "accounts": [
@@ -338,24 +345,28 @@
         { "name": "market", "writable": true },
         { "name": "system_program", "writable": false }
       ],
-      "args": [{ "name": "profile_id", "type": "u8" }]
+      "args": [{ "name": "sub_vault_id", "type": "u16" }]
     },
     {
-      "name": "UpdateOrderForRiskProfile",
+      "name": "UpdateOrderForSubVault",
       "tag": 14,
       "splitPayer": true,
+      "note": "v1 D4: parameterless re-sync — cancels the sub-vault's existing ask and rests a fresh one at live bank lending APR + sub_vault.spread_bps / sub_vault.max_term_seconds. Same accounts as PlaceOrderForSubVault.",
       "accounts": [
         { "name": "fee_payer", "signer": true, "writable": true },
         { "name": "curator", "signer": true, "writable": false },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true },
         { "name": "market", "writable": true },
+        { "name": "debt_bank", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "collateral_bank", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
         { "name": "system_program", "writable": false }
       ],
       "args": [
-        { "name": "profile_id", "type": "u8" },
-        { "name": "new_rate_bps", "type": "u16" },
-        { "name": "new_term_seconds", "type": "u32" },
+        { "name": "sub_vault_id", "type": "u16" },
         { "name": "new_flags", "type": "u8" }
       ]
     },
@@ -363,7 +374,7 @@
       "name": "ClaimCuratorFee",
       "tag": 15,
       "accounts": [
-        { "name": "payer", "signer": true, "writable": true, "note": "must equal profile.curator" },
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal sub_vault.curator" },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true },
         { "name": "global_vault_signer", "writable": false },
@@ -379,7 +390,7 @@
         { "name": "marginfi_program", "writable": false },
         { "name": "marginfi_group", "writable": false }
       ],
-      "args": [{ "name": "profile_id", "type": "u8" }]
+      "args": [{ "name": "sub_vault_id", "type": "u16" }]
     },
     {
       "name": "SettleMaturedLoan",
@@ -460,10 +471,8 @@
         { "name": "protocol_fee_bps_floor", "type": { "option": "u16" } },
         { "name": "origination_bps", "type": { "option": "u16" } },
         { "name": "curator_split_bps", "type": { "option": "u16" } },
-        { "name": "curator_fee_bps", "type": { "option": "u16" } },
         { "name": "liquidation_keeper_bps", "type": { "option": "u16" } },
         { "name": "liquidation_protocol_bps", "type": { "option": "u16" } },
-        { "name": "ltv_buffer_bps", "type": { "option": "u16" } },
         { "name": "grace_period_seconds", "type": { "option": "u32" } }
       ]
     },
@@ -490,14 +499,13 @@
       "args": []
     },
     {
-      "name": "ClaimRepaymentForRiskProfile",
+      "name": "ClaimRepaymentForSubVault",
       "tag": 20,
       "heavy": true,
       "accounts": [
         { "name": "payer", "signer": true, "writable": true },
         { "name": "global_config", "writable": false },
         { "name": "market", "writable": true },
-        { "name": "loan", "writable": true },
         { "name": "global_vault", "writable": true },
         { "name": "global_vault_signer", "writable": false },
         { "name": "global_vault_staging", "writable": true },
@@ -512,10 +520,9 @@
         { "name": "debt_mint", "writable": false },
         { "name": "token_program", "writable": false },
         { "name": "marginfi_group", "writable": false },
-        { "name": "marginfi_program", "writable": false },
-        { "name": "cranker_refund", "writable": true, "note": "REQUIRED — bound to loan.created_by" }
+        { "name": "marginfi_program", "writable": false }
       ],
-      "args": []
+      "args": [{ "name": "sub_vault_id", "type": "u16" }]
     },
     {
       "name": "TransferMarketAdmin",
@@ -566,7 +573,7 @@
         { "name": "vault", "writable": true }
       ],
       "args": [
-        { "name": "profile_id", "type": "u8" },
+        { "name": "sub_vault_id", "type": "u16" },
         { "name": "new_curator", "type": "publicKey" }
       ]
     },
@@ -578,7 +585,7 @@
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true }
       ],
-      "args": [{ "name": "profile_id", "type": "u8" }]
+      "args": [{ "name": "sub_vault_id", "type": "u16" }]
     },
     {
       "name": "SetMarketPause",
@@ -629,18 +636,21 @@
       "args": [{ "name": "paused", "type": "u8" }]
     },
     {
-      "name": "UpdateRiskProfile",
+      "name": "UpdateSubVault",
       "tag": 32,
+      "note": "Curator-gated (v1 D15: the owner, for Private sub-vaults). Each Some field overrides; None leaves the value. The resulting (max_ltv, liquidation_ltv) pair must satisfy the liq-gap invariant.",
       "accounts": [
-        { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
+        { "name": "payer", "signer": true, "writable": true, "note": "must equal sub_vault.curator" },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true },
         { "name": "system_program", "writable": false }
       ],
       "args": [
-        { "name": "profile_id", "type": "u8" },
+        { "name": "sub_vault_id", "type": "u16" },
         { "name": "new_max_ltv_bps", "type": { "option": "u16" } },
-        { "name": "new_max_term_seconds", "type": { "option": "u32" } }
+        { "name": "new_liquidation_ltv_bps", "type": { "option": "u16" } },
+        { "name": "new_max_term_seconds", "type": { "option": "u32" } },
+        { "name": "new_spread_bps", "type": { "option": "u16" } }
       ]
     },
     {
@@ -718,49 +728,118 @@
       "args": [{ "name": "paused", "type": "u8" }]
     },
     {
-      "name": "RemoveRiskProfile",
+      "name": "RemoveSubVault",
       "tag": 37,
-      "note": "Tears down a sunset, empty RiskProfile. Rejects with VaultProfileNotSunset (code 55) unless profile.is_sunset == 1, and with VaultProfileNotEmpty (code 34) unless every balance field on the profile is zero. The freed 512-byte block returns to the profile free list; vault.next_profile_id is NOT decremented so the id is retired forever.",
+      "note": "Tears down a sunset, empty SubVault. Rejects with SubVaultNotSunset (code 55) unless sub_vault.is_sunset == 1, and with SubVaultNotEmpty (code 34) unless every balance field on the sub-vault is zero. The freed block returns to the sub-vault free list; vault.next_sub_vault_id is NOT decremented so the id is retired forever.",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true }
       ],
-      "args": [{ "name": "profile_id", "type": "u8" }]
+      "args": [{ "name": "sub_vault_id", "type": "u16" }]
     },
     {
-      "name": "SunsetRiskProfile",
+      "name": "SunsetSubVault",
       "tag": 38,
-      "note": "Vault-admin flips profile.is_sunset = 1, beginning wind-down. Sunset profiles reject deposits, new orders, order updates, and matches (VaultProfileSunset, code 54); withdrawals, curator-fee claims, cancels, repay, settle, and liquidate stay open. Reversible via ResumeRiskProfile (tag 39). Pre-required by RemoveRiskProfile (tag 37) and AdminCancelRiskProfileOrder (tag 40).",
+      "note": "Vault-admin flips sub_vault.is_sunset = 1, beginning wind-down. Sunset sub-vaults reject deposits, new orders, order updates, and matches (SubVaultSunset, code 54); withdrawals, curator-fee claims, cancels, repay, settle, and liquidate stay open. Reversible via ResumeSubVault (tag 39). Pre-required by RemoveSubVault (tag 37) and AdminCancelSubVaultOrder (tag 40).",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true }
       ],
-      "args": [{ "name": "profile_id", "type": "u8" }]
+      "args": [{ "name": "sub_vault_id", "type": "u16" }]
     },
     {
-      "name": "ResumeRiskProfile",
+      "name": "ResumeSubVault",
       "tag": 39,
-      "note": "Vault-admin flips profile.is_sunset = 0, reversing SunsetRiskProfile (tag 38). Admin escape hatch — no time lock on sunset.",
+      "note": "Vault-admin flips sub_vault.is_sunset = 0, reversing SunsetSubVault (tag 38). Admin escape hatch — no time lock on sunset.",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true }
       ],
-      "args": [{ "name": "profile_id", "type": "u8" }]
+      "args": [{ "name": "sub_vault_id", "type": "u16" }]
     },
     {
-      "name": "AdminCancelRiskProfileOrder",
+      "name": "AdminCancelSubVaultOrder",
       "tag": 40,
-      "note": "Vault-admin force-cancels a sunset profile's resting market ask. Rejects with VaultProfileNotSunset (code 55) unless profile.is_sunset == 1. Non-sunset profiles must use the curator-gated CancelOrderForRiskProfile (tag 13). Removes both the market resting order and the vault-side RiskProfileOrderRef; emits CancelOrderForRiskProfileLog with is_replace = 0.",
+      "note": "Vault-admin force-cancels a sunset sub-vault's resting market ask. Rejects with SubVaultNotSunset (code 55) unless sub_vault.is_sunset == 1. Non-sunset sub-vaults must use the curator-gated CancelOrderForSubVault (tag 13). Removes both the market resting order and the vault-side SubVaultOrderRef; emits CancelOrderForSubVaultLog with is_replace = 0.",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true, "note": "must equal vault.global_vault_admin" },
         { "name": "global_config", "writable": false },
         { "name": "vault", "writable": true },
         { "name": "market", "writable": true }
       ],
-      "args": [{ "name": "profile_id", "type": "u8" }]
+      "args": [{ "name": "sub_vault_id", "type": "u16" }]
+    },
+    {
+      "name": "CreatePrivateSubVault",
+      "tag": 41,
+      "note": "Permissionless (v1 D2): the signer becomes the curator and sole depositor of a single-owner Private sub-vault; curator_fee_bps is forced to 0. The program auto-assigns sub_vault_id from vault.next_sub_vault_id (1-based). max_ltv_bps / liquidation_ltv_bps are always explicit.",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [
+        { "name": "spread_bps", "type": "u16" },
+        { "name": "max_ltv_bps", "type": "u16" },
+        { "name": "liquidation_ltv_bps", "type": "u16" },
+        { "name": "max_term_seconds", "type": "u32" }
+      ]
+    },
+    {
+      "name": "CancelOrder",
+      "tag": 42,
+      "note": "Borrower cancels their resting bid (v1 D6): releases the bid's encumbered collateral at the stored snapshot and drops the UserOrderRef. payer (signer) must own the bid with order_sequence.",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "user_account", "writable": true, "pda": ["b\"user\"", "payer"] }
+      ],
+      "args": [
+        { "name": "order_sequence", "type": "u64" },
+        { "name": "seat_index_hint", "type": { "option": "u32" } }
+      ]
+    },
+    {
+      "name": "MatchCrank",
+      "tag": 43,
+      "heavy": true,
+      "note": "Permissionless match crank (v1 D7/D8): crosses resting borrower bids against resting sub-vault asks, up to max_fills fills. Needed because crossability can change without order flow (vault deposits, repayment claims, oracle moves). The take path may realloc the market, so system_program must be present.",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "vault", "writable": true },
+        { "name": "market", "writable": true },
+        { "name": "debt_bank", "writable": false },
+        { "name": "marginfi_group", "writable": false },
+        { "name": "collateral_bank", "writable": false },
+        { "name": "debt_oracles[]", "writable": false, "variadic": true },
+        { "name": "collateral_oracles[]", "writable": false, "variadic": true },
+        { "name": "system_program", "writable": false }
+      ],
+      "args": [{ "name": "max_fills", "type": "u32" }]
+    },
+    {
+      "name": "UpdateOrder",
+      "tag": 44,
+      "note": "Borrower cancel-and-replaces their resting bid (v1 D6): new rate / term / expiry under a fresh sequence; principal, collateral, and the encumbrance snapshot are untouched. payer (signer) must own the bid with order_sequence.",
+      "accounts": [
+        { "name": "payer", "signer": true, "writable": true },
+        { "name": "global_config", "writable": false },
+        { "name": "market", "writable": true },
+        { "name": "user_account", "writable": true, "pda": ["b\"user\"", "payer"] }
+      ],
+      "args": [
+        { "name": "order_sequence", "type": "u64" },
+        { "name": "seat_index_hint", "type": { "option": "u32" } },
+        { "name": "new_rate_bps", "type": "u16" },
+        { "name": "new_term_seconds", "type": "u32" },
+        { "name": "new_last_valid_unix_ts", "type": "i64" }
+      ]
     }
   ],
   "accounts": [
@@ -772,15 +851,15 @@
       "note": "Account is `MarketFixed` header + variable-length dynamic region holding the asks RB-tree, claimed-seats RB-tree, matched-loans RB-tree, and free list. See `programs/ydelta/src/state/market.rs` for byte-offset comments. Decoder lives at ts/src/accounts/market.ts (Phase 3)."
     },
     { "name": "GlobalConfig", "encoding": "bytemuck Pod", "note": "Holds `protocol_admin`, `pending_protocol_admin`, `is_paused`. See state/global_config.rs." },
-    { "name": "GlobalVaultFixed", "size": 320, "encoding": "bytemuck Pod", "note": "Per-mint vault header. Dynamic region holds the risk_profiles RB-tree (512-byte blocks) and claimed_seats + market_orders RB-trees backed by 160-byte node blocks carrying 144-byte payloads. See state/vault.rs." },
-    { "name": "RiskProfile", "size": 496, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by profile_id (1-based; 0 is sentinel). Carries is_sunset flag at offset 1, max_ltv_bps (with LTV_AUTO_FROM_MARGINFI = 65535 sentinel) at offset 40, and pending_claim_atoms (retired atoms awaiting claim_repayment_for_risk_profile sweep) at offset 240. See state/vault.rs." },
-    { "name": "RiskProfileDepositorSeat", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (owner, profile_id)." },
-    { "name": "RiskProfileOrderRef", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (market, profile_id). At most one live order per (profile, market)." },
-    { "name": "ClaimedSeat", "encoding": "bytemuck Pod tree-node payload", "note": "Per-trader bookkeeping in a market — debt/collateral × withdrawable/encumbered shares + matched-loan running aggregates." },
-    { "name": "RestingOrder", "encoding": "bytemuck Pod tree-node payload", "note": "Vault ask body — rate_bps, term_seconds, claim_seat_index, sequence." },
-    { "name": "MatchedLoan", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Transient queue node between match and promote." },
-    { "name": "LoanFixed", "encoding": "bytemuck Pod PDA", "note": "Per-loan PDA seeded by (b\"loan\", market, sequence_le)." },
-    { "name": "UserAccount", "encoding": "bytemuck Pod", "note": "Per-wallet market-position + vault-position mirrors. Authoritative balances live on the canonical ClaimedSeat / RiskProfileDepositorSeat trees." }
+    { "name": "GlobalVaultFixed", "size": 320, "encoding": "bytemuck Pod", "note": "Per-mint vault header. Dynamic region holds the sub_vaults RB-tree (496-byte payloads) and claimed_seats + market_orders RB-trees backed by node blocks carrying 144-byte payloads. sub_vault_count is u16; next_sub_vault_id is u16. See state/vault.rs." },
+    { "name": "SubVault", "size": 496, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by sub_vault_id (u16, 1-based; 0 is sentinel). Carries is_sunset flag at offset 2, kind at offset 3 (0=Pool, 1=Private), spread_bps at offset 4, explicit max_ltv_bps/liquidation_ltv_bps at offsets 40/42, curator_fee_bps at offset 48, and pending_claim_atoms (retired atoms awaiting claim_repayment_for_sub_vault sweep) at offset 240. See state/vault.rs." },
+    { "name": "SubVaultDepositorSeat", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (owner, sub_vault_id u16). Carries shares + supply/delta yield-index snapshots." },
+    { "name": "SubVaultOrderRef", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (market, sub_vault_id u16). At most one live order per (sub_vault, market)." },
+    { "name": "ClaimedSeat", "encoding": "bytemuck Pod tree-node payload", "note": "Per-trader bookkeeping in a market — debt/collateral × withdrawable/encumbered shares + matched-loan running aggregates. owner_kind at offset 104 (0=User, 1=SubVault); sub_vault_id u16 at offset 106." },
+    { "name": "RestingOrder", "encoding": "bytemuck Pod tree-node payload", "note": "Order body — rate_bps, term_seconds, sequence, last_valid_unix_ts (i64 at offset 32), side, order_type." },
+    { "name": "MatchedLoan", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Transient queue node between match and promote. Carries curator_fee_bps_snapshot / origination_ltv_bps / liquidation_ltv_bps at offsets 88/90/92." },
+    { "name": "LoanFixed", "encoding": "bytemuck Pod PDA", "note": "Per-loan PDA seeded by (b\"loan\", market, sequence_le). Carries origination_ltv_bps/liquidation_ltv_bps at 96/98 and lender_sub_vault_id (u16) at 202." },
+    { "name": "UserAccount", "encoding": "bytemuck Pod", "note": "Per-wallet market-position + vault-position mirrors plus the resting-bid UserOrderRef tree (open_orders_root_index at offset 72, user_order_count at offset 76). Authoritative balances live on the canonical ClaimedSeat / SubVaultDepositorSeat trees." }
   ],
   "errors": [
     { "code": 0, "name": "InvalidMarketParameters" },
@@ -809,16 +888,16 @@
     { "code": 23, "name": "SelfMatchForbidden" },
     { "code": 24, "name": "CollateralBelowMatchLTV" },
     { "code": 25, "name": "VaultWrongMint" },
-    { "code": 26, "name": "VaultProfileNotFound" },
+    { "code": 26, "name": "SubVaultNotFound" },
     { "code": 28, "name": "VaultOrderTermExceedsProfileMax" },
     { "code": 29, "name": "VaultCuratorRequired" },
     { "code": 30, "name": "VaultAdminRequired" },
-    { "code": 32, "name": "VaultProfileOrderExists" },
+    { "code": 32, "name": "SubVaultOrderExists" },
     { "code": 33, "name": "VaultInsufficientIdleAtoms" },
-    { "code": 34, "name": "VaultProfileNotEmpty" },
-    { "code": 36, "name": "VaultProfileIdExists" },
-    { "code": 37, "name": "VaultProfileLtvOutOfRange" },
-    { "code": 38, "name": "VaultProfileTermInvalid" },
+    { "code": 34, "name": "SubVaultNotEmpty" },
+    { "code": 36, "name": "SubVaultIdExists" },
+    { "code": 37, "name": "SubVaultLtvOutOfRange" },
+    { "code": 38, "name": "SubVaultTermInvalid" },
     { "code": 39, "name": "LoanNotMatured" },
     { "code": 40, "name": "LoanStillSolvent" },
     { "code": 41, "name": "LiquidatorPaymentInsufficient" },
@@ -834,7 +913,8 @@
     { "code": 51, "name": "MathDivisionByZero" },
     { "code": 52, "name": "MathOverflow" },
     { "code": 53, "name": "InsufficientEncumberedCollateral" },
-    { "code": 54, "name": "VaultProfileSunset" },
-    { "code": 55, "name": "VaultProfileNotSunset" }
+    { "code": 54, "name": "SubVaultSunset" },
+    { "code": 55, "name": "SubVaultNotSunset" },
+    { "code": 56, "name": "FallbackLtvInsufficient" }
   ]
 }

@@ -23,7 +23,8 @@ export interface LoanFixed {
   createdBy: PublicKey;
   matchedLoanSequence: bigint;
   borrowerMarginfiBorrowShares: bigint;
-  debtIndexAtLastAccrual: bigint;
+  originationLtvBps: number;
+  liquidationLtvBps: number;
   principalDebtAtoms: bigint;
   outstandingDebtAtoms: bigint;
   lenderClaimableAtoms: bigint;
@@ -43,7 +44,7 @@ export interface LoanFixed {
   version: number;
   bump: number;
   lenderKind: number;
-  lenderProfileId: number;
+  lenderSubVaultId: number;
   curatorFeeBpsSnapshot: number;
   lenderGlobalVault: PublicKey;
   principalRetiredAtoms: bigint;
@@ -70,7 +71,8 @@ export function decodeLoanFixed(data: Uint8Array | Buffer): LoanFixed {
     createdBy: readPubkey(dv, 40),
     matchedLoanSequence: readU64(dv, 72),
     borrowerMarginfiBorrowShares: readU128(dv, 80),
-    debtIndexAtLastAccrual: readU128(dv, 96),
+    originationLtvBps: readU16(dv, 96),
+    liquidationLtvBps: readU16(dv, 98),
     principalDebtAtoms: readU64(dv, 112),
     outstandingDebtAtoms: readU64(dv, 120),
     lenderClaimableAtoms: readU64(dv, 128),
@@ -90,7 +92,7 @@ export function decodeLoanFixed(data: Uint8Array | Buffer): LoanFixed {
     version: readU8(dv, 199),
     bump: readU8(dv, 200),
     lenderKind: readU8(dv, 201),
-    lenderProfileId: readU8(dv, 202),
+    lenderSubVaultId: readU16(dv, 202),
     curatorFeeBpsSnapshot: readU16(dv, 204),
     lenderGlobalVault: readPubkey(dv, 208),
     principalRetiredAtoms: readU64(dv, 240),

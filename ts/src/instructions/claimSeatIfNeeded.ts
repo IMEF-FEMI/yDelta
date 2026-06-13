@@ -21,7 +21,7 @@ export function hasUserSeat(marketData: Uint8Array | Buffer, owner: PublicKey): 
   for (const { seat } of iterClaimedSeats(marketData, header.claimedSeatsRootIndex)) {
     if (
       seat.ownerKind === OwnerKind.User &&
-      seat.riskProfileId === 0 &&
+      seat.subVaultId === 0 &&
       seat.owner.equals(owner)
     ) {
       return true;

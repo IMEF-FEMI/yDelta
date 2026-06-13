@@ -93,7 +93,7 @@ describe('e2e: BadDebtLog emitted by under-collateralised liquidation', () => {
     cranker = await bk.fundedKeypair();
     loanKey = loanPda(handles.market.publicKey, handles.matchedLoanSequence)[0];
 
-    const vault = globalVaultPda(USDC_MINT)[0];
+    const vault = globalVaultPda(USDC_BANK)[0];
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE });
     await bk.send(
       [
@@ -169,6 +169,7 @@ describe('e2e: BadDebtLog emitted by under-collateralised liquidation', () => {
           marginfiProgram: MARGINFI_PROGRAM_ID,
           repayAtomsMax: 0n, // full repay attempt
           crankerRefund: cranker.publicKey,
+          globalVault: globalVaultPda(USDC_BANK)[0], // Fixed loan: vault-lent
         }),
       ],
       [keeper],

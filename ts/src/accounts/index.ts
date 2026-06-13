@@ -16,18 +16,18 @@ export { decodeMatchedLoan, MATCHED_LOAN_SIZE } from './matchedLoan.js';
 export type { MatchedLoan } from './matchedLoan.js';
 
 export {
-  decodeRiskProfile,
-  decodeRiskProfileDepositorSeat,
-  decodeRiskProfileOrderRef,
-  RISK_PROFILE_SIZE,
-  RISK_PROFILE_DEPOSITOR_SEAT_SIZE,
-  RISK_PROFILE_ORDER_REF_SIZE,
-} from './riskProfile.js';
+  decodeSubVault,
+  decodeSubVaultDepositorSeat,
+  decodeSubVaultOrderRef,
+  SUB_VAULT_SIZE,
+  SUB_VAULT_DEPOSITOR_SEAT_SIZE,
+  SUB_VAULT_ORDER_REF_SIZE,
+} from './subVault.js';
 export type {
-  RiskProfile,
-  RiskProfileDepositorSeat,
-  RiskProfileOrderRef,
-} from './riskProfile.js';
+  SubVault,
+  SubVaultDepositorSeat,
+  SubVaultOrderRef,
+} from './subVault.js';
 
 export {
   decodeLoanFixed,
@@ -46,8 +46,10 @@ export {
   decodeVaultPosition,
   decodeMarketPosition,
   decodeUserLoanRef,
+  decodeUserOrderRef,
   USER_ACCOUNT_FIXED_SIZE,
   USER_ACCOUNT_BLOCK_PAYLOAD_SIZE,
+  USER_ORDER_REF_SIZE,
 } from './userAccount.js';
 export type {
   UserAccount,
@@ -55,6 +57,7 @@ export type {
   VaultPosition,
   MarketPosition,
   UserLoanRef,
+  UserOrderRef,
 } from './userAccount.js';
 
 export {
@@ -75,7 +78,7 @@ export type { Market, MarketHeader, FeeConfig } from './market.js';
 export {
   decodeGlobalVault,
   decodeGlobalVaultHeader,
-  iterRiskProfiles,
+  iterSubVaults,
   iterDepositorSeats,
   iterMarketOrders,
   iterProfileFreeList,

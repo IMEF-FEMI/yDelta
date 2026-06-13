@@ -9,15 +9,23 @@ import { expect } from 'vitest';
 /** Custom error codes from `programs/ydelta/src/program/error.rs::YdeltaError`. */
 export const YdeltaError = {
   IncorrectAccount: 10,
-  VaultProfileNotFound: 26,
+  SubVaultNotFound: 26,
   VaultCuratorRequired: 29,
   VaultAdminRequired: 30,
+  SubVaultOrderExists: 32,
+  SubVaultNotEmpty: 34,
+  SubVaultIdExists: 36,
+  SubVaultLtvOutOfRange: 37,
+  SubVaultTermInvalid: 38,
   MarketAdminRequired: 43,
   PendingAdminMismatch: 45,
   MarketPaused: 46,
   GlobalPaused: 47,
   ProtocolAdminRequired: 48,
   VaultPaused: 50,
+  SubVaultSunset: 54,
+  SubVaultNotSunset: 55,
+  FallbackLtvInsufficient: 56,
 } as const;
 
 /**

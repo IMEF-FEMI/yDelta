@@ -11,7 +11,8 @@
  *     termSeconds: number,
  *     principalAtoms: string | number,      // u64 (string for >2^53)
  *     collateralAtoms: string | number,
- *     flags?: number,
+ *     residualMode?: number,                // 0 P2PoolFallback, 1 rest, 2 drop
+ *     lastValidUnixTs?: string | number,    // i64; rested-bid expiry (0 = never)
  *     seatIndexHint?: number | null
  *   }
  *
@@ -54,7 +55,10 @@ interface Input {
   termSeconds: number;
   principalAtoms: string | number;
   collateralAtoms: string | number;
-  flags?: number;
+  /** Unfilled-residual path (v1 D6): 0 P2Pool fallback, 1 rest, 2 drop. */
+  residualMode?: number;
+  /** Rested-bid expiry unix ts; `0` = never (only used with residualMode 1). */
+  lastValidUnixTs?: string | number;
   seatIndexHint?: number | null;
 }
 
@@ -122,7 +126,7 @@ async function main(): Promise<void> {
   const collateral = BigInt(input.collateralAtoms.toString());
 
   log(`[borrower-place-bid] market=${marketPk.toBase58()} principal=${principal} collateral=${collateral} borrower=${borrower.publicKey.toBase58()}`);
-  log(`[borrower-place-bid] rate=${input.rateBps}bps term=${input.termSeconds}s flags=${input.flags ?? 0}`);
+  log(`[borrower-place-bid] rate=${input.rateBps}bps term=${input.termSeconds}s residualMode=${input.residualMode ?? 0} lastValidUnixTs=${input.lastValidUnixTs ?? 0}`);
 
   const ix = placeOrderInstruction({
     payer: borrower.publicKey,
@@ -142,7 +146,10 @@ async function main(): Promise<void> {
     termSeconds: input.termSeconds,
     principalAtoms: principal,
     collateralAtoms: collateral,
-    flags: input.flags,
+    residualMode: input.residualMode,
+    lastValidUnixTs: input.lastValidUnixTs === undefined
+      ? undefined
+      : BigInt(input.lastValidUnixTs.toString()),
     seatIndexHint: input.seatIndexHint ?? null,
   });
 
@@ -176,6 +183,8 @@ async function main(): Promise<void> {
       termSeconds: input.termSeconds,
       principalAtoms: input.principalAtoms.toString(),
       collateralAtoms: input.collateralAtoms.toString(),
+      residualMode: input.residualMode ?? 0,
+      lastValidUnixTs: (input.lastValidUnixTs ?? 0).toString(),
     },
   });
 }

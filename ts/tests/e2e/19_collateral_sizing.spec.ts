@@ -8,14 +8,15 @@
  *      (Custom 24).
  *
  * This is the bit-equivalence test for the on-chain LTV gate. If the
- * TS port drifts from `state/ltv.rs::get_required_quote_collateral_to_back_debt`
- * (decimal normalisation, ceil rounding, buffer math, weight handling),
- * either bound fails and the test surfaces the drift immediately.
+ * TS port drifts from `state/ltv.rs::required_collateral_at_ltv_cap`
+ * (cap→weight conversion, decimal normalisation, ceil rounding), either
+ * bound fails and the test surfaces the drift immediately.
  *
- * Profile is configured with `max_ltv_bps = 9_999` so the bank-weight
- * gate is binding (not the profile-LTV gate). `ltv_buffer_bps = 0` (the
- * default `setupMarket` bakes into `CreateMarketParams`) so the buffer
- * doesn't enter the math.
+ * v1 D17: Fixed-loan origination gates on the sub-vault's explicit
+ * `max_ltv_bps` cap — NOT on marginfi bank weights, and with NO
+ * `ltv_buffer_bps` (the on-chain buffer field was removed entirely). The
+ * sub-vault is configured with `max_ltv_bps = 8_000` (liq 9_000, a legal
+ * ≥ MIN_LIQ_GAP_BPS gap) and the TS preflight passes that same cap.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
@@ -28,7 +29,7 @@ import {
   depositInstruction,
   globalVaultDepositInstruction,
   HEAVY_IX_CU_LIMIT,
-  placeOrderForRiskProfileInstruction,
+  placeOrderForSubVaultInstruction,
   placeOrderInstruction,
   readOraclePriceFp48,
   requiredCollateralAtoms,
@@ -47,25 +48,30 @@ import {
   USDC_ORACLE,
   WSOL_MINT,
 } from './_fixtures.ts';
-import { expectCustomError, YdeltaError } from './_errors.ts';
 import {
   bankLiquidityVaultAuthority,
   setupGlobalConfig,
   setupMarket,
-  setupRiskProfile,
+  setupPoolSubVault,
   setupVault,
 } from './_setup.ts';
 
 const BORROW_ATOMS = 1_000_000n;
-const ASK_RATE_BPS = 500;
-const BID_RATE_BPS = 800;
 const TERM_SECONDS = 30 * 86_400;
+/** Sub-vault origination LTV cap — the binding v1 gate (D17). */
+const MAX_LTV_BPS = 8_000;
+/** Liquidation cap; ≥ max_ltv + MIN_LIQ_GAP_BPS (200) and ≤ 10_000. */
+const LIQ_LTV_BPS = 9_000;
+/** Residual mode 2 = Drop — no P2Pool fallback, so the LTV gate isn't masked. */
+const RESIDUAL_DROP = 2;
 
 describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-for-atom', () => {
   let bk: BankrunHandle;
   let admin: Keypair;
   let market: Keypair;
   let requiredAtoms: bigint;
+  // v1: vault ask rate is program-quoted (bank APR + spread), read back below.
+  let bidRateBps: number;
 
   beforeAll(async () => {
     bk = await bootBankrun({ loadMarginfiFixtures: true });
@@ -74,10 +80,12 @@ describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-f
     market = await setupMarket(bk, admin);
     await setupVault(bk, admin);
     const curator = await bk.fundedKeypair();
-    // max_ltv = 9_999 so the profile gate is wide-open and the
-    // **bank-weight** gate is the binding constraint we're verifying.
-    await setupRiskProfile(bk, admin, curator.publicKey, {
-      maxLtvBps: 9_999,
+    // v1 D17: the sub-vault `max_ltv_bps` cap is the binding origination
+    // gate we're verifying. liquidation_ltv must satisfy
+    // max_ltv + MIN_LIQ_GAP_BPS (200) ≤ v ≤ 10_000.
+    await setupPoolSubVault(bk, admin, curator.publicKey, {
+      maxLtvBps: MAX_LTV_BPS,
+      liquidationLtvBps: LIQ_LTV_BPS,
       maxTermSeconds: TERM_SECONDS,
     });
 
@@ -101,28 +109,35 @@ describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-f
           lendingPool: USDC_BANK,
           liquidityVault: USDC_LIQUIDITY_VAULT,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          profileId: 1,
+          subVaultId: 1,
           amountAtoms: 10_000_000_000n,
         }),
       ],
       [depositor],
     );
 
-    // Curator quote.
+    // Curator quote. v1: no rate/term — program quotes live (bank APR + spread).
+    await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE, switchboardOracle: SOL_ORACLE });
     await bk.send(
       [
-        placeOrderForRiskProfileInstruction({
+        placeOrderForSubVaultInstruction({
           feePayer: curator.publicKey,
           curator: curator.publicKey,
-          mint: USDC_MINT,
           market: market.publicKey,
-          profileId: 1,
-          rateBps: ASK_RATE_BPS,
-          termSeconds: TERM_SECONDS,
+          debtBank: USDC_BANK,
+          marginfiGroup: MARGINFI_GROUP,
+          collateralBank: SOL_BANK,
+          debtOracles: [USDC_ORACLE],
+          collateralOracles: [SOL_ORACLE],
+          subVaultId: 1,
         }),
       ],
       [curator],
     );
+
+    // Read back the program-quoted ask rate; the borrower bids above it.
+    const askMarket = decodeMarket((await bk.getAccount(market.publicKey))!.data);
+    bidRateBps = askMarket.asks[0].order.rateBps + 300;
 
     // Make oracles fresh, then read prices + bank weights and compute
     // the on-chain-equivalent required collateral via TS.
@@ -139,9 +154,8 @@ describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-f
       borrowAtoms: BORROW_ATOMS,
       debtPriceFp48,
       collateralPriceFp48: collPriceFp48,
-      liabilityWeightInitFp48: debtBank.liabilityWeightInitFp48,
-      collateralAssetWeightInitFp48: collBank.assetWeightInitFp48,
-      ltvBufferBps: 0,
+      // v1 D17: origination sizes against the sub-vault cap, not bank weights.
+      maxLtvBps: MAX_LTV_BPS,
       debtMintDecimals: debtBank.mintDecimals,
       collateralMintDecimals: collBank.mintDecimals,
     });
@@ -152,7 +166,7 @@ describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-f
     expect(requiredAtoms).toBeLessThan(100_000_000n);
   });
 
-  it('Bid with collateral < required (by 1 atom) → CollateralBelowMatchLTV (Custom 24)', async () => {
+  it('Bid with collateral < required (by 1 atom) → ask is skipped, no MatchedLoan lands', async () => {
     const borrower = await bk.fundedKeypair();
     const solAta = Keypair.generate().publicKey;
     const usdcAta = Keypair.generate().publicKey;
@@ -193,42 +207,45 @@ describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-f
       [borrower],
     );
 
-    // Bid with `collateral = required - 1` on the IOC must error with
-    // `CollateralBelowMatchLTV`. Use `flags = FLAG_OB_ONLY = 2` so the
-    // P2Pool fallback doesn't mask the LTV rejection by absorbing the
-    // residual into a marginfi.borrow.
+    // v1 D17: the sub-vault `max_ltv_bps` cap is a per-ask SKIP, NOT a
+    // hard error — when `collateral < required_collateral_at_ltv_cap`, the
+    // match engine skips the ask (state/market_helpers.rs) and walks on. With
+    // `residualMode = 2` (Drop) there is no P2Pool fallback to absorb the
+    // residual, so a `required - 1` bid finds NO eligible ask, drops cleanly,
+    // and lands ZERO matched loans. The tx itself succeeds. This is the exact
+    // boundary that proves the TS `requiredCollateralAtoms` port: one atom
+    // below the on-chain requirement, nothing crosses.
     await bk.refreshOracleFreshness({ pythOracle: USDC_ORACLE, switchboardOracle: SOL_ORACLE });
-    await expectCustomError(
-      bk.send(
-        [
-          cuBudgetIx(HEAVY_IX_CU_LIMIT),
-          placeOrderInstruction({
-            payer: borrower.publicKey,
-            market: market.publicKey,
-            debtMint: USDC_MINT,
-            marginfiGroup: MARGINFI_GROUP,
-            debtBank: USDC_BANK,
-            collateralBank: SOL_BANK,
-            debtOracles: [USDC_ORACLE],
-            collateralOracles: [SOL_ORACLE],
-            debtLiquidityVault: USDC_LIQUIDITY_VAULT,
-            debtBankLiquidityVaultAuthority: bankLiquidityVaultAuthority(USDC_BANK),
-            borrowerDebtToken: usdcAta,
-            tokenProgram: SPL_TOKEN_PROGRAM_ID,
-            marginfiProgram: MARGINFI_PROGRAM_ID,
-            rateBps: BID_RATE_BPS,
-            termSeconds: TERM_SECONDS,
-            principalAtoms: BORROW_ATOMS,
-            collateralAtoms: requiredAtoms - 1n,
-            flags: 0b10, // OB_ONLY — no P2Pool absorption
-          }),
-        ],
-        [borrower],
-      ),
-      24, // YdeltaError::CollateralBelowMatchLTV
-      `bid with collateral = required − 1 (${requiredAtoms - 1n})`,
+    await bk.send(
+      [
+        cuBudgetIx(HEAVY_IX_CU_LIMIT),
+        placeOrderInstruction({
+          payer: borrower.publicKey,
+          market: market.publicKey,
+          debtMint: USDC_MINT,
+          marginfiGroup: MARGINFI_GROUP,
+          debtBank: USDC_BANK,
+          collateralBank: SOL_BANK,
+          debtOracles: [USDC_ORACLE],
+          collateralOracles: [SOL_ORACLE],
+          debtLiquidityVault: USDC_LIQUIDITY_VAULT,
+          debtBankLiquidityVaultAuthority: bankLiquidityVaultAuthority(USDC_BANK),
+          borrowerDebtToken: usdcAta,
+          tokenProgram: SPL_TOKEN_PROGRAM_ID,
+          marginfiProgram: MARGINFI_PROGRAM_ID,
+          rateBps: bidRateBps,
+          termSeconds: TERM_SECONDS,
+          principalAtoms: BORROW_ATOMS,
+          collateralAtoms: requiredAtoms - 1n,
+          residualMode: RESIDUAL_DROP, // Drop — no P2Pool absorption
+        }),
+      ],
+      [borrower],
     );
-    void YdeltaError;
+
+    // Nothing crossed: the LTV-skipped ask left the matched-loan queue empty.
+    const m = decodeMarket((await bk.getAccount(market.publicKey))!.data);
+    expect(m.matchedLoans).toHaveLength(0);
   });
 
   it('Bid with collateral = required (exact) → match crosses + MatchedLoan lands', async () => {
@@ -287,11 +304,11 @@ describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-f
           borrowerDebtToken: usdcAta,
           tokenProgram: SPL_TOKEN_PROGRAM_ID,
           marginfiProgram: MARGINFI_PROGRAM_ID,
-          rateBps: BID_RATE_BPS,
+          rateBps: bidRateBps,
           termSeconds: TERM_SECONDS,
           principalAtoms: BORROW_ATOMS,
           collateralAtoms: requiredAtoms,
-          flags: 0b10,
+          residualMode: RESIDUAL_DROP,
         }),
       ],
       [borrower],

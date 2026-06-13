@@ -69,6 +69,10 @@ async function main(): Promise<void> {
   // `markets.json` was bumped to remember the vaultSettle bit through to
   // the cranker step; the alternative is to decode the matched-loan
   // entry's `flags` here. We accept either: explicit flag wins.
+  //
+  // The GlobalVault PDA is bank-keyed in v1 (`[b"vault", bank]`), so we
+  // derive it from `debtBank` (the market's debt lending pool), NOT the mint.
+  const vault = globalVaultPda(debtBank)[0];
   const ix = processMatchedLoanInstruction({
     payer: signer.publicKey,
     market: marketPk,
@@ -78,12 +82,10 @@ async function main(): Promise<void> {
     matchedLoanIndexHint: input.matchedLoanIndexHint ?? null,
     vaultSettle: input.vaultSettle
       ? {
-          globalVault: globalVaultPda(debtMint)[0],
-          globalVaultSigner: globalVaultSignerPda(globalVaultPda(debtMint)[0])[0],
-          globalVaultStaging: globalVaultStagingPda(globalVaultPda(debtMint)[0])[0],
-          globalVaultIntegrationAccount: globalVaultIntegrationAccountPda(
-            globalVaultPda(debtMint)[0],
-          )[0],
+          globalVault: vault,
+          globalVaultSigner: globalVaultSignerPda(vault)[0],
+          globalVaultStaging: globalVaultStagingPda(vault)[0],
+          globalVaultIntegrationAccount: globalVaultIntegrationAccountPda(vault)[0],
           marketDebtVault: marketTokenVaultPda(marketPk, debtMint)[0],
           marketLenderIntegrationAccount: lenderIntegrationAccountPda(marketPk)[0],
           marketSigner: marketSignerPda(marketPk)[0],

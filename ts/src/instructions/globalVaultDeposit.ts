@@ -16,7 +16,7 @@ import { InstructionTag } from './_tags.js';
 /**
  * Tag 10 — `GlobalVaultDeposit`. Atoms route depositor wallet → staging →
  * vault integration account. The depositor's stake in the chosen
- * `profileId` grows by the freshly-minted vault shares.
+ * `subVaultId` grows by the freshly-minted vault shares.
  */
 export interface GlobalVaultDepositArgs {
   depositor: PublicKey;
@@ -29,21 +29,21 @@ export interface GlobalVaultDepositArgs {
   /** marginfi liquidity vault for the pinned bank. */
   liquidityVault: PublicKey;
   marginfiProgram: PublicKey;
-  profileId: number;
+  subVaultId: number;
   amountAtoms: bigint | BN | number;
 }
 
 export function globalVaultDepositInstruction(
   args: GlobalVaultDepositArgs,
 ): TransactionInstruction {
-  const vault = globalVaultPda(args.mint)[0];
+  const vault = globalVaultPda(args.lendingPool)[0];
   const signerPda = globalVaultSignerPda(vault)[0];
   const staging = globalVaultStagingPda(vault)[0];
   const integration = globalVaultIntegrationAccountPda(vault)[0];
   const data = new Writer()
     .u8(InstructionTag.GlobalVaultDeposit)
     .u64(args.amountAtoms)
-    .u8(args.profileId)
+    .u16(args.subVaultId)
     .toBuffer();
   return ydeltaIx(
     [

@@ -1,13 +1,13 @@
 /**
  * vault-deposit.ts — `GlobalVaultDeposit` (tag 10). Depositor LP into the
- * USDC global vault under a specific risk profile.
+ * USDC global vault under a specific sub-vault.
  *
  * Reads:
  *   .local/vault-deposit-input.json {
  *     mint: string,                          // debt mint of the vault
  *     depositorKeypairPath?: string,         // path; defaults to signer
  *     depositorTokenAta: string,             // depositor's mint ATA
- *     profileId: number,
+ *     subVaultId: number,                    // u16 (v1; was profileId u8)
  *     amountAtoms: string | number
  *   }
  *   .local/vaults.json
@@ -34,7 +34,7 @@ import type { VaultDump } from './_types.js';
 
 interface Input {
   mint: string;
-  profileId: number;
+  subVaultId: number;
   amountAtoms: string | number;
 }
 
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   const depositorToken = ataFor(depositor.publicKey, mint);
 
   const amount = BigInt(input.amountAtoms.toString());
-  log(`[vault-deposit] mint=${input.mint} profileId=${input.profileId} amount=${amount} depositor=${depositor.publicKey.toBase58()}`);
+  log(`[vault-deposit] mint=${input.mint} subVaultId=${input.subVaultId} amount=${amount} depositor=${depositor.publicKey.toBase58()}`);
 
   const ix = globalVaultDepositInstruction({
     depositor: depositor.publicKey,
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     lendingPool: new PublicKey(vault.bank),
     liquidityVault: new PublicKey(await vaultLiquidityVault(conn, vault.bank)),
     marginfiProgram: MARGINFI_PROGRAM_ID,
-    profileId: input.profileId,
+    subVaultId: input.subVaultId,
     amountAtoms: amount,
   });
   // Idempotently ensure the depositor's source ATA exists (must already hold
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     signatures: [sig],
     summary: {
       mint: input.mint,
-      profileId: input.profileId,
+      subVaultId: input.subVaultId,
       depositor: depositor.publicKey.toBase58(),
       amountAtoms: amount.toString(),
     },

@@ -30,10 +30,8 @@ export interface FeeConfig {
   protocolFeeBpsFloor: number;
   originationBps: number;
   curatorSplitBps: number;
-  curatorFeeBps: number;
   liquidationKeeperBps: number;
   liquidationProtocolBps: number;
-  ltvBufferBps: number;
   gracePeriodSeconds: number;
 }
 
@@ -79,15 +77,16 @@ export interface Market {
   matchedLoans: Array<{ index: number; loan: MatchedLoan }>;
 }
 
+// v1 FeeConfig (state/market.rs): `curator_fee_bps` moved to the sub-vault
+// (D3b) and `ltv_buffer_bps` was removed (D17) — both are gone here, and
+// the liquidation fields shifted down to offset 6/8. See `FeeConfigOffsets`.
 function decodeFeeConfig(dv: DataView, base: number): FeeConfig {
   return {
     protocolFeeBpsFloor: readU16(dv, base + FeeConfigOffsets.PROTOCOL_FEE_BPS_FLOOR),
     originationBps: readU16(dv, base + FeeConfigOffsets.ORIGINATION_BPS),
     curatorSplitBps: readU16(dv, base + FeeConfigOffsets.CURATOR_SPLIT_BPS),
-    curatorFeeBps: readU16(dv, base + FeeConfigOffsets.CURATOR_FEE_BPS),
     liquidationKeeperBps: readU16(dv, base + FeeConfigOffsets.LIQUIDATION_KEEPER_BPS),
     liquidationProtocolBps: readU16(dv, base + FeeConfigOffsets.LIQUIDATION_PROTOCOL_BPS),
-    ltvBufferBps: readU16(dv, base + FeeConfigOffsets.LTV_BUFFER_BPS),
     gracePeriodSeconds: readU32(dv, base + FeeConfigOffsets.GRACE_PERIOD_SECONDS),
   };
 }

@@ -1,26 +1,28 @@
 /**
- * vault-place-ask.ts — `PlaceOrderForRiskProfile` (tag 12). Curator
- * publishes (or repositions) a vault ask at a given rate/term.
+ * vault-place-ask.ts — `PlaceOrderForSubVault` (tag 12). Curator publishes
+ * (or repositions) a vault ask on a market.
+ *
+ * v1: takes **no** rate or term — the processor computes
+ * `live bank lending APR + subVault.spreadBps` and uses
+ * `subVault.maxTermSeconds`. Only `flags` carries the order bitmask.
  *
  * Reads:
  *   .local/vault-place-ask-input.json {
  *     marketLabel: string,                   // .local/markets.json key
  *     mint: string,                          // debt mint (must equal market.debtMint)
- *     profileId: number,
- *     rateBps: number,
- *     termSeconds: number,
+ *     subVaultId: number,
  *     flags?: number
  *   }
  *   .local/markets.json
  *   .local/risk-profiles.json
  *   .local/curators.json
  *
- * The curator key is loaded from `curators.json` via the profile's
+ * The curator key is loaded from `curators.json` via the sub-vault's
  * `curatorLabel`. Fee payer = deployer (signer); curator-signs only.
  */
 import { PublicKey } from '@solana/web3.js';
 
-import { placeOrderForRiskProfileInstruction } from '../src/instructions/index.js';
+import { placeOrderForSubVaultInstruction } from '../src/instructions/index.js';
 import {
   appendTxLog,
   loadConnection,
@@ -30,22 +32,20 @@ import {
   readKeypairFromBase58,
   sendIxs,
 } from './_runner.js';
-import type { MarketDump, ProfileDump, CuratorDump } from './_types.js';
-import { resolveCuratorForProfile } from './_types.js';
+import type { MarketDump, SubVaultDump, CuratorDump } from './_types.js';
+import { resolveCuratorForSubVault } from './_types.js';
 
 interface Input {
   marketLabel: string;
   mint: string;
-  profileId: number;
-  rateBps: number;
-  termSeconds: number;
+  subVaultId: number;
   flags?: number;
 }
 
 async function main(): Promise<void> {
   const input = readJson<Input>('vault-place-ask-input.json');
   const markets = readJson<Record<string, MarketDump>>('markets.json');
-  const profiles = readJson<Record<string, ProfileDump[]>>('risk-profiles.json');
+  const subVaults = readJson<Record<string, SubVaultDump[]>>('risk-profiles.json');
   const curators = readJson<CuratorDump[]>('curators.json');
 
   const market = markets[input.marketLabel];
@@ -55,20 +55,22 @@ async function main(): Promise<void> {
       `market ${input.marketLabel} debtMint ${market.debtMint} ≠ input.mint ${input.mint}`,
     );
   }
-  const curator = resolveCuratorForProfile(profiles, curators, input.mint, input.profileId);
+  const curator = resolveCuratorForSubVault(subVaults, curators, input.mint, input.subVaultId);
   const curatorKp = readKeypairFromBase58(curator.secretKeyBase58);
 
   const conn = loadConnection();
   const feePayer = loadSigner();
 
-  const ix = placeOrderForRiskProfileInstruction({
+  const ix = placeOrderForSubVaultInstruction({
     feePayer: feePayer.publicKey,
     curator: curatorKp.publicKey,
-    mint: new PublicKey(input.mint),
     market: new PublicKey(market.market),
-    profileId: input.profileId,
-    rateBps: input.rateBps,
-    termSeconds: input.termSeconds,
+    debtBank: new PublicKey(market.debtBank),
+    marginfiGroup: new PublicKey(market.marginfiGroup),
+    collateralBank: new PublicKey(market.collateralBank),
+    debtOracles: market.debtOracles.map((o) => new PublicKey(o)),
+    collateralOracles: market.collateralOracles.map((o) => new PublicKey(o)),
+    subVaultId: input.subVaultId,
     flags: input.flags,
   });
   const sig = await sendIxs(conn, feePayer, [ix], [curatorKp]);
@@ -79,9 +81,7 @@ async function main(): Promise<void> {
     summary: {
       marketLabel: input.marketLabel,
       mint: input.mint,
-      profileId: input.profileId,
-      rateBps: input.rateBps,
-      termSeconds: input.termSeconds,
+      subVaultId: input.subVaultId,
       curator: curatorKp.publicKey.toBase58(),
     },
   });

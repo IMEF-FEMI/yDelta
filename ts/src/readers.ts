@@ -7,7 +7,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 
 import { decodeGlobalVault, GlobalVault } from './accounts/index.js';
 import { decodeMarket, Market, MarketHeader } from './accounts/market.js';
-import { RiskProfile, RiskProfileOrderRef } from './accounts/riskProfile.js';
+import { SubVault, SubVaultOrderRef } from './accounts/subVault.js';
 import { globalVaultPda } from './pdas.js';
 
 /** Fetch + decode a market. */
@@ -28,51 +28,54 @@ export async function fetchMarketHeader(
   return decodeMarketHeader(acc.data);
 }
 
-/** Fetch + decode the per-mint GlobalVault. */
+/**
+ * Fetch + decode the GlobalVault keyed to a marginfi bank. The vault PDA is
+ * `[b"vault", bank]`, so pass the bank (a market's `debtLendingPool`), not a mint.
+ */
 export async function fetchVault(
   conn: Connection,
-  mint: PublicKey,
+  bank: PublicKey,
 ): Promise<GlobalVault | null> {
-  const [vault] = globalVaultPda(mint);
+  const [vault] = globalVaultPda(bank);
   const acc = await conn.getAccountInfo(vault);
   if (!acc) return null;
   return decodeGlobalVault(acc.data);
 }
 
-/** Find a `RiskProfile` by `(vault, profile_id)`. */
-export async function fetchRiskProfile(
+/** Find a `SubVault` by `(vault, sub_vault_id)`. Pass the bank the vault is keyed to. */
+export async function fetchSubVault(
   conn: Connection,
-  mint: PublicKey,
-  profileId: number,
-): Promise<RiskProfile | null> {
-  const v = await fetchVault(conn, mint);
+  bank: PublicKey,
+  subVaultId: number,
+): Promise<SubVault | null> {
+  const v = await fetchVault(conn, bank);
   if (!v) return null;
-  const entry = v.riskProfiles.find((p) => p.profile.profileId === profileId);
-  return entry?.profile ?? null;
+  const entry = v.subVaults.find((s) => s.subVault.subVaultId === subVaultId);
+  return entry?.subVault ?? null;
 }
 
-/** List every `RiskProfile` whose `curator` matches the given pubkey. */
-export async function listRiskProfilesForCurator(
+/** List every `SubVault` whose `curator` matches the given pubkey. Pass the bank the vault is keyed to. */
+export async function listSubVaultsForCurator(
   conn: Connection,
-  mint: PublicKey,
+  bank: PublicKey,
   curator: PublicKey,
-): Promise<RiskProfile[]> {
-  const v = await fetchVault(conn, mint);
+): Promise<SubVault[]> {
+  const v = await fetchVault(conn, bank);
   if (!v) return [];
-  return v.riskProfiles
-    .map((p) => p.profile)
-    .filter((p) => p.curator.equals(curator) || p.pendingCurator.equals(curator));
+  return v.subVaults
+    .map((s) => s.subVault)
+    .filter((s) => s.curator.equals(curator) || s.pendingCurator.equals(curator));
 }
 
-/** List every market where `profileId` has a live ask. */
-export async function listMarketsForRiskProfile(
+/** List every market where `subVaultId` has a live ask. Pass the bank the vault is keyed to. */
+export async function listMarketsForSubVault(
   conn: Connection,
-  mint: PublicKey,
-  profileId: number,
-): Promise<RiskProfileOrderRef[]> {
-  const v = await fetchVault(conn, mint);
+  bank: PublicKey,
+  subVaultId: number,
+): Promise<SubVaultOrderRef[]> {
+  const v = await fetchVault(conn, bank);
   if (!v) return [];
   return v.marketOrders
     .map((m) => m.order)
-    .filter((o) => o.profileId === profileId);
+    .filter((o) => o.subVaultId === subVaultId);
 }

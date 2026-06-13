@@ -1,6 +1,6 @@
 /**
  * `place_order` predictor — simulate a borrower IOC bid against the current
- * resting asks tree + vault risk-profile state. Mirrors the on-chain
+ * resting asks tree + vault sub-vault state. Mirrors the on-chain
  * matching engine's per-cross rules:
  *
  *   1. `ask.rate_bps ≤ bid.rate_bps`           — price compatibility
@@ -9,22 +9,22 @@
  *      funds any borrower term ≤ N. Rate ordering is independent of
  *      term, so a worse-rate ask with a longer term may still cross —
  *      walk past, don't break.)
- *   3. Profile LTV: `actual_ltv ≤ profile.max_ltv_bps`
+ *   3. Sub-vault LTV: `actual_ltv ≤ subVault.max_ltv_bps`
  *      (`actual_ltv` is computed at oracle prices — pass `ltvEstimator`
  *      for real oracle-driven estimation; the default treats
  *      `principal_atoms / collateral_atoms × 10_000` as a stand-in.)
- *   4. Profile idle cap: each cross size ≤ profile.idle_principal_atoms
+ *   4. Sub-vault idle cap: each cross size ≤ subVault.idle_principal_atoms
  *
  * The on-chain match walks the asks tree best-first (lowest rate first); we
  * mirror that via `iterAsks` (descending Ord = best-first).
  *
- * Ask → profile resolution is the canonical on-chain path:
+ * Ask → sub-vault resolution is the canonical on-chain path:
  *   ask.trader_seat_index → market.ClaimedSeat[index] →
- *   seat.owner_kind == RiskProfile && seat.risk_profile_id → profile.
+ *   seat.owner_kind == SubVault && seat.sub_vault_id → subVault.
  */
 import type { Market } from './accounts/market.js';
 import type { RestingOrder } from './accounts/restingOrder.js';
-import type { RiskProfile } from './accounts/riskProfile.js';
+import type { SubVault } from './accounts/subVault.js';
 import type { GlobalVault } from './accounts/vault.js';
 import { lookupClaimedSeatAt } from './accounts/market.js';
 import { OwnerKind } from './types.js';
@@ -35,7 +35,7 @@ export interface Cross {
   askTermSeconds: number;
   matchedPrincipalAtoms: bigint;
   matchedCollateralAtoms: bigint;
-  profileId: number;
+  subVaultId: number;
   curatorRateBps: number;
 }
 
@@ -43,16 +43,16 @@ export type SkipReason =
   | 'rate'
   | 'term'
   | 'ltv'
-  | 'profileIdleExhausted'
-  | 'profileNotFound'
+  | 'subVaultIdleExhausted'
+  | 'subVaultNotFound'
   | 'seatNotFound'
-  | 'seatNotRiskProfile';
+  | 'seatNotSubVault';
 
 export interface SimulationResult {
   fills: Cross[];
   /** Principal left over after the last cross. */
   residualPrincipalAtoms: bigint;
-  /** True when the residual would route to the P2Pool fallback (unless `OB_ONLY`). */
+  /** True when the residual would route to the P2Pool fallback (`ResidualMode.P2PoolFallback`). */
   residualGoesToP2Pool: boolean;
   /** Why each candidate ask was skipped (for diagnostics). */
   skipped: Array<{ askIndex: number; reason: SkipReason }>;
@@ -67,22 +67,26 @@ export interface PlaceOrderSimArgs {
   bidTermSeconds: number;
   bidPrincipalAtoms: bigint;
   bidCollateralAtoms: bigint;
-  /** When true, residual drops with `OrderFilledIocLog` (no fallback). */
-  obOnly?: boolean;
   /**
-   * Pluggable LTV estimator. Receives the candidate match's profile +
+   * When true, the residual does NOT fall through to the marginfi P2Pool
+   * borrow (mirrors `ResidualMode.Rest`/`Drop`); when false/omitted the
+   * residual routes to P2Pool (`ResidualMode.P2PoolFallback`, the default).
+   */
+  noFallback?: boolean;
+  /**
+   * Pluggable LTV estimator. Receives the candidate match's sub-vault +
    * pro-rata principal/collateral; returns the actual LTV in bps. Replace
    * with an oracle-driven version for pre-flight accuracy.
    */
   ltvEstimator?: (args: {
-    profile: RiskProfile;
+    subVault: SubVault;
     principalAtoms: bigint;
     collateralAtoms: bigint;
   }) => number;
 }
 
 function defaultLtvEstimator(args: {
-  profile: RiskProfile;
+  subVault: SubVault;
   principalAtoms: bigint;
   collateralAtoms: bigint;
 }): number {
@@ -94,8 +98,8 @@ function defaultLtvEstimator(args: {
  * Simulate a `place_order` bid against the current market.
  *
  * Caveats:
- * - Per-profile idle decrements are tracked across the walk, so multiple
- *   crosses against the same profile share the same idle pool.
+ * - Per-sub-vault idle decrements are tracked across the walk, so multiple
+ *   crosses against the same sub-vault share the same idle pool.
  * - The default LTV estimator is a price-naïve placeholder. Pass
  *   `ltvEstimator` for oracle-based estimation.
  * - The on-chain processor also rejects self-matches (taker and maker
@@ -107,16 +111,16 @@ export function simulatePlaceOrder(args: PlaceOrderSimArgs): SimulationResult {
   const skipped: SimulationResult['skipped'] = [];
   const ltvEstimator = args.ltvEstimator ?? defaultLtvEstimator;
 
-  // Per-profile running idle pools — drained as we match.
+  // Per-sub-vault running idle pools — drained as we match.
   const idlePool = new Map<number, bigint>();
-  const profileById = new Map<number, RiskProfile>();
-  for (const { profile } of args.vault.riskProfiles) {
-    profileById.set(profile.profileId, profile);
+  const subVaultById = new Map<number, SubVault>();
+  for (const { subVault } of args.vault.subVaults) {
+    subVaultById.set(subVault.subVaultId, subVault);
     const idle =
-      profile.totalPrincipalAtoms >= profile.deployedPrincipalAtoms
-        ? profile.totalPrincipalAtoms - profile.deployedPrincipalAtoms
+      subVault.totalPrincipalAtoms >= subVault.deployedPrincipalAtoms
+        ? subVault.totalPrincipalAtoms - subVault.deployedPrincipalAtoms
         : 0n;
-    idlePool.set(profile.profileId, idle);
+    idlePool.set(subVault.subVaultId, idle);
   }
 
   let remaining = args.bidPrincipalAtoms;
@@ -137,29 +141,29 @@ export function simulatePlaceOrder(args: PlaceOrderSimArgs): SimulationResult {
       continue;
     }
 
-    // Resolve the ask's maker: seat → (owner_kind, risk_profile_id) → profile.
+    // Resolve the ask's maker: seat → (owner_kind, sub_vault_id) → subVault.
     const seat = lookupClaimedSeatAt(args.marketAccountData, ask.traderSeatIndex);
     if (!seat) {
       skipped.push({ askIndex: index, reason: 'seatNotFound' });
       continue;
     }
-    if (seat.ownerKind !== OwnerKind.RiskProfile) {
+    if (seat.ownerKind !== OwnerKind.SubVault) {
       // The book is quote-only — every ask should belong to a vault. A
-      // non-RiskProfile maker would be a protocol-level invariant break.
-      skipped.push({ askIndex: index, reason: 'seatNotRiskProfile' });
+      // non-SubVault maker would be a protocol-level invariant break.
+      skipped.push({ askIndex: index, reason: 'seatNotSubVault' });
       continue;
     }
-    const profile = profileById.get(seat.riskProfileId);
-    if (!profile) {
-      skipped.push({ askIndex: index, reason: 'profileNotFound' });
+    const subVault = subVaultById.get(seat.subVaultId);
+    if (!subVault) {
+      skipped.push({ askIndex: index, reason: 'subVaultNotFound' });
       continue;
     }
 
     // Pro-rata principal/collateral — sized by remaining principal, capped
-    // by the profile's live idle pool.
-    const idle = idlePool.get(profile.profileId) ?? 0n;
+    // by the sub-vault's live idle pool.
+    const idle = idlePool.get(subVault.subVaultId) ?? 0n;
     if (idle === 0n) {
-      skipped.push({ askIndex: index, reason: 'profileIdleExhausted' });
+      skipped.push({ askIndex: index, reason: 'subVaultIdleExhausted' });
       continue;
     }
     const matchedPrincipal = remaining < idle ? remaining : idle;
@@ -169,11 +173,11 @@ export function simulatePlaceOrder(args: PlaceOrderSimArgs): SimulationResult {
         : (args.bidCollateralAtoms * matchedPrincipal) / args.bidPrincipalAtoms;
 
     const ltv = ltvEstimator({
-      profile,
+      subVault,
       principalAtoms: matchedPrincipal,
       collateralAtoms: matchedCollateral,
     });
-    if (ltv > profile.maxLtvBps) {
+    if (ltv > subVault.maxLtvBps) {
       skipped.push({ askIndex: index, reason: 'ltv' });
       continue;
     }
@@ -184,18 +188,18 @@ export function simulatePlaceOrder(args: PlaceOrderSimArgs): SimulationResult {
       askTermSeconds: ask.termSeconds,
       matchedPrincipalAtoms: matchedPrincipal,
       matchedCollateralAtoms: matchedCollateral,
-      profileId: profile.profileId,
+      subVaultId: subVault.subVaultId,
       curatorRateBps: ask.rateBps,
     });
 
     remaining -= matchedPrincipal;
-    idlePool.set(profile.profileId, idle - matchedPrincipal);
+    idlePool.set(subVault.subVaultId, idle - matchedPrincipal);
   }
 
   return {
     fills,
     residualPrincipalAtoms: remaining,
-    residualGoesToP2Pool: remaining > 0n && !args.obOnly,
+    residualGoesToP2Pool: remaining > 0n && !args.noFallback,
     skipped,
   };
 }

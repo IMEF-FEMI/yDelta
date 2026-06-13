@@ -21,9 +21,10 @@ import { InstructionTag } from './_tags.js';
  * by the yDelta program. Callers typically bundle the two ixs in one tx.
  *
  * Every `*Bps` / `gracePeriodSeconds` field is optional and layers on top
- * of the on-chain `FeeConfig::default()` (which seeds a safe
- * `ltvBufferBps = 200` and a 24-hour `gracePeriodSeconds`). Pass only the
- * fields you want to override; omit / null the rest.
+ * of the on-chain `FeeConfig::default()` (which seeds a safe 24-hour
+ * `gracePeriodSeconds`). Pass only the fields you want to override; omit /
+ * null the rest. `curatorFeeBps` is no longer a market-level field — it's
+ * configured per sub-vault on `CreatePoolSubVault`.
  *
  * Wire format MUST match the Rust `CreateMarketParams` borsh layout — the
  * sequence of `optionU16` / `optionU32` calls below is load-bearing.
@@ -32,10 +33,8 @@ export interface CreateMarketParams {
   protocolFeeBpsFloor?: number | null;
   originationBps?: number | null;
   curatorSplitBps?: number | null;
-  curatorFeeBps?: number | null;
   liquidationKeeperBps?: number | null;
   liquidationProtocolBps?: number | null;
-  ltvBufferBps?: number | null;
   gracePeriodSeconds?: number | null;
 }
 
@@ -64,10 +63,8 @@ export function createMarketInstruction(args: CreateMarketArgs): TransactionInst
     .optionU16(params.protocolFeeBpsFloor ?? null)
     .optionU16(params.originationBps ?? null)
     .optionU16(params.curatorSplitBps ?? null)
-    .optionU16(params.curatorFeeBps ?? null)
     .optionU16(params.liquidationKeeperBps ?? null)
     .optionU16(params.liquidationProtocolBps ?? null)
-    .optionU16(params.ltvBufferBps ?? null)
     .optionU32(params.gracePeriodSeconds ?? null)
     .toBuffer();
   return ydeltaIx(

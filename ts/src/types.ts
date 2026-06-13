@@ -26,11 +26,25 @@ export enum LoanState {
 /** Owner-kind discriminant stored on `ClaimedSeat`. */
 export enum OwnerKind {
   User = 0,
-  RiskProfile = 1,
+  SubVault = 1,
 }
 
-/** Place-order `flags` bits. */
-export const FLAG_OB_ONLY = 0b0000_0010;
+/** `SubVault.kind` discriminant: pooled (curator-run) vs single-owner. */
+export enum SubVaultKind {
+  Pool = 0,
+  Private = 1,
+}
+
+/**
+ * Borrower's choice for an unfilled `place_order` residual (v1 D6, replaces the
+ * old `FLAG_OB_ONLY`): fall through to a marginfi P2Pool borrow (default), rest
+ * the remainder in the bids tree, or drop it.
+ */
+export enum ResidualMode {
+  P2PoolFallback = 0,
+  Rest = 1,
+  Drop = 2,
+}
 
 /** `MatchedLoan.flags` bits. */
 export const MATCHED_LOAN_FLAG_VAULT_LENDER = 0b0000_0001;
