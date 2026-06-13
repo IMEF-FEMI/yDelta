@@ -184,21 +184,21 @@ pub enum YdeltaInstruction {
     AdminCancelSubVaultOrder = 40,
 
     /// Permissionless: create a single-owner Private sub-vault — the
-    /// signer becomes curator and sole depositor; fee is 0 (v1 D2).
+    /// signer becomes curator and sole depositor; fee is 0.
     CreatePrivateSubVault = 41,
 
-    /// Borrower cancels their resting bid (v1 D6): releases the bid's
+    /// Borrower cancels their resting bid: releases the bid's
     /// encumbered collateral at the stored snapshot and drops the
     /// `UserOrderRef`.
     CancelOrder = 42,
 
-    /// Permissionless match crank (v1 D7/D8): crosses resting bids
+    /// Permissionless match crank: crosses resting bids
     /// against resting sub-vault asks. Needed because crossability can
     /// change without order flow (vault deposits, repayment claims,
     /// oracle moves).
     MatchCrank = 43,
 
-    /// Borrower cancel-and-replaces their resting bid (v1 D6): new
+    /// Borrower cancel-and-replaces their resting bid: new
     /// rate / term / expiry under a fresh sequence; principal,
     /// collateral, and the encumbrance snapshot are untouched.
     UpdateOrder = 44,

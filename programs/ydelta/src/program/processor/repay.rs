@@ -533,7 +533,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
                 .deployed_principal_atoms
                 .checked_sub(loan_principal)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            // v1 D16: retire the open-loan counter stamped at fill.
+            // retire the open-loan counter stamped at fill.
             profile.open_loans_count = profile
                 .open_loans_count
                 .checked_sub(1)

@@ -467,7 +467,7 @@ pub fn calc_projected_asset_share_value_fp48(
 }
 
 /// Current marginfi LENDING (supply) APR for `bank`, in basis points,
-/// rounded UP (v1 D4/D5). This is the floor under every sub-vault ask:
+/// rounded UP. This is the floor under every sub-vault ask:
 /// placement stores `bank_apr_bps + spread_bps` in the order, and the
 /// matching engine skips any ask whose stored rate has fallen below the
 /// live value. Ceil on both ends means an ask placed in the same slot

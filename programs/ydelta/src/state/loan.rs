@@ -104,12 +104,12 @@ pub struct LoanFixed {
     /// P2Pool live-outstanding lookups.
     pub borrower_marginfi_borrow_shares: u128,
 
-    /// Origination LTV cap stamped from the sub-vault at match time
-    /// (v1 D17). Informational; the gate is `liquidation_ltv_bps`.
+    /// Origination LTV cap stamped from the sub-vault at match time.
+    /// Informational; the gate is `liquidation_ltv_bps`.
     pub origination_ltv_bps: u16,
     /// Liquidation trigger stamped from the sub-vault at match time;
-    /// the LTV liquidation gate compares live oracle LTV against this
-    /// (v1 D17). Set at match; never zero on an active fixed loan.
+    /// the LTV liquidation gate compares live oracle LTV against this.
+    /// Set at match; never zero on an active fixed loan.
     pub liquidation_ltv_bps: u16,
     _reserved_ltv: [u8; 12],
 

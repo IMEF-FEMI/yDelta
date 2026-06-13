@@ -35,7 +35,7 @@ use super::shared::{expand_market_if_needed, get_mut_dynamic_account};
 pub struct PlaceOrderParams {
     /// Optional hint pointing at the borrower's `ClaimedSeat`; falls back to lookup if `None` or stale.
     pub seat_index_hint: Option<DataIndex>,
-    /// One of the `RESIDUAL_MODE_*` constants (v1 D6): P2Pool fallback
+    /// One of the `RESIDUAL_MODE_*` constants: P2Pool fallback
     /// (0, default), rest the residual as a bid (1), or drop it (2).
     pub residual_mode: u8,
     /// Expiry for a rested residual; `0` = never. Only meaningful with
@@ -122,7 +122,7 @@ pub fn process_place_order(
     let market_key = *market.info.key;
     let now = get_now_unix_ts()?;
 
-    // v1 D5: live bank lending APR (ceil bps) — the per-fill ask floor.
+    // live bank lending APR (ceil bps) — the per-fill ask floor.
     let ask_floor_rate_bps: u16 =
         crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
             debt_bank.info,
@@ -285,7 +285,7 @@ pub fn process_place_order(
     }
 
     if result.rested {
-        // v1 D6: track the resting bid on the borrower's UserAccount so
+        // track the resting bid on the borrower's UserAccount so
         // UIs can enumerate open orders without scanning every market.
         let needs_block: bool = {
             let data = user_account_ai.try_borrow_data()?;

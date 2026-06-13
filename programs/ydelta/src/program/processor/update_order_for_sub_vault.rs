@@ -40,7 +40,7 @@ pub struct UpdateOrderForSubVaultParams {
     pub new_flags: u8,
 }
 
-/// Parameterless re-sync (v1 D4): cancels the sub-vault's existing ask
+/// Parameterless re-sync: cancels the sub-vault's existing ask
 /// for this market and rests a fresh one at `live bank lending APR +
 /// sub_vault.spread_bps` / `sub_vault.max_term_seconds` in a single
 /// instruction. Curator-signed; rejected when the sub-vault is sunset.
@@ -125,7 +125,7 @@ pub fn process_update_order_for_sub_vault(
             .order_sequence_in_market
     };
 
-    // v1 D4: stored rate = live bank lending APR (ceil) + spread.
+    // stored rate = live bank lending APR (ceil) + spread.
     let bank_apr_bps: u16 = crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
         debt_bank.info,
         marginfi_group.info,
@@ -235,7 +235,7 @@ pub fn process_update_order_for_sub_vault(
         )?;
     }
 
-    // v1 D7: the re-sync TAKES — a repriced ask sweeps newly-crossable
+    // the re-sync TAKES — a repriced ask sweeps newly-crossable
     // resting bids in the same instruction.
     let _ = crate::program::processor::place_order_for_sub_vault::take_resting_bids(
         &market,

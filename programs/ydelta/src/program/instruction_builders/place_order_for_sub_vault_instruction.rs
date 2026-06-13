@@ -15,7 +15,7 @@ use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
 /// Builds the `PlaceOrderForSubVault` instruction. `curator` must sign;
-/// `fee_payer` covers tx fees. v1 D4: takes NO rate or term — the
+/// `fee_payer` covers tx fees.: takes NO rate or term — the
 /// processor computes `live bank lending APR + sub_vault.spread_bps`
 /// and uses `sub_vault.max_term_seconds`; `debt_bank` + `marginfi_group`
 /// must match the market header. `flags` carries the order bitmask.

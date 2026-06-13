@@ -1,4 +1,4 @@
-//! `CancelOrder` (v1 D6) — borrower cancels their own resting bid.
+//! `CancelOrder` — borrower cancels their own resting bid.
 //! Releases the bid's encumbered collateral back to the seat's
 //! withdrawable bucket at the order's stored share-price snapshot,
 //! removes the bid from the bids tree, and drops the `UserOrderRef`.

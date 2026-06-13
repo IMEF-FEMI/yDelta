@@ -302,7 +302,7 @@ pub struct SubVaultCreatedLog {
     pub curator: Pubkey,
     pub sub_vault_id: u16,
 
-    /// `SUB_VAULT_KIND_POOL` or `SUB_VAULT_KIND_PRIVATE` (v1 D2).
+    /// `SUB_VAULT_KIND_POOL` or `SUB_VAULT_KIND_PRIVATE`.
     pub kind: u8,
     pub _pad0: [u8; 1],
     pub max_ltv_bps: u16,
@@ -360,7 +360,7 @@ pub struct PlaceOrderForSubVaultLog {
 }
 impl_discriminant!(PlaceOrderForSubVaultLog);
 
-/// Emitted by the permissionless `MatchCrank` (v1 D7/D8).
+/// Emitted by the permissionless `MatchCrank`.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct MatchCrankLog {
@@ -371,7 +371,7 @@ pub struct MatchCrankLog {
 }
 impl_discriminant!(MatchCrankLog);
 
-/// Emitted when a borrower cancels their resting bid (v1 D6).
+/// Emitted when a borrower cancels their resting bid.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]
 pub struct OrderCanceledLog {
@@ -384,7 +384,7 @@ pub struct OrderCanceledLog {
 impl_discriminant!(OrderCanceledLog);
 
 /// Emitted when the matching engine skips an ask whose stored rate has
-/// fallen below the live marginfi lending APR (v1 D5 fill-time floor).
+/// fallen below the live marginfi lending APR (fill-time floor).
 /// The curator re-syncs with a parameterless `update_order_for_sub_vault`.
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod, ShankAccount)]

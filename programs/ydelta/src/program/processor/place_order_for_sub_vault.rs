@@ -1,6 +1,6 @@
 //! `PlaceOrderForSubVault` — curator rests a vault-owned ask on a market
 //! for one of their sub-vaults. Signer is the sub-vault's `curator`.
-//! v1 D4: the ix takes NO rate or term — the stored rate is computed as
+//! the ix takes NO rate or term — the stored rate is computed as
 //! `live marginfi lending APR (ceil bps) + sub_vault.spread_bps` and the
 //! term is `sub_vault.max_term_seconds`, so repricing every market is a
 //! parameterless re-sync. Rejected if the sub-vault is sunset. Claims a
@@ -106,7 +106,7 @@ pub fn process_place_order_for_sub_vault(
         )
     };
 
-    // v1 D4: stored rate = live bank lending APR (ceil) + sub-vault
+    // stored rate = live bank lending APR (ceil) + sub-vault
     // spread. Overflow-checked: a stored rate must fit u16.
     let bank_apr_bps: u16 = crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
         debt_bank.info,
@@ -188,7 +188,7 @@ pub fn process_place_order_for_sub_vault(
         )?
     };
 
-    // v1 D7: the placement TAKES — fill crossable resting bids now that
+    // the placement TAKES — fill crossable resting bids now that
     // the ask's seat exists and the rate is known.
     {
         let seat_idx = {
@@ -280,7 +280,7 @@ pub fn process_place_order_for_sub_vault(
     Ok(())
 }
 
-/// Shared v1 D7 take pass: walk the bids tree and fill crossable resting
+/// Shared take pass: walk the bids tree and fill crossable resting
 /// bids against this sub-vault ask before it rests. Returns fills made.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn take_resting_bids<'a, 'info>(

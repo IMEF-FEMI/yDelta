@@ -1,5 +1,5 @@
 //! `UpdateSubVault` — curator-gated update of a sub-vault's mutable
-//! parameters (v1 D15: the curator — the owner, for Private — manages
+//! parameters (the curator — the owner, for Private — manages
 //! their own spread / LTV pair / term; `curator_fee_bps` is immutable).
 //! Each `Option<>` field is an override; `None` leaves the field
 //! unchanged. Rejected when the sub-vault is sunset.
@@ -27,11 +27,11 @@ pub struct UpdateSubVaultParams {
     /// New max LTV in bps; must be in `(0, 10_000)`.
     pub new_max_ltv_bps: Option<u16>,
     /// New liquidation trigger in bps; the resulting pair must satisfy
-    /// `liquidation >= max_ltv + MIN_LIQ_GAP_BPS` (v1 D17).
+    /// `liquidation >= max_ltv + MIN_LIQ_GAP_BPS`.
     pub new_liquidation_ltv_bps: Option<u16>,
     /// New max term in seconds; must be `> 0`.
     pub new_max_term_seconds: Option<u32>,
-    /// New spread over the live bank rate, in bps (v1 D4).
+    /// New spread over the live bank rate, in bps.
     pub new_spread_bps: Option<u16>,
 }
 
@@ -67,7 +67,7 @@ pub fn process_update_sub_vault(
     )?;
 
     let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
-    // v1 D15: curator-gated (the owner, for Private sub-vaults).
+    // curator-gated (the owner, for Private sub-vaults).
     require!(
         profile.curator == *payer.info.key,
         YdeltaError::VaultCuratorRequired,
@@ -84,7 +84,7 @@ pub fn process_update_sub_vault(
     )?;
 
     // Validate the RESULTING pair/term so partial overrides cannot break
-    // the liq-gap invariant (v1 D17).
+    // the liq-gap invariant.
     let next_max_ltv = params.new_max_ltv_bps.unwrap_or(profile.max_ltv_bps);
     let next_liq_ltv = params
         .new_liquidation_ltv_bps

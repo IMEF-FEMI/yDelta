@@ -812,7 +812,7 @@ impl<'a, 'info> PlaceOrderContext<'a, 'info> {
                         *ai.key == expected_vault,
                         YdeltaError::IncorrectAccount,
                         "vault PDA does not match expected derivation \
-                         from market.debt_lending_pool (v1 D1: bank-keyed)"
+                         from market.debt_lending_pool (bank-keyed)"
                     )?;
 
                     require_vault_not_paused(&typed_vault)?;
@@ -1051,7 +1051,7 @@ pub(crate) fn load_vault_settle_accounts<'a, 'info>(
         vault_key == expected_global_vault_pda,
         YdeltaError::IncorrectAccount,
         "vault PDA does not match expected derivation from the debt bank \
-         (v1 D1: bank-keyed)"
+         (bank-keyed)"
     )?;
 
     let expected_marginfi_group: Pubkey = {
@@ -2105,7 +2105,7 @@ impl<'a, 'info> ProtocolFeeClaimContext<'a, 'info> {
 }
 
 /// Account context for `CreateVault` (tag 8). One-shot per BANK
-/// (v1 D1) and permissionless (v1 D3): initializes `GlobalVaultFixed`
+/// and permissionless: initializes `GlobalVaultFixed`
 /// + its marginfi integration account + the vault signer PDA. First
 /// caller becomes `global_vault_admin`.
 pub(crate) struct CreateVaultContext<'a, 'info> {
@@ -2137,7 +2137,7 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
         let account_iter: &mut Iter<AccountInfo<'info>> = &mut accounts.iter();
 
         let payer = Signer::new_payer(next_account_info(account_iter)?)?;
-        // v1 D3: vault creation is permissionless (one vault per bank,
+        // vault creation is permissionless (one vault per bank,
         // PDA-enforced); the global config is loaded only for the pause
         // gate. The creator becomes the initial global_vault_admin.
         let _ = load_global_config(account_iter)?;
@@ -2158,7 +2158,7 @@ impl<'a, 'info> CreateVaultContext<'a, 'info> {
         require!(
             *vault_ai.key == expected_vault,
             YdeltaError::IncorrectAccount,
-            "vault does not match [b\"vault\", bank] (v1 D1: bank-keyed)"
+            "vault does not match [b\"vault\", bank] (bank-keyed)"
         )?;
         let (expected_signer, global_vault_signer_bump) =
             crate::state::vault::global_vault_signer_pda(&expected_vault);
@@ -2753,7 +2753,7 @@ impl<'a, 'info> CancelOrderForSubVaultContext<'a, 'info> {
     }
 }
 
-/// Account context for `MatchCrank` (tag 43, v1 D7/D8): permissionless;
+/// Account context for `MatchCrank` (tag 43,/D8): permissionless;
 /// the same market/vault/bank/oracle set the take path needs, with no
 /// curator gate. `[payer, global_config, vault, market, debt_bank,
 /// marginfi_group, collateral_bank, debt_oracles…, collateral_oracles…]`.
@@ -2832,7 +2832,7 @@ impl<'a, 'info> MatchCrankContext<'a, 'info> {
     }
 }
 
-/// Account context for `CancelOrder` (tag 42, v1 D6): borrower cancels
+/// Account context for `CancelOrder` (tag 42): borrower cancels
 /// their own resting bid. `[payer (signer/owner), global_config, market,
 /// user_account]`.
 pub(crate) struct CancelOrderContext<'a, 'info> {
@@ -2873,7 +2873,7 @@ impl<'a, 'info> CancelOrderContext<'a, 'info> {
 }
 
 /// Account context for `PlaceOrderForSubVault` / `UpdateOrderForSubVault`
-/// (v1 D4): the curator context plus the market's DEBT BANK + marginfi
+///: the curator context plus the market's DEBT BANK + marginfi
 /// group, needed to compute the stored ask rate as
 /// `live lending APR (ceil bps) + sub_vault.spread_bps`.
 pub(crate) struct PlaceOrderForSubVaultContext<'a, 'info> {
@@ -2883,7 +2883,7 @@ pub(crate) struct PlaceOrderForSubVaultContext<'a, 'info> {
     pub market: YdeltaAccountInfo<'a, 'info, MarketFixed>,
     pub debt_bank: MarginfiBankInfo<'a, 'info>,
     pub marginfi_group: MarginfiGroupInfo<'a, 'info>,
-    /// Collateral bank + both oracle sets: the v1 D7 take path gates
+    /// Collateral bank + both oracle sets: the take path gates
     /// each resting-bid fill on live LTV.
     pub collateral_bank: MarginfiBankInfo<'a, 'info>,
     pub debt_oracle_ais: MarginfiOracleAis<'a, 'info>,
@@ -2966,9 +2966,9 @@ impl<'a, 'info> PlaceOrderForSubVaultContext<'a, 'info> {
 
 /// Permissionless sub-vault mutation context: payer + global-config
 /// pause gate + vault (pause-gated) + system program. Used by
-/// `CreatePrivateSubVault` (anyone may open a Private sub-vault, v1 D2)
+/// `CreatePrivateSubVault` (anyone may open a Private sub-vault)
 /// and `UpdateSubVault` (the curator gate lives in the processor, which
-/// must look the sub-vault up anyway, v1 D15).
+/// must look the sub-vault up anyway).
 pub(crate) struct SubVaultMutationContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -2998,7 +2998,7 @@ impl<'a, 'info> SubVaultMutationContext<'a, 'info> {
 }
 
 /// Account context for `CreatePoolSubVault` (tag 9). Protocol-admin
-/// gated (v1 D3: the admin creates the Pool and assigns its curator);
+/// gated (the admin creates the Pool and assigns its curator);
 /// appends a `SubVault` to the vault tree with a monotonic sub_vault_id.
 pub(crate) struct CreatePoolSubVaultContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
@@ -3349,7 +3349,7 @@ pub(crate) fn require_vault_mint_matches_market(
     vault: &YdeltaAccountInfo<'_, '_, crate::state::vault::GlobalVaultFixed>,
     market: &YdeltaAccountInfo<'_, '_, MarketFixed>,
 ) -> Result<(), ProgramError> {
-    // v1 D1: the structural identity is the BANK — a vault can only fund
+    // the structural identity is the BANK — a vault can only fund
     // markets whose debt bank is the vault's bank (settlement CPIs assume
     // one bank on both legs). The mint check stays as defense-in-depth.
     let vault_bank = vault.get_fixed()?.lending_pool;
@@ -3745,7 +3745,7 @@ impl<'a, 'info> ConvertP2PoolToFixedContext<'a, 'info> {
             *global_vault_ai.key == expected_global_vault,
             YdeltaError::IncorrectAccount,
             "global_vault PDA does not match expected derivation from \
-             market.debt_lending_pool (v1 D1: bank-keyed)"
+             market.debt_lending_pool (bank-keyed)"
         )?;
 
         let (vault_integration_pk, vault_signer_bump, vault_lending_pool) = {

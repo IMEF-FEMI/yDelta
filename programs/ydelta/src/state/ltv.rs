@@ -1,5 +1,5 @@
 //! LTV math used at match time and liquidation time. Computes the
-//! quote-collateral needed to back a borrow. v1 D17: Fixed loans gate
+//! quote-collateral needed to back a borrow.: Fixed loans gate
 //! origination on the sub-vault's `max_ltv_bps` and liquidation on the
 //! loan's stamped `liquidation_ltv_bps`; marginfi weights gate only the
 //! P2Pool paths (fallback origination, P2Pool liquidation health).
@@ -73,7 +73,7 @@ pub fn get_required_quote_collateral_to_back_debt(
 }
 
 /// Collateral required so the position's LTV stays at or under
-/// `ltv_cap_bps` at the supplied oracle prices (v1 D17: the sub-vault
+/// `ltv_cap_bps` at the supplied oracle prices (the sub-vault
 /// cap is the only origination gate, and the stamped liquidation cap is
 /// the only Fixed-loan liquidation gate). Implemented by feeding the cap
 /// in as the collateral weight with a unit liability weight:
@@ -153,7 +153,7 @@ pub fn loan_live_outstanding_atoms(
     }
 }
 
-/// Gates LTV-based liquidation (v1 D17 / §5.6). For **Fixed** loans the
+/// Gates LTV-based liquidation (§5.6). For **Fixed** loans the
 /// threshold is the loan's STAMPED `liquidation_ltv_bps` — curator
 /// updates never move thresholds on open loans, and marginfi maint
 /// weights are not consulted. **P2Pool** loans keep marginfi-derived

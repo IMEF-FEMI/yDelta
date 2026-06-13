@@ -80,7 +80,7 @@ pub fn process_convert_p2pool_to_fixed(
 
     let market_key = *market.info.key;
 
-    // v1 D5: live bank lending APR (ceil bps) — the per-fill ask floor
+    // live bank lending APR (ceil bps) — the per-fill ask floor
     // for the refinance scan.
     let ask_floor_rate_bps: u16 =
         crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
@@ -181,7 +181,7 @@ pub fn process_convert_p2pool_to_fixed(
         let m = market.get_fixed()?;
         (m.debt_mint_decimals, m.collateral_mint_decimals)
     };
-    // v1 D17: marginfi init weights gate only marginfi-backed positions.
+    // marginfi init weights gate only marginfi-backed positions.
     // The source P2Pool loan IS one, so its health is checked here before
     // the refinance scan; per-cross gating inside the engine is against
     // each ask's sub-vault cap.
@@ -238,7 +238,7 @@ pub fn process_convert_p2pool_to_fixed(
                 now_unix_ts,
                 // Per-cross LTV-gate inputs — the same oracle prices /
                 // decimals already snapshotted for the marginfi-side
-                // health check above (v1 D17: per-cross gating is
+                // health check above (per-cross gating is
                 // sub-vault-cap-only).
                 debt_oracle_price_fp48,
                 collateral_oracle_price_fp48,
@@ -498,7 +498,7 @@ pub fn process_convert_p2pool_to_fixed(
             // Crystallise yield at the OLD weighted rate before folding
             // in the new loan's contribution.
             accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
-            // v1 D3b: the curator fee is per-sub-vault — fold the net
+            // the curator fee is per-sub-vault — fold the net
             // weighted rate using THIS sub-vault's fee, matching the
             // snapshot the engine stamped on the cross's MatchedLoan.
             let curator_fee_bps: u16 = profile.curator_fee_bps;

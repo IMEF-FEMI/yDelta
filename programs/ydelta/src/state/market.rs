@@ -24,7 +24,7 @@ use super::dynamic_account::{DerefOrBorrow, DynamicAccount};
 use super::resting_order::RestingOrder;
 
 /// Per-market fee and risk parameters, updated by the market admin via
-/// `SetFeeConfig`. The curator fee moved to the sub-vault in v1 (D3b).
+/// `SetFeeConfig`. The curator fee moved to the sub-vault in v1.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Zeroable, Pod, ShankType)]
 pub struct FeeConfig {
@@ -39,7 +39,7 @@ pub struct FeeConfig {
     /// Protocol slice of a liquidation in bps.
     pub liquidation_protocol_bps: u16,
 
-    /// Reserved (was `ltv_buffer_bps` — removed in v1 D17: origination
+    /// Reserved (was `ltv_buffer_bps` — removed in: origination
     /// LTV is sub-vault-only, no market-level top-up).
     _pad_ltv: [u8; 2],
     _padding_for_u32: [u8; 4],
@@ -124,9 +124,9 @@ pub struct MatchedLoan {
 
     /// Curator-fee bps captured at match time; carried to `LoanFixed`.
     pub curator_fee_bps_snapshot: u16,
-    /// Origination LTV cap stamped from the sub-vault at match (v1 D17).
+    /// Origination LTV cap stamped from the sub-vault at match.
     pub origination_ltv_bps: u16,
-    /// Liquidation trigger stamped from the sub-vault at match (v1 D17);
+    /// Liquidation trigger stamped from the sub-vault at match;
     /// carried to `LoanFixed` at promotion.
     pub liquidation_ltv_bps: u16,
     _reserved: [u8; 18],

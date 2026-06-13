@@ -186,7 +186,7 @@ fn process_primary_promotion(program_id: &Pubkey, ctx: ProcessMatchedLoanContext
         node.lender_debt_share_price_snapshot_fp48,
         node.borrower_collateral_share_price_snapshot_fp48,
     );
-    // v1 D17: carry the match-time LTV stamps onto the promoted loan —
+    // carry the match-time LTV stamps onto the promoted loan —
     // the liquidation gate reads only these (P2Pool nodes carry 0/0 and
     // keep marginfi-derived health).
     loan_fixed.origination_ltv_bps = node.origination_ltv_bps;

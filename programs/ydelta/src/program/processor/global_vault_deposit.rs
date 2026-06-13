@@ -166,7 +166,7 @@ pub fn process_global_vault_deposit(
 
         let (shares, total_shares_after, total_assets_after, snapshot_supply, snapshot_delta) = {
             let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
-            // v1 D2: Private sub-vaults accept deposits only from their
+            // Private sub-vaults accept deposits only from their
             // owner (the curator).
             require!(
                 profile.kind != crate::state::vault::SUB_VAULT_KIND_PRIVATE

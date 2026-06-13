@@ -26,13 +26,13 @@ use super::constants::{
     VAULT_NODE_BLOCK_SIZE, VAULT_ORDER_REF_SIZE,
 };
 
-/// `SubVault.kind` tag: curator-run pool, multiple depositors (v1 D2).
+/// `SubVault.kind` tag: curator-run pool, multiple depositors.
 pub const SUB_VAULT_KIND_POOL: u8 = 0;
 /// `SubVault.kind` tag: single-owner sub-vault — the owner is the
-/// curator and the only allowed depositor; fee forced to 0 (v1 D2).
+/// curator and the only allowed depositor; fee forced to 0.
 pub const SUB_VAULT_KIND_PRIVATE: u8 = 1;
 
-/// PDA seed prefix for the per-bank `GlobalVault` account (v1 D1:
+/// PDA seed prefix for the per-bank `GlobalVault` account (
 /// vaults are keyed by marginfi bank, not mint — the idle MTM and all
 /// share accounting are only meaningful against one bank).
 pub const VAULT_SEED: &[u8] = b"vault";
@@ -48,7 +48,7 @@ pub const VAULT_INTEGRATION_SEED: &[u8] = b"vault_integration";
 pub const VAULT_STAGING_SEED: &[u8] = b"global_vault_staging";
 
 /// Derives the global vault PDA and bump for the marginfi `bank`
-/// (v1 D1: `[b"vault", bank]`; the mint is cached from `bank.mint` at
+/// (`[b"vault", bank]`; the mint is cached from `bank.mint` at
 /// creation).
 pub fn global_vault_pda(bank: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[VAULT_SEED, bank.as_ref()], &crate::id())
@@ -267,11 +267,11 @@ pub struct SubVault {
     pub is_sunset: u8,
     /// `SubVaultKind` discriminant: 0 = Pool (curator-run, pooled
     /// deposits), 1 = Private (single-owner). Semantics enforced by the
-    /// deposit/withdraw/create processors (v1 D2).
+    /// deposit/withdraw/create processors.
     pub kind: u8,
     /// Quoted spread over the market's live marginfi lending APR, in bps.
     /// Placement computes `bank_apr_bps + spread_bps` and stores the
-    /// result in the order (v1 D4).
+    /// result in the order.
     pub spread_bps: u16,
     _pad0: [u8; 2],
 
@@ -280,25 +280,23 @@ pub struct SubVault {
     pub curator: Pubkey,
 
     /// Origination LTV cap in bps (lender-side policy, read live at
-    /// match time). Required at creation; not bounded by marginfi
-    /// (v1 D17).
+    /// match time). Required at creation; not bounded by marginfi.
     pub max_ltv_bps: u16,
     /// Liquidation trigger in bps; enforced ≥ `max_ltv_bps +
-    /// MIN_LIQ_GAP_BPS` at create/update, stamped onto loans at match
-    /// (v1 D17).
+    /// MIN_LIQ_GAP_BPS` at create/update, stamped onto loans at match.
     pub liquidation_ltv_bps: u16,
     /// Maximum loan term in seconds this sub-vault will fill.
     pub max_term_seconds: u32,
 
     /// Curator management fee in bps, set by the protocol admin at Pool
     /// creation (≤ MAX_CURATOR_FEE_BPS); 0 for Private. Snapshotted at
-    /// match (v1 D3b).
+    /// match.
     pub curator_fee_bps: u16,
     /// Resting asks across all markets; inc on place, dec on
-    /// cancel/admin-cancel (v1 D16).
+    /// cancel/admin-cancel.
     pub open_orders_count: u16,
     /// Open loans (queued matches + promoted, all markets); inc at fill,
-    /// dec at full close (v1 D16).
+    /// dec at full close.
     pub open_loans_count: u32,
     _pad2: [u8; 8],
 
@@ -370,7 +368,7 @@ impl SubVault {
 
     /// `true` when every accounting field and counter is zero — the gate
     /// `remove_sub_vault` uses to decide whether deletion is safe.
-    /// Includes the order/loan counters (v1 D16) so a sub-vault with
+    /// Includes the order/loan counters so a sub-vault with
     /// resting asks or open loans can never be removed.
     pub fn is_empty(&self) -> bool {
         self.total_shares == 0
@@ -992,7 +990,7 @@ pub fn remove_sub_vault_depositor_seat(
 /// Errors with `SubVaultOrderExists` when one already exists — the
 /// vault enforces at most one resting ask per profile per market.
 #[allow(clippy::too_many_arguments)]
-/// Adjusts the per-sub-vault `open_orders_count` (v1 D16). `delta` is
+/// Adjusts the per-sub-vault `open_orders_count`. `delta` is
 /// +1 on place, -1 on cancel/admin-cancel. Errors when the sub-vault is
 /// missing or the counter would underflow — both indicate accounting
 /// drift that must surface, not be masked.

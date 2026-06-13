@@ -142,7 +142,7 @@ pub fn process_global_vault_withdraw(
 
         let profile_node = get_mut_helper_sub_vault(dynamic, profile_idx);
         let profile = profile_node.get_mut_value();
-        // v1 D2: Private sub-vaults pay out only to their owner. (The
+        // Private sub-vaults pay out only to their owner. (The
         // depositor-seat key already scopes shares to the signer; this is
         // defense-in-depth so a stray Private seat can never exist.)
         require!(

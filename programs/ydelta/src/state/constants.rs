@@ -47,11 +47,11 @@ pub const ACCOUNT_LAYOUT_VERSION: u8 = 2;
 pub const MIN_PRINCIPAL_ATOMS: u64 = 1;
 
 /// Protocol cap on a Pool sub-vault's `curator_fee_bps`, enforced at
-/// `CreatePoolSubVault` (v1 D3b). Private sub-vaults are always 0.
+/// `CreatePoolSubVault`. Private sub-vaults are always 0.
 pub const MAX_CURATOR_FEE_BPS: u16 = 2_000;
 
 /// Minimum gap between a sub-vault's origination `max_ltv_bps` and its
-/// `liquidation_ltv_bps`, enforced at create/update (v1 D17) so no loan
+/// `liquidation_ltv_bps`, enforced at create/update so no loan
 /// can be born liquidatable.
 pub const MIN_LIQ_GAP_BPS: u16 = 200;
 
@@ -75,7 +75,7 @@ pub const VAULT_POSITION_SIZE: usize = USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
 pub const MARKET_POSITION_SIZE: usize = USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
 /// Payload byte size of a [`super::user_account::UserLoanRef`].
 pub const USER_LOAN_REF_SIZE: usize = USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
-/// Payload byte size of a [`super::user_account::UserOrderRef`] (v1 D6).
+/// Payload byte size of a [`super::user_account::UserOrderRef`].
 pub const USER_ORDER_REF_SIZE: usize = USER_ACCOUNT_BLOCK_PAYLOAD_SIZE;
 
 /// Byte size of [`super::vault::GlobalVaultFixed`].

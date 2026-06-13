@@ -1,4 +1,4 @@
-//! `MatchCrank` (v1 D7/D8) — permissionless backstop that crosses
+//! `MatchCrank` — permissionless backstop that crosses
 //! resting bids against resting sub-vault asks. Crossability changes
 //! without order flow (vault deposits / repayment claims replenish idle;
 //! oracle moves flip LTV gates), so a crossed-at-rest book is legal and
@@ -56,7 +56,7 @@ pub fn process_match_crank(
     let now: i64 = Clock::get()?.unix_timestamp;
     let mut budget: u32 = params.max_fills.max(1);
 
-    // v1 D5: the floor applies on the crank path too — stale asks below
+    // the floor applies on the crank path too — stale asks below
     // the live bank APR never fill.
     let floor_bps: u16 = crate::protocol::marginfi_rate_calc::current_lending_apr_bps_ceil(
         debt_bank.info,

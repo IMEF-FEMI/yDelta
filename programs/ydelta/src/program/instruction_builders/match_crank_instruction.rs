@@ -1,4 +1,4 @@
-//! Builds the permissionless `MatchCrank` instruction (v1 D7/D8).
+//! Builds the permissionless `MatchCrank` instruction.
 
 use borsh::BorshSerialize;
 use solana_program::{

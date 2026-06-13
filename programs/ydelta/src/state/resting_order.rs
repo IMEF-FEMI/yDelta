@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn eq_and_cmp_agree_for_all_field_permutations_per_side() {
-        // v1 D6: bids and asks live in separate trees, so the Eq/Ord
+        // bids and asks live in separate trees, so the Eq/Ord
         // contract only needs to hold WITHIN a side.
         let trader_seats: &[u32] = &[0, 1];
         let seqs: &[u64] = &[10, 20];

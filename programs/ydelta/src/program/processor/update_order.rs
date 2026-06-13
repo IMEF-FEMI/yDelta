@@ -1,9 +1,9 @@
-//! `UpdateOrder` (v1 D6) — borrower cancel-and-replaces their own
+//! `UpdateOrder` — borrower cancel-and-replaces their own
 //! resting bid: new rate / term / expiry under a fresh sequence
 //! (repricing forfeits time priority). Principal, collateral, and the
 //! encumbrance snapshot are untouched — the order keeps its block, so
 //! no unencumber/re-encumber round-trip happens. Not a taking ix:
-//! a cross left at rest is legal (D8) and `MatchCrank` resolves it.
+//! a cross left at rest is legal and `MatchCrank` resolves it.
 
 use std::cell::RefMut;
 

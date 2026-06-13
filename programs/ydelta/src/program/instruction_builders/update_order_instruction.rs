@@ -1,4 +1,4 @@
-//! Builds the `UpdateOrder` instruction (v1 D6): borrower
+//! Builds the `UpdateOrder` instruction: borrower
 //! cancel-and-replaces their resting bid with a new rate / term /
 //! expiry; principal and collateral are untouched.
 

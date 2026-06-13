@@ -1,4 +1,4 @@
-//! Builds the `CancelOrder` instruction (v1 D6): borrower cancels their
+//! Builds the `CancelOrder` instruction: borrower cancels their
 //! resting bid, releasing its encumbered collateral.
 
 use borsh::BorshSerialize;

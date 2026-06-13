@@ -1,4 +1,4 @@
-//! Sub-vault creation (v1 D2/D3): `CreatePoolSubVault` is
+//! Sub-vault creation: `CreatePoolSubVault` is
 //! protocol-admin-gated and assigns a curator + `curator_fee_bps`;
 //! `CreatePrivateSubVault` is permissionless — the signer becomes the
 //! curator/sole depositor and the fee is forced to 0. Both auto-assign
@@ -33,16 +33,16 @@ pub struct CreatePoolSubVaultParams {
     /// Admin-assigned curator. Must be non-default; rotated later via
     /// `TransferCurator` / `AcceptCurator`.
     pub curator: Pubkey,
-    /// Quoted spread over the live marginfi lending APR, in bps (v1 D4).
+    /// Quoted spread over the live marginfi lending APR, in bps.
     pub spread_bps: u16,
-    /// Origination LTV cap in bps; `0 < v < 10_000` (v1 D17).
+    /// Origination LTV cap in bps; `0 < v < 10_000`.
     pub max_ltv_bps: u16,
     /// Liquidation trigger in bps; `max_ltv + MIN_LIQ_GAP_BPS ≤ v ≤
-    /// 10_000` (v1 D17).
+    /// 10_000`.
     pub liquidation_ltv_bps: u16,
     /// Maximum term any of this sub-vault's asks will accept; `> 0`.
     pub max_term_seconds: u32,
-    /// Curator management fee in bps; `≤ MAX_CURATOR_FEE_BPS` (v1 D3b).
+    /// Curator management fee in bps; `≤ MAX_CURATOR_FEE_BPS`.
     /// Immutable after creation.
     pub curator_fee_bps: u16,
 }
@@ -51,19 +51,19 @@ pub struct CreatePoolSubVaultParams {
 /// stamped as curator; the fee is forced to 0.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy)]
 pub struct CreatePrivateSubVaultParams {
-    /// Quoted spread over the live marginfi lending APR, in bps (v1 D4).
+    /// Quoted spread over the live marginfi lending APR, in bps.
     pub spread_bps: u16,
-    /// Origination LTV cap in bps; `0 < v < 10_000` (v1 D17).
+    /// Origination LTV cap in bps; `0 < v < 10_000`.
     pub max_ltv_bps: u16,
     /// Liquidation trigger in bps; `max_ltv + MIN_LIQ_GAP_BPS ≤ v ≤
-    /// 10_000` (v1 D17).
+    /// 10_000`.
     pub liquidation_ltv_bps: u16,
     /// Maximum term any of this sub-vault's asks will accept; `> 0`.
     pub max_term_seconds: u32,
 }
 
 /// Shared risk-parameter validation for create and update paths
-/// (v1 D17: the liq gap guarantees no loan is born liquidatable).
+/// (the liq gap guarantees no loan is born liquidatable).
 pub fn validate_sub_vault_risk_params(
     max_ltv_bps: u16,
     liquidation_ltv_bps: u16,
@@ -97,7 +97,7 @@ pub fn validate_sub_vault_risk_params(
     Ok(())
 }
 
-/// Protocol-admin creates a curator-run Pool sub-vault (v1 D2/D3).
+/// Protocol-admin creates a curator-run Pool sub-vault.
 pub fn process_create_pool_sub_vault(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -142,7 +142,7 @@ pub fn process_create_pool_sub_vault(
     )
 }
 
-/// Anyone creates a single-owner Private sub-vault (v1 D2): the signer
+/// Anyone creates a single-owner Private sub-vault: the signer
 /// is the curator and sole depositor; the fee is 0.
 pub fn process_create_private_sub_vault(
     _program_id: &Pubkey,

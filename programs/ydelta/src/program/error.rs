@@ -142,8 +142,8 @@ pub enum YdeltaError {
     SubVaultNotSunset = 55,
 
     #[error("P2Pool fallback: residual collateral is below marginfi's init-weight \
-             requirement — the marginfi borrow would fail its health check (v1 D17: \
-             marginfi weights gate ONLY the fallback; use Rest/Drop residual modes \
+             requirement — the marginfi borrow would fail its health check \
+             (marginfi weights gate ONLY the fallback; use Rest/Drop residual modes \
              or post more collateral)")]
     FallbackLtvInsufficient = 56,
 }

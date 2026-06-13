@@ -62,7 +62,7 @@ pub fn process_create_vault(
     let vault_bytes = vault_key.to_bytes();
 
     let rent: Rent = Rent::get()?;
-    // v1 D1: the vault PDA is keyed by the marginfi bank, not the mint.
+    // the vault PDA is keyed by the marginfi bank, not the mint.
     let bank_bytes = lending_pool.info.key.to_bytes();
     let vault_bump_arr = [vault_bump];
     let vault_seeds: &[&[u8]] = &[VAULT_SEED, &bank_bytes, &vault_bump_arr];

@@ -24,7 +24,7 @@ use crate::validation::{
 /// `rate_bps` is the max acceptable rate (basis points); `term_seconds` the
 /// requested term; `principal_atoms` the borrow size and `collateral_atoms`
 /// the collateral pledge (both in token atoms). `residual_mode` picks the
-/// unfilled-residual path (v1 D6: P2Pool fallback / rest / drop) and
+/// unfilled-residual path (P2Pool fallback / rest / drop) and
 /// `last_valid_unix_ts` the rested bid's expiry (0 = never); `seat_index_hint` skips the seat-tree lookup.
 #[allow(clippy::too_many_arguments)]
 pub fn place_order_instruction(

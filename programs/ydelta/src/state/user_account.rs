@@ -72,7 +72,7 @@ pub struct UserAccountFixed {
     _padding: [u8; 2],
 
     /// Root of the [`UserOrderRef`] tree (resting bids across markets;
-    /// v1 D6 — maintained by the user place/cancel/update-bid paths).
+    /// — maintained by the user place/cancel/update-bid paths).
     pub open_orders_root_index: DataIndex,
     /// Number of live `UserOrderRef` nodes.
     pub user_order_count: u32,
@@ -334,7 +334,7 @@ pub struct UserLoanRef {
 const_assert_eq!(size_of::<UserLoanRef>(), USER_LOAN_REF_SIZE);
 const_assert_eq!(size_of::<UserLoanRef>() % 8, 0);
 
-/// Pointer to a resting bid the user has on a market (v1 D6). Lets the
+/// Pointer to a resting bid the user has on a market. Lets the
 /// UI enumerate the user's open orders without scanning every market.
 /// Maintained by the user place/cancel/update-bid paths; pruned lazily
 /// when a bid is consumed, cancelled, or expired-pruned.

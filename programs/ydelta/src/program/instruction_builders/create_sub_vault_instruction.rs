@@ -1,4 +1,4 @@
-//! Builders for the two sub-vault creation instructions (v1 D2/D3):
+//! Builders for the two sub-vault creation instructions:
 //! `CreatePoolSubVault` (protocol-admin assigns a curator + fee) and
 //! `CreatePrivateSubVault` (permissionless; signer becomes the curator
 //! and sole depositor, fee = 0). The processor auto-assigns a monotonic

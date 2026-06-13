@@ -362,7 +362,7 @@ pub struct MatchArgs {
     /// nodes.
     pub taker_share_price_snapshot_fp48: crate::math::Fp48,
 
-    /// Debt-side oracle price for LTV gating (v1 D17: against the
+    /// Debt-side oracle price for LTV gating (against the
     /// per-ask sub-vault `max_ltv_bps` cap only).
     pub debt_oracle_price_fp48: crate::math::Fp48,
 
@@ -371,7 +371,7 @@ pub struct MatchArgs {
 
     /// Live marginfi lending APR in bps (ceil), computed once per ix by
     /// the processor. Asks whose stored rate is below this are skipped
-    /// (v1 D5 fill-time floor). 0 disables the floor (degenerate bank).
+    /// (fill-time floor). 0 disables the floor (degenerate bank).
     pub ask_floor_rate_bps: u16,
 }
 
@@ -403,7 +403,7 @@ pub enum ResidualAction {
     /// residual.
     P2PoolBorrow,
 
-    /// Rest the residual in the bids tree (v1 D6).
+    /// Rest the residual in the bids tree.
     Rest,
 }
 
@@ -411,7 +411,7 @@ pub enum ResidualAction {
 /// P2Pool borrow (default), rest the remainder in the bids tree, or drop
 /// it.
 pub const RESIDUAL_MODE_P2POOL_FALLBACK: u8 = 0;
-/// Rest the unfilled residual as a bid (v1 D6).
+/// Rest the unfilled residual as a bid.
 pub const RESIDUAL_MODE_REST: u8 = 1;
 /// Drop the unfilled residual entirely.
 pub const RESIDUAL_MODE_DROP: u8 = 2;
@@ -443,7 +443,7 @@ pub fn match_order(
             continue;
         }
 
-        // v1 D5 fill-time floor: a stale ask below the live bank rate
+        // fill-time floor: a stale ask below the live bank rate
         // never fills — skip and surface for the curator's re-sync.
         if maker.rate_bps < args.ask_floor_rate_bps {
             let maker_seat = get_helper_seat(dynamic, maker.trader_seat_index).get_value();
@@ -459,7 +459,7 @@ pub fn match_order(
             continue;
         }
 
-        // v1 D9: self-cross is a SKIP, not an abort — the scan walks on
+        // self-cross is a SKIP, not an abort — the scan walks on
         // to other makers. Seat-level check here; the owner-level check
         // (wallet vs the maker sub-vault's curator) runs once the
         // profile is read below.
@@ -549,7 +549,7 @@ pub fn match_order(
             matched_principal = remaining_principal.min(profile_idle);
         }
 
-        // v1 D9 owner-level self-cross: a wallet may not borrow from a
+        // owner-level self-cross: a wallet may not borrow from a
         // sub-vault it curates (wash-quoting guard). Skip, don't abort.
         {
             let taker_owner =
@@ -574,7 +574,7 @@ pub fn match_order(
             .checked_add(matched_collateral_maker)
             .ok_or(ProgramError::ArithmeticOverflow)?;
 
-        // v1 D17: the sub-vault's `max_ltv_bps` is the ONLY origination
+        // the sub-vault's `max_ltv_bps` is the ONLY origination
         // gate — marginfi weights no longer constrain fixed fills. The
         // cap is per-ask policy, not a property of the bid: a stricter
         // profile skips and the scan walks on to asks whose cap the
@@ -610,7 +610,7 @@ pub fn match_order(
                     .encumbered_in_orders_atoms
                     .checked_add(matched_principal)
                     .ok_or(ProgramError::ArithmeticOverflow)?;
-                // v1 D16: one fill = one open loan on this sub-vault;
+                // one fill = one open loan on this sub-vault;
                 // retired by the full-close paths.
                 p.open_loans_count = p
                     .open_loans_count
@@ -664,10 +664,10 @@ pub fn match_order(
         node.lender_rate_bps = lender_rate;
         node.loan_type = 0;
         node.flags = vault_flag;
-        // v1 D3b: the curator fee lives on the sub-vault, snapshotted at
+        // the curator fee lives on the sub-vault, snapshotted at
         // match so later changes never touch open loans.
         node.curator_fee_bps_snapshot = profile_curator_fee_bps;
-        // v1 D17: stamp the sub-vault's LTV pair — curator updates never
+        // stamp the sub-vault's LTV pair — curator updates never
         // move thresholds on open loans.
         node.origination_ltv_bps = profile_max_ltv_bps;
         node.liquidation_ltv_bps = profile_liquidation_ltv_bps;
@@ -887,7 +887,7 @@ impl<'a> MarketRefMut<'a> {
     }
 
     /// Inserts `order` at `order_index` into the market's bookside tree
-    /// for its side (v1 D6: bids rest in their own tree; tree-max is the
+    /// for its side (bids rest in their own tree; tree-max is the
     /// best order on both sides).
     pub fn rest_order(&mut self, order_index: DataIndex, order: RestingOrder) -> ProgramResult {
         let MarketRefMut { fixed, dynamic } = self;
@@ -930,7 +930,7 @@ pub struct PlaceOrderArgs {
     pub principal_atoms: u64,
     /// Collateral attached to the bid.
     pub collateral_atoms: u64,
-    /// One of the `RESIDUAL_MODE_*` constants (v1 D6).
+    /// One of the `RESIDUAL_MODE_*` constants.
     pub residual_mode: u8,
     /// Expiry for a rested residual; `0` = never (only meaningful for
     /// `RESIDUAL_MODE_REST`).
@@ -946,14 +946,14 @@ pub struct PlaceOrderArgs {
     /// Collateral oracle price.
     pub collateral_oracle_price_fp48: crate::math::Fp48,
     /// Marginfi `liability_weight_init` for the debt bank — used ONLY by
-    /// the P2Pool-fallback pre-check (v1 D17: marginfi weights never gate
+    /// the P2Pool-fallback pre-check (marginfi weights never gate
     /// fixed fills).
     pub debt_liability_weight_init_fp48: crate::math::Fp48,
     /// Marginfi `asset_weight_init` for the collateral bank (fallback
     /// pre-check only).
     pub collateral_asset_weight_init_fp48: crate::math::Fp48,
 
-    /// Live marginfi lending APR in bps (ceil) — the v1 D5 ask floor.
+    /// Live marginfi lending APR in bps (ceil) — the ask floor.
     pub ask_floor_rate_bps: u16,
 }
 
@@ -990,8 +990,8 @@ pub struct PlaceOrderResult {
     /// none).
     pub p2pool_loan_sequence: u64,
 
-    /// `true` when the unfilled residual was rested in the bids tree
-    /// (v1 D6); the rested bid carries `sequence`.
+    /// `true` when the unfilled residual was rested in the bids tree;
+    /// the rested bid carries `sequence`.
     pub rested: bool,
 }
 
@@ -1114,7 +1114,7 @@ pub fn match_borrower_bid(
         match_result.remaining_principal > 0,
     ) {
         (ResidualAction::P2PoolBorrow, true) => {
-            // v1 D17: the fallback opens a REAL marginfi borrow, so
+            // the fallback opens a REAL marginfi borrow, so
             // marginfi's init weights gate it (and only it). Pre-check
             // here for a clean error instead of an opaque CPI health
             // failure deep in the borrow.
@@ -1168,7 +1168,7 @@ pub fn match_borrower_bid(
             node.loan_type = 1;
             node.borrower_marginfi_borrow_shares = 0;
             // P2Pool residual has no vault lender and therefore no
-            // curator fee (v1 D3b: fees are per-sub-vault).
+            // curator fee (fees are per-sub-vault).
             node.curator_fee_bps_snapshot = 0;
 
             node.borrower_collateral_share_price_snapshot_fp48 = snapshot;
@@ -1211,7 +1211,7 @@ pub fn match_borrower_bid(
             p2pool_loan_sequence = sequence;
         }
         (ResidualAction::Rest, true) => {
-            // v1 D6: the residual rests in the bids tree. Its collateral
+            // the residual rests in the bids tree. Its collateral
             // stays encumbered on the seat (taken at placement above) and
             // keeps earning marginfi supply yield while it waits; the
             // stored snapshot lets cancel/expiry release exactly what was
@@ -1424,7 +1424,7 @@ pub fn cancel_order_by_index(
     Ok(())
 }
 
-/// v1 D6: cancel-and-replace for a user resting bid, in place. Removes
+/// cancel-and-replace for a user resting bid, in place. Removes
 /// the bid from the bids tree, rewrites rate / term / expiry under a
 /// fresh sequence (repricing forfeits time priority), and reinserts the
 /// SAME block — principal, collateral, and the encumbrance snapshot are
@@ -1528,7 +1528,7 @@ pub struct MatchP2PoolRefinanceArgs {
     /// Now-timestamp.
     pub now_unix_ts: i64,
 
-    /// Debt oracle price (v1 D17: per-cross gating is against the
+    /// Debt oracle price (per-cross gating is against the
     /// per-ask sub-vault `max_ltv_bps` cap only).
     pub debt_oracle_price_fp48: crate::math::Fp48,
 
@@ -1541,7 +1541,7 @@ pub struct MatchP2PoolRefinanceArgs {
     /// Collateral mint decimals.
     pub collateral_mint_decimals: u8,
 
-    /// Live marginfi lending APR in bps (ceil) — the v1 D5 ask floor.
+    /// Live marginfi lending APR in bps (ceil) — the ask floor.
     pub ask_floor_rate_bps: u16,
 }
 
@@ -1600,7 +1600,7 @@ pub fn match_p2pool_residual_against_asks(
             continue;
         }
 
-        // v1 D5 fill-time floor (same as match_order).
+        // fill-time floor (same as match_order).
         if maker.rate_bps < args.ask_floor_rate_bps {
             let maker_seat = get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             emit_stack(crate::logs::AskSkippedBelowFloorLog {
@@ -1615,7 +1615,7 @@ pub fn match_p2pool_residual_against_asks(
             continue;
         }
 
-        // v1 D9: self-cross skips (seat level here; owner level below
+        // self-cross skips (seat level here; owner level below
         // once the profile is read).
         if maker.trader_seat_index == args.borrower_seat_index {
             current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
@@ -1687,7 +1687,7 @@ pub fn match_p2pool_residual_against_asks(
             }
             matched_principal = remaining_principal.min(profile_idle);
 
-            // v1 D9 owner-level self-cross (skip).
+            // owner-level self-cross (skip).
             {
                 let borrower_owner =
                     get_helper_seat(dynamic, args.borrower_seat_index).get_value().owner;
@@ -1703,7 +1703,7 @@ pub fn match_p2pool_residual_against_asks(
                 args.principal_cap_atoms,
                 false,
             )?;
-            // v1 D17: the sub-vault's `max_ltv_bps` is the ONLY
+            // the sub-vault's `max_ltv_bps` is the ONLY
             // origination gate on the refinance cross (the marginfi-side
             // health of the source P2Pool position is checked by the
             // processor before the scan). Zero cap fails closed (skip).
@@ -1737,7 +1737,7 @@ pub fn match_p2pool_residual_against_asks(
                         .encumbered_in_orders_atoms
                         .checked_add(matched_principal)
                         .ok_or(ProgramError::ArithmeticOverflow)?;
-                    // v1 D16: one cross = one open loan on this sub-vault.
+                    // one cross = one open loan on this sub-vault.
                     p.open_loans_count = p
                         .open_loans_count
                         .checked_add(1)
@@ -1785,7 +1785,7 @@ pub fn match_p2pool_residual_against_asks(
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_PRESETTLED
             | crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
         node.curator_fee_bps_snapshot = profile_curator_fee_bps;
-        // v1 D17: stamp the sub-vault's LTV pair.
+        // stamp the sub-vault's LTV pair.
         node.origination_ltv_bps = profile_max_ltv_bps;
         node.liquidation_ltv_bps = profile_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 = maker_snapshot;
@@ -1863,7 +1863,7 @@ pub fn match_p2pool_residual_against_asks(
     })
 }
 
-/// Inputs to [`match_resting_bids`] — the v1 D6/D7 ask-side take path:
+/// Inputs to [`match_resting_bids`] — the/D7 ask-side take path:
 /// a sub-vault ask (placement, re-sync, or the permissionless crank)
 /// walks the bids tree and fills resting borrower bids.
 pub struct MatchRestingBidsArgs {
@@ -1877,16 +1877,16 @@ pub struct MatchRestingBidsArgs {
     pub ask_rate_bps: u16,
     /// The ask's term capacity (`sub_vault.max_term_seconds`).
     pub ask_term_seconds: u32,
-    /// Sub-vault's curator fee, stamped on each fill (v1 D3b).
+    /// Sub-vault's curator fee, stamped on each fill.
     pub ask_curator_fee_bps: u16,
-    /// Sub-vault's origination LTV cap — the ONLY origination gate
-    /// (v1 D17); stamped onto each fill as `origination_ltv_bps`.
+    /// Sub-vault's origination LTV cap — the ONLY origination gate;
+    /// stamped onto each fill as `origination_ltv_bps`.
     pub profile_max_ltv_bps: u16,
     /// Sub-vault's liquidation threshold, stamped onto each fill (v1
     /// D17: curator updates never move thresholds on open loans).
     pub profile_liquidation_ltv_bps: u16,
     /// The taking sub-vault's curator — bids owned by the same wallet
-    /// are skipped (v1 D9 owner-level self-cross).
+    /// are skipped (owner-level self-cross).
     pub ask_curator: Pubkey,
     /// Market protocol-fee floor applied to the borrower rate.
     pub fee_floor_bps: u16,
@@ -1917,13 +1917,13 @@ pub struct MatchRestingBidsResult {
     pub total_filled_principal: u64,
     /// Fills produced.
     pub num_fills: u32,
-    /// Expired bids pruned during the scan (v1 D10).
+    /// Expired bids pruned during the scan.
     pub num_pruned: u32,
 }
 
 /// Walks the BIDS tree best-down (highest rate first) and fills resting
-/// borrower bids against a sub-vault ask (v1 D6/D7). Per-bid gates:
-/// expiry (prune, v1 D10) → self-cross (skip) → rate cross → term
+/// borrower bids against a sub-vault ask. Per-bid gates:
+/// expiry (prune) → self-cross (skip) → rate cross → term
 /// (`bid.term ≤ ask.term`) → sub-vault idle (cap; break when exhausted)
 /// → LTV at live oracle prices (skip) → reserve fill on the sub-vault →
 /// mint a `MatchedLoan`. Partially-filled bids shrink proportionally;
@@ -1950,7 +1950,7 @@ pub fn match_resting_bids(
             tree.get_next_lower_index::<RestingOrder>(current_bid_index)
         };
 
-        // v1 D10: prune expired bids — release the bidder's collateral
+        // prune expired bids — release the bidder's collateral
         // at the order's stored snapshot and free the block.
         if bid.is_expired(args.now_unix_ts) {
             let snapshot = bid.share_price_snapshot();
@@ -1978,7 +1978,7 @@ pub fn match_resting_bids(
             current_bid_index = next_bid_index;
             continue;
         }
-        // v1 D9 owner-level self-cross (skip): the bidder's wallet may
+        // owner-level self-cross (skip): the bidder's wallet may
         // not fill from a sub-vault it curates.
         {
             let bid_owner = get_helper_seat(dynamic, bid.trader_seat_index).get_value().owner;
@@ -2034,7 +2034,7 @@ pub fn match_resting_bids(
             crate::math::mul_div_u64(bid.collateral_atoms, fill, bid.principal_atoms, false)?
         };
 
-        // v1 D17: the sub-vault's `max_ltv_bps` is the ONLY origination
+        // the sub-vault's `max_ltv_bps` is the ONLY origination
         // gate, at live oracle prices — a failing bid is skipped (its
         // collateral may satisfy a looser ask later). Zero cap fails
         // closed (skip).
@@ -2109,7 +2109,7 @@ pub fn match_resting_bids(
         node.loan_type = 0;
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
         node.curator_fee_bps_snapshot = args.ask_curator_fee_bps;
-        // v1 D17: stamp the sub-vault's LTV pair.
+        // stamp the sub-vault's LTV pair.
         node.origination_ltv_bps = args.profile_max_ltv_bps;
         node.liquidation_ltv_bps = args.profile_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 =

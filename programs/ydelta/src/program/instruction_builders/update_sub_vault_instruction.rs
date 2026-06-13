@@ -15,7 +15,7 @@ use crate::state::global_config::global_config_pda;
 use crate::state::vault::global_vault_pda;
 
 /// Builds the `UpdateSubVault` instruction for the vault keyed by
-/// `bank`. `payer` (signer) must be the sub-vault's CURATOR (v1 D15 —
+/// `bank`. `payer` (signer) must be the sub-vault's CURATOR (
 /// the owner, for Private sub-vaults). `None` fields are left
 /// unchanged; the resulting LTV pair must satisfy the liq-gap invariant.
 pub fn update_sub_vault_instruction(
