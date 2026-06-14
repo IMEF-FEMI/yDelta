@@ -110,10 +110,7 @@ A bid and ask can match when:
 
 - the ask rate is within the bid's matching threshold,
 - the requested term is within the sub-vault's maximum term,
-- the sub-vault has available liquidity,
-- the borrower's collateral satisfies the sub-vault's LTV policy,
-- neither order has expired or been disabled,
-- the borrower is not the curator of the lending sub-vault.
+- the borrower's collateral satisfies the sub-vault's LTV policy.
 
 For a successful fixed-rate match:
 
@@ -172,31 +169,52 @@ prepayment penalty.
 
 ## Loan Lifecycle
 
-```text
-Depositor funds sub-vault
-          |
-          v
-Curator places vault ask
-          |
-          v
-Borrower deposits collateral and places bid
-          |
-          v
-Matching creates queued matched-loan record(s)
-          |
-          v
-Cranker promotes each match into a loan account
-          |
-          v
-Borrower repays, or keeper settles/liquidates
-          |
-          v
-Repayment is claimed back into the lending vault
+```mermaid
+flowchart TB
+    ASK["Sub-vault quotes an ask"]
+    BID["Borrower deposits collateral and places a bid"]
+    MATCH["Compatible principal crosses<br/>rate, term, liquidity, and LTV gates"]
+    QUEUE["Queued matched-loan record"]
+    PROCESS["Permissionless ProcessMatchedLoan"]
+    FIXED["Active fixed-rate loan"]
+
+    ASK --> MATCH
+    BID --> MATCH
+    MATCH -->|"matched principal"| QUEUE --> PROCESS --> FIXED
+
+    MATCH -->|"unfilled principal"| RESIDUAL{"Borrower's residual mode"}
+    RESIDUAL -->|"Rest"| REST["Resting collateral-backed bid"]
+    REST -->|"later ask placement or MatchCrank"| QUEUE
+    RESIDUAL -->|"Drop"| DROP["Release unused collateral"]
+    RESIDUAL -->|"P2Pool fallback"| P2P["Active variable-rate<br/>marginfi-backed loan"]
+    P2P -->|"must-full-fill conversion<br/>when compatible asks exist"| QUEUE
+
+    FIXED --> REPAY["Borrower repayment"]
+    FIXED --> LIQ["LTV liquidation"]
+    FIXED --> SETTLE["Settlement after maturity and grace"]
+    REPAY --> CLOSE{"Fully resolved?"}
+    LIQ --> CLOSE
+    SETTLE --> CLOSE
+    CLOSE -->|"No"| FIXED
+    CLOSE -->|"Yes"| CLAIM["Lender proceeds recorded as<br/>pending sub-vault claim"]
+    CLAIM --> SWEEP["Permissionless repayment sweep<br/>back to the Global Vault"]
+
+    P2P -->|"borrower repayment or liquidation"| P2PCLOSE["Resolve marginfi liability"]
 ```
 
-Matching and loan creation are separate steps. A successful cross first creates
-a queued matched-loan record. A permissionless cranker then promotes that record
-into a loan account and completes the required funding operations.
+One bid can produce multiple fixed loans and a residual outcome. Fixed-rate
+matching and loan funding are separate steps: each successful cross first
+creates a queued matched-loan record, then a permissionless processor promotes
+it into an active loan. For ordinary order-book matches, processing also
+completes funding. P2Pool conversions create pre-settled queued matches because
+the conversion instruction has already used sub-vault liquidity to repay the
+marginfi liability.
+
+Repayment, liquidation, and maturity settlement may resolve only part of a
+fixed loan. On full resolution, the sub-vault's economic accounting is
+reconciled and lender proceeds become pending claims. A later permissionless
+sweep moves those proceeds from the market's lender integration account back
+into the Global Vault's integration account.
 
 ## Protocol Architecture
 
