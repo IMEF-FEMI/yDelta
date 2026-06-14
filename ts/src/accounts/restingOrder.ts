@@ -1,8 +1,10 @@
 /**
- * `RestingOrder` — vault ask body in the asks RB-tree. 144 bytes. Tree key is
- * `Ord on (rate_bps DESC, sequence_number DESC)` — best ask (lowest rate)
- * lands at the tree's `max_index`. The default tree iterator walks descending
- * Ord, i.e. **best ask first**.
+ * `RestingOrder` — a resting order body in the bid OR ask RB-tree. 144 bytes.
+ * `side` says which: asks come from vault sub-vaults, bids are rested borrower
+ * residuals (v1 D6). The rate sense of the tree key is flipped per side, so the
+ * ask tree's `max_index` is the lowest rate (best ask) and the bid tree's
+ * `max_index` is the highest rate (best bid) — the descending iterator
+ * (`iterAsks` / `iterBids`) walks **best-first** on either side.
  *
  * Layout:
  *   @0   4    u32   trader_seat_index   (DataIndex of the vault's ClaimedSeat)
@@ -13,7 +15,7 @@
  *   @32  8    i64   last_valid_unix_ts  (0 = no expiration)
  *   @40  4    u32   term_seconds
  *   @44  2    u16   rate_bps
- *   @46  1    u8    side                (0 = Bid, 1 = Ask — always Ask)
+ *   @46  1    u8    side                (0 = Bid, 1 = Ask)
  *   @47  1    u8    order_type          (0 = Limit, 1 = IOC, 2 = PostOnly)
  *   @48  1    u8    flags
  *   @49  1    u8    _pad1

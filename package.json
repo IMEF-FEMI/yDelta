@@ -1,6 +1,6 @@
 {
   "name": "@ydelta/sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TypeScript SDK for yDelta — fixed-term, quote-based lending on Solana, marginfi-backed",
   "license": "Apache-2.0",
   "type": "module",

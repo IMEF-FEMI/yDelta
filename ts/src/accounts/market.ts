@@ -49,6 +49,8 @@ export interface MarketHeader {
   orderSequenceNumber: bigint;
   matchedLoanSequence: bigint;
   numBytesAllocated: number;
+  bidsRootIndex: number;
+  bidsBestIndex: number;
   asksRootIndex: number;
   asksBestIndex: number;
   claimedSeatsRootIndex: number;
@@ -72,6 +74,7 @@ export interface MarketHeader {
 
 export interface Market {
   header: MarketHeader;
+  bids: Array<{ index: number; order: RestingOrder }>;
   asks: Array<{ index: number; order: RestingOrder }>;
   claimedSeats: Array<{ index: number; seat: ClaimedSeat }>;
   matchedLoans: Array<{ index: number; loan: MatchedLoan }>;
@@ -116,6 +119,8 @@ export function decodeMarketHeader(data: Uint8Array | Buffer): MarketHeader {
     orderSequenceNumber: readU64(dv, MarketFixedOffsets.ORDER_SEQUENCE_NUMBER),
     matchedLoanSequence: readU64(dv, MarketFixedOffsets.MATCHED_LOAN_SEQUENCE),
     numBytesAllocated: readU32(dv, MarketFixedOffsets.NUM_BYTES_ALLOCATED),
+    bidsRootIndex: readU32(dv, MarketFixedOffsets.BIDS_ROOT_INDEX),
+    bidsBestIndex: readU32(dv, MarketFixedOffsets.BIDS_BEST_INDEX),
     asksRootIndex: readU32(dv, MarketFixedOffsets.ASKS_ROOT_INDEX),
     asksBestIndex: readU32(dv, MarketFixedOffsets.ASKS_BEST_INDEX),
     claimedSeatsRootIndex: readU32(dv, MarketFixedOffsets.CLAIMED_SEATS_ROOT_INDEX),
@@ -152,6 +157,22 @@ export function* iterAsks(
   rootIndex?: number,
 ): Generator<{ index: number; order: RestingOrder }> {
   const root = rootIndex ?? decodeMarketHeader(data).asksRootIndex;
+  if (isNil(root)) return;
+  const dynamic = dynamicRegion(data);
+  for (const node of walkDescending(dynamic, root, RESTING_ORDER_SIZE)) {
+    yield { index: node.index, order: decodeRestingOrder(node.payload) };
+  }
+}
+
+// Bid tree (restored in v1 D6 — borrower residuals with residualMode = Rest
+// live here). RestingOrder Ord makes the bid tree max = HIGHEST rate (the
+// borrower willing to pay most), so descending traversal yields best-bid
+// first — the same priority direction iterAsks gives for the cheapest ask.
+export function* iterBids(
+  data: Uint8Array | Buffer,
+  rootIndex?: number,
+): Generator<{ index: number; order: RestingOrder }> {
+  const root = rootIndex ?? decodeMarketHeader(data).bidsRootIndex;
   if (isNil(root)) return;
   const dynamic = dynamicRegion(data);
   for (const node of walkDescending(dynamic, root, RESTING_ORDER_SIZE)) {
@@ -211,6 +232,7 @@ export function decodeMarket(data: Uint8Array | Buffer): Market {
   const header = decodeMarketHeader(data);
   return {
     header,
+    bids: [...iterBids(data, header.bidsRootIndex)],
     asks: [...iterAsks(data, header.asksRootIndex)],
     claimedSeats: [...iterClaimedSeats(data, header.claimedSeatsRootIndex)],
     matchedLoans: [...iterMatchedLoans(data, header.matchedLoansRootIndex)],
