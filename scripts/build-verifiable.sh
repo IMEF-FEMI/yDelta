@@ -33,8 +33,24 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "Running: solana-verify build --library-name ydelta"
-solana-verify build --library-name ydelta
+# Pin the build image to the solana-version in programs/ydelta/Cargo.toml
+# ([package.metadata.solana].solana-version) so this local build uses the
+# same toolchain image that OtterSec's verify-from-repo picks from the same
+# metadata. 2.2.x (cargo 1.84) can't parse edition-2024 deps; pin >= 2.3.0.
+solana_version=$(awk '
+    /^\[package\.metadata\.solana\]/ {in_section=1; next}
+    /^\[/ {in_section=0}
+    in_section && /^solana-version[[:space:]]*=/ {
+        if (match($0, /"[^"]*"/)) { print substr($0, RSTART + 1, RLENGTH - 2); exit }
+    }
+' "$ROOT/programs/ydelta/Cargo.toml")
+base_image_args=()
+if [[ -n "$solana_version" ]]; then
+    base_image_args=(--base-image "solanafoundation/solana-verifiable-build:$solana_version")
+    echo "Pinned solana-version: $solana_version"
+fi
+echo "Running: solana-verify build --library-name ydelta ${base_image_args[*]}"
+solana-verify build --library-name ydelta "${base_image_args[@]}"
 
 artifact="$ROOT/target/deploy/ydelta.so"
 if [[ ! -f "$artifact" ]]; then

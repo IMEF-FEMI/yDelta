@@ -9,6 +9,10 @@ description = "Fixed-rate / fixed-term lending protocol with risk-tiered orderbo
 # Update this in lockstep with `declare_id!` in src/lib.rs.
 [package.metadata.solana]
 program-id = "HfYCWUgFuUbuzZTeQAAGzVkXw2uFM51QRoDfhFV8vyCj"
+# Pin the verifiable-build toolchain. 2.3.0 ships cargo 1.86 (Rust 1.85+),
+# which is needed to parse edition-2024 transitive deps; 2.2.x (cargo
+# 1.84) cannot, so OtterSec's canonical build fails on it.
+solana-version = "2.3.0"
 
 [lib]
 crate-type = ["cdylib", "lib"]
