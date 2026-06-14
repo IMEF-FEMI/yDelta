@@ -16,12 +16,14 @@
  * `deploy.ts` is intentionally separate — bootstrap assumes
  * `.local/protocol.json` already exists.
  *
- * Required `.local/*` input files (operator must seed these or accept
- * the defaults provided by `.local.example`):
- *   curators-input.json          (required)
- *   vault-input.json             (required: { mint: <USDC> })
+ * Required `.local/*` input files (operator must seed these or copy the
+ * defaults from `.local.example`):
+ *   protocol.json                (required: output of `yarn deploy`)
+ *   mainnet-banks.json           (required: static bank registry)
+ *   vault-input.json             (required: { mint, bank, marginfiGroup })
  *   setup-curator-sub-vaults-input.json (required: { mint, subVaults: [...] })
  *   markets-input.json           (required: { markets: [...] })
+ *   curators-input.json          (optional; defaults to curator-main)
  */
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';

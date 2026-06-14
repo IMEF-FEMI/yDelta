@@ -50,7 +50,7 @@ async function main(): Promise<void> {
       { memcmp: { offset: 8, bytes: marketPk.toBase58() } },
     ],
   });
-  type Row = { seq: bigint; type: string; createdBy: PublicKey };
+  type Row = { seq: bigint; type: string; createdBy: PublicKey; globalVault: PublicKey | null };
   const loans: Row[] = [];
   for (const { account } of accts) {
     const l = decodeLoanFixed(account.data) as {
@@ -58,12 +58,17 @@ async function main(): Promise<void> {
       loanType: number;
       state: number;
       createdBy: PublicKey;
+      lenderGlobalVault: PublicKey;
     };
     if (l.state !== 0) continue; // skip settled/repaid
     loans.push({
       seq: l.matchedLoanSequence,
       type: l.loanType === 1 ? 'P2Pool' : 'Fixed',
       createdBy: l.createdBy,
+      // Fixed (vault-lent) full repay credits the lender on the vault-owned
+      // seat, so the program REQUIRES the lender global vault as a trailing
+      // account; P2Pool loans omit it.
+      globalVault: l.loanType === 1 ? null : l.lenderGlobalVault,
     });
   }
   // Repay in sequence order; P2Pool loans each close on their own slice,
@@ -95,6 +100,7 @@ async function main(): Promise<void> {
       fullRepay: true,
       borrowerSeatIndexHint: null,
       crankerRefund: ln.createdBy,
+      globalVault: ln.globalVault,
     });
     const sig = await sendIxs(conn, borrower, [
       createAtaIdempotentIx(borrower.publicKey, borrower.publicKey, debtMint),

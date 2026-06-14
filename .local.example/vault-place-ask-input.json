@@ -1,8 +1,6 @@
 {
   "marketLabel": "USDC/SOL",
   "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  "subVaultId": 0,
-  "rateBps": 500,
-  "termSeconds": 604800,
+  "subVaultId": 1,
   "flags": 0
 }

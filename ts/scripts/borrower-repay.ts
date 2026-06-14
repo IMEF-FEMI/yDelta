@@ -21,6 +21,7 @@ import { PublicKey } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 import { repayInstruction } from '../src/instructions/index.js';
+import { decodeLoanFixed, LoanType, loanPda } from '../src/index.js';
 import {
   appendTxLog,
   ataFor,
@@ -57,12 +58,23 @@ async function main(): Promise<void> {
   const fullRepay = (input.fullRepay ?? false) || (input.repayAll ?? false);
   const repayAtoms = fullRepay ? 0n : BigInt(requireRepayAtoms(input.repayAtoms));
   const sequence = BigInt(input.loanSequence.toString());
+  const marketPk = new PublicKey(market.market);
+
+  // A Fixed (vault-lent) full repay credits the lender on the vault-owned
+  // seat, so the program REQUIRES the lender global vault as a trailing
+  // account; P2Pool loans omit it. Decode the loan to route correctly.
+  const [loanAddr] = loanPda(marketPk, sequence);
+  const loanAcct = await conn.getAccountInfo(loanAddr);
+  if (!loanAcct) throw new Error(`loan PDA ${loanAddr.toBase58()} not found for seq ${sequence}`);
+  const loan = decodeLoanFixed(loanAcct.data);
+  const globalVault =
+    loan.loanType === LoanType.Fixed ? loan.lenderGlobalVault : null;
 
   log(`[borrower-repay] market=${market.market} seq=${sequence} repay=${repayAtoms} full=${fullRepay} borrower=${borrower.publicKey.toBase58()}`);
 
   const ix = repayInstruction({
     borrower: borrower.publicKey,
-    market: new PublicKey(market.market),
+    market: marketPk,
     sequence,
     debtMint,
     borrowerToken: ataFor(borrower.publicKey, debtMint),
@@ -76,6 +88,7 @@ async function main(): Promise<void> {
     fullRepay,
     borrowerSeatIndexHint: input.borrowerSeatIndexHint ?? null,
     crankerRefund: new PublicKey(input.crankerRefund),
+    globalVault,
   });
   // Source ATA must hold the repay atoms; idempotent-create is a no-op if so.
   const sig = await sendIxs(conn, borrower, [

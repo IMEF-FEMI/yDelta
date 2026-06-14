@@ -2,21 +2,25 @@
  * init-market.ts — `SystemProgram.createAccount` + `CreateMarket` (tag 0)
  * for every entry in `.local/markets-input.json`.
  *
- * Bank addresses, oracles, marginfi group, and (for Pyth-Push banks) the
- * pyth feed-id all come from the static `.local/mainnet-banks.json`
- * registry — no runtime API calls.
+ * Each market's debt/collateral mint, marginfi bank pubkeys, and marginfi
+ * group come explicitly from `.local/markets-input.json`. The bank oracles
+ * are read and verified on-chain from the bank accounts — there is no
+ * static-registry lookup.
  *
  * Reads:
  *   .local/markets-input.json {
  *     markets: [{
  *       label: string,                      // e.g. "USDC/SOL"
- *       debtMint: string,                   // key into mainnet-banks.json
- *       collateralMint: string,             // key into mainnet-banks.json
+ *       debtMint: string,
+ *       collateralMint: string,
+ *       debtBank: string,                   // marginfi bank pubkeys
+ *       collateralBank: string,
+ *       marginfiGroup: string,
+ *       debtPythFeedIdHex?: string,         // for Pyth-Push debt banks
  *       params?: { ...CreateMarketParams }
  *     }]
  *   }
  *   .local/global-config.json
- *   .local/mainnet-banks.json
  * Writes:
  *   .local/markets.json {
  *     [label]: {

@@ -26,7 +26,11 @@ const arg = (k: string): string | undefined => {
   const i = argv.indexOf(k);
   return i >= 0 ? argv[i + 1] : undefined;
 };
-const MARKET = new PublicKey(arg('--market') ?? '9mSq5qvdKPJdNE8T8UMALrkuLxisw9eed87z33sWCUcv'); // USDC/SOL
+const marketArg = arg('--market');
+if (!marketArg) {
+  throw new Error('debug-seat-withdraw: --market <pubkey> is required (look it up in .local/markets.json)');
+}
+const MARKET = new PublicKey(marketArg);
 const OWNER = arg('--owner') ? new PublicKey(arg('--owner')!) : null;
 const RPC_URL =
   process.env.YDELTA_RPC_URL ?? process.env.RPC_URL ?? 'https://api.mainnet-beta.solana.com';

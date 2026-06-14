@@ -20,6 +20,7 @@ import {
   cuBudgetIx,
   liquidateLoanInstruction,
 } from '../src/instructions/index.js';
+import { decodeLoanFixed, LoanType, loanPda } from '../src/index.js';
 import {
   appendTxLog,
   loadConnection,
@@ -62,10 +63,22 @@ async function main(): Promise<void> {
     { bank: collateralBankState, pythFeedIdHex: market.collateralPythFeedIdHex, pythShardId: market.collateralPythShardId },
   ]);
 
+  // The full-close credit lands on the lender's vault-owned seat, so a Fixed
+  // (vault-lent) loan REQUIRES its lender global vault as a trailing account;
+  // P2Pool loans omit it. Decode the loan to route correctly.
+  const marketPk = new PublicKey(market.market);
+  const sequence = BigInt(input.sequence.toString());
+  const [loanAddr] = loanPda(marketPk, sequence);
+  const loanAcct = await conn.getAccountInfo(loanAddr);
+  if (!loanAcct) throw new Error(`loan PDA ${loanAddr.toBase58()} not found for seq ${sequence}`);
+  const loan = decodeLoanFixed(loanAcct.data);
+  const globalVault =
+    loan.loanType === LoanType.Fixed ? loan.lenderGlobalVault : undefined;
+
   const ix = liquidateLoanInstruction({
     payer: signer.publicKey,
-    market: new PublicKey(market.market),
-    sequence: BigInt(input.sequence.toString()),
+    market: marketPk,
+    sequence,
     debtMint: new PublicKey(market.debtMint),
     collateralMint: new PublicKey(market.collateralMint),
     liquidatorDebtToken: new PublicKey(input.liquidatorDebtTokenAta),
@@ -82,6 +95,7 @@ async function main(): Promise<void> {
     marginfiProgram: MARGINFI_PROGRAM_ID,
     repayAtomsMax: BigInt(input.repayAtomsMax.toString()),
     crankerRefund: new PublicKey(input.crankerRefund),
+    globalVault,
   });
   log(`[liquidate] ${market.label} seq=${input.sequence}`);
   const sig = await sendIxs(conn, signer, [cuBudgetIx(), ix]);

@@ -1,5 +1,4 @@
 {
   "marketLabel": "USDC/SOL",
-  "sequence": "1",
-  "crankerRefund": "<cranker pubkey that paid loan rent>"
+  "subVaultId": 1
 }

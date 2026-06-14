@@ -6,8 +6,6 @@
  * Reads:
  *   .local/seat-deposit-input.json {
  *     marketLabel: string,
- *     traderKeypairPath?: string,
- *     traderTokenAta: string,
  *     mint: string,                          // debt or collateral mint
  *     amountAtoms: string | number,
  *     traderIndexHint?: number | null
