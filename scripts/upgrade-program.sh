@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Upgrade the deployed ydelta program with the latest local build.
 # Builds via `scripts/build-program.sh`, then runs
-# `solana program deploy --program-id <keypair> <so>` against whichever
-# cluster `solana config get` is currently pointed at.
+# `solana program deploy --program-id <keypair> <so>` against mainnet
+# (YDELTA_RPC_URL, or the mainnet-beta default).
 #
 # Usage:
 #   scripts/upgrade-program.sh                # build + deploy to current cluster
@@ -55,10 +55,9 @@ fi
 # downstream subcommands as an "unrecognized signer source".
 program_id=$(solana-keygen pubkey "$keypair")
 config_out=$(solana config get)
-cli_cluster=$(echo "$config_out" | awk -F': ' '/RPC URL/ {print $2}' | xargs)
-# YDELTA_RPC_URL takes precedence so the upgrade and the TS scripts
-# target the same cluster.
-cluster="${YDELTA_RPC_URL:-$cli_cluster}"
+# Mainnet only: YDELTA_RPC_URL (your mainnet RPC) or the mainnet-beta
+# default — never whatever the Solana CLI is pointed at.
+cluster="${YDELTA_RPC_URL:-https://api.mainnet-beta.solana.com}"
 SOL_URL_FLAGS=(--url "$cluster")
 cli_signer=$(echo "$config_out" | awk -F': ' '/Keypair Path/ {print $2}' | xargs)
 signer="${YDELTA_DEPLOYER_KEYPAIR_PATH:-${YDELTA_KEYPAIR_PATH:-$cli_signer}}"

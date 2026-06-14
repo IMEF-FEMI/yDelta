@@ -64,14 +64,13 @@ if [[ ! -f "$keypair" ]]; then
 fi
 program_id=$(solana-keygen pubkey "$keypair")
 
-# Resolve cluster + signer. YDELTA_RPC_URL takes precedence over the
-# Solana CLI's `solana config get` URL so the shell scripts agree with
-# the TS scripts about which cluster they're targeting. Signer path
-# is taken from env first so deploy shells and TS scripts use the same
-# authority without relying on global Solana CLI state.
+# Resolve cluster + signer. yDelta deploys to MAINNET only: the cluster is
+# YDELTA_RPC_URL (your mainnet RPC) or the mainnet-beta default — never
+# whatever the Solana CLI happens to be pointed at. Signer path is taken
+# from env first so deploy shells and TS scripts use the same authority
+# without relying on global Solana CLI state.
 config_out=$(solana config get)
-cli_cluster=$(echo "$config_out" | awk -F': ' '/RPC URL/ {print $2}' | xargs)
-cluster="${YDELTA_RPC_URL:-$cli_cluster}"
+cluster="${YDELTA_RPC_URL:-https://api.mainnet-beta.solana.com}"
 cli_signer_path=$(echo "$config_out" | awk -F': ' '/Keypair Path/ {print $2}' | xargs)
 signer_path="${YDELTA_DEPLOYER_KEYPAIR_PATH:-${YDELTA_KEYPAIR_PATH:-$cli_signer_path}}"
 signer_pk=$(solana-keygen pubkey "$signer_path")
