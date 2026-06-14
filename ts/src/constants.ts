@@ -2,7 +2,7 @@ import { PublicKey } from '@solana/web3.js';
 
 /** Deployed program id of the yDelta program. */
 export const YDELTA_PROGRAM_ID = new PublicKey(
-  'Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas',
+  'HfYCWUgFuUbuzZTeQAAGzVkXw2uFM51QRoDfhFV8vyCj',
 );
 
 /** PDA seed prefixes — must stay byte-identical to the on-chain definitions. */

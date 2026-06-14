@@ -8,7 +8,7 @@ description = "Fixed-rate / fixed-term lending protocol with risk-tiered orderbo
 # `scripts/verify-program.sh` don't need the program id passed each call.
 # Update this in lockstep with `declare_id!` in src/lib.rs.
 [package.metadata.solana]
-program-id = "Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas"
+program-id = "HfYCWUgFuUbuzZTeQAAGzVkXw2uFM51QRoDfhFV8vyCj"
 
 [lib]
 crate-type = ["cdylib", "lib"]
