@@ -538,8 +538,6 @@ fn loan_fixed_with_vault_lender_fields_stamped() {
 /// Pin the seat owner-kind discriminants: user seats and vault
 /// (sub-vault) seats must stay distinct, and the literal values are
 /// load-bearing for tree-key ordering and loader gates.
-/// (Secondary loan sale is out of scope for v1 — see docs/v1-spec.md §9;
-/// this test used to carry that framing but only ever pinned constants.)
 #[test]
 fn owner_kind_discriminants_are_pinned() {
     // Sanity: vault-lender loans (`lender_kind = OWNER_KIND_SUB_VAULT`)
