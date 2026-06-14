@@ -17,3 +17,6 @@ node_modules/
 .env
 .env.local
 .env.*.local
+
+# temp file used by prepack/postpack README swap
+.readme.root

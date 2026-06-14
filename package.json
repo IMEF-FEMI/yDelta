@@ -36,6 +36,8 @@
   "scripts": {
     "build": "rimraf dist && tsc -p tsconfig.json",
     "prepublishOnly": "yarn build",
+    "prepack": "cp README.md .readme.root && cp ts/README.md README.md",
+    "postpack": "mv .readme.root README.md",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "format": "prettier --write 'ts/**/*.ts' 'ts/**/*.json'",
     "lint": "eslint 'ts/**/*.ts'",
