@@ -11,6 +11,7 @@
  *     loanSequence: string | number,        // loan PDA seq (u64)
  *     crankerRefund: string,                // who paid the loan rent
  *     maxAcceptableRateBps: number,         // cap; matcher breaks past this
+ *     ltvBufferBps?: number,                // optional borrower LTV buffer on converted loans
  *     simulateOnly?: boolean                // skip send, just print logs
  *   }
  *
@@ -71,6 +72,9 @@ interface Input {
   loanSequence: string | number;
   crankerRefund: string;
   maxAcceptableRateBps: number;
+  /** Optional borrower LTV buffer in bps (default 0): each converted fixed
+   *  loan originates at effective_cap = sub-vault max_ltv - buffer. */
+  ltvBufferBps?: number;
   simulateOnly?: boolean;
   /** Reproduce the UI's exact bundling path: skip the market LUT, and
    *  drop the SWB precompile+update when a probe-sim says oracles are
@@ -150,6 +154,7 @@ async function main(): Promise<void> {
         marginfiGroup: new PublicKey(market.marginfiGroup),
         marginfiProgram: MARGINFI_PROGRAM_ID,
         maxAcceptableRateBps: input.maxAcceptableRateBps,
+        ltvBufferBps: input.ltvBufferBps,
         crankerRefund: new PublicKey(input.crankerRefund),
       }),
     );
@@ -201,6 +206,7 @@ async function main(): Promise<void> {
     marginfiGroup: new PublicKey(market.marginfiGroup),
     marginfiProgram: MARGINFI_PROGRAM_ID,
     maxAcceptableRateBps: input.maxAcceptableRateBps,
+    ltvBufferBps: input.ltvBufferBps,
     crankerRefund: new PublicKey(input.crankerRefund),
   });
 
@@ -242,6 +248,7 @@ async function main(): Promise<void> {
       borrower: borrower.publicKey.toBase58(),
       loanSequence: sequence.toString(),
       maxAcceptableRateBps: input.maxAcceptableRateBps,
+      ltvBufferBps: input.ltvBufferBps ?? 0,
       switchboardBundled: sbIxs.length,
     },
   });

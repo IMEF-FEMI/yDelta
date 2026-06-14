@@ -4,5 +4,6 @@
   "termSeconds": 604800,
   "principalAtoms": "10000000",
   "collateralAtoms": "200000000",
-  "flags": 0
+  "residualMode": 0,
+  "ltvBufferBps": 0
 }

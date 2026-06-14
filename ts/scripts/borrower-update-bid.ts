@@ -1,5 +1,5 @@
 /**
- * borrower-update-bid.ts — `UpdateOrder` (tag 44, v1 D6). Borrower-signed
+ * borrower-update-bid.ts — `UpdateOrder` (tag 44). Borrower-signed
  * cancel-and-replace of a resting bid: the rate / term / expiry change
  * while principal and collateral are untouched. The order sequence is
  * renewed (back of price-time priority).
@@ -12,6 +12,7 @@
  *     newRateBps: number,
  *     newTermSeconds: number,
  *     newLastValidUnixTs: string | number,  // i64; rested-bid expiry (0 = never)
+ *     newLtvBufferBps?: number,             // REPLACES the bid's LTV buffer; omit/0 clears it
  *     seatIndexHint?: number | null
  *   }
  *
@@ -37,6 +38,10 @@ interface Input {
   newRateBps: number;
   newTermSeconds: number;
   newLastValidUnixTs: string | number;
+  /** Optional borrower LTV buffer in bps. Note: UpdateOrder REPLACES the
+   *  buffer, so omitting this (or 0) clears any buffer the bid had — pass
+   *  the intended value to preserve or change it. */
+  newLtvBufferBps?: number;
   seatIndexHint?: number | null;
 }
 
@@ -61,6 +66,7 @@ async function main(): Promise<void> {
     newRateBps: input.newRateBps,
     newTermSeconds: input.newTermSeconds,
     newLastValidUnixTs,
+    newLtvBufferBps: input.newLtvBufferBps,
     seatIndexHint: input.seatIndexHint ?? null,
   });
   const sig = await sendIxs(conn, borrower, [ix]);

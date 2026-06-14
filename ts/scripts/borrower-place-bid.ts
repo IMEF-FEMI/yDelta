@@ -12,6 +12,7 @@
  *     principalAtoms: string | number,      // u64 (string for >2^53)
  *     collateralAtoms: string | number,
  *     residualMode?: number,                // 0 P2PoolFallback, 1 rest, 2 drop
+ *     ltvBufferBps?: number,                // optional borrower LTV buffer; tightens origination cap
  *     lastValidUnixTs?: string | number,    // i64; rested-bid expiry (0 = never)
  *     seatIndexHint?: number | null
  *   }
@@ -55,8 +56,11 @@ interface Input {
   termSeconds: number;
   principalAtoms: string | number;
   collateralAtoms: string | number;
-  /** Unfilled-residual path (v1 D6): 0 P2Pool fallback, 1 rest, 2 drop. */
+  /** Unfilled-residual path: 0 P2Pool fallback, 1 rest, 2 drop. */
   residualMode?: number;
+  /** Optional borrower LTV buffer in bps (default 0): originate strictly
+   *  below the sub-vault cap (effective_cap = max_ltv - buffer). */
+  ltvBufferBps?: number;
   /** Rested-bid expiry unix ts; `0` = never (only used with residualMode 1). */
   lastValidUnixTs?: string | number;
   seatIndexHint?: number | null;
@@ -147,6 +151,7 @@ async function main(): Promise<void> {
     principalAtoms: principal,
     collateralAtoms: collateral,
     residualMode: input.residualMode,
+    ltvBufferBps: input.ltvBufferBps,
     lastValidUnixTs: input.lastValidUnixTs === undefined
       ? undefined
       : BigInt(input.lastValidUnixTs.toString()),
