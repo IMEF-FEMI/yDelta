@@ -35,6 +35,13 @@ solana program show \
 scripts/verify-program.sh
 ```
 
+For reference, the program's current verified build hash is below — always
+reconfirm it on-chain with the commands above rather than trusting this value:
+
+```text
+9d68f6c9232fc7ee0d558164f8b681a2f3cc4167c7ff2b79c2240d5f9d9820a7
+```
+
 The program keypair expected by the deployment scripts is:
 
 ```text
