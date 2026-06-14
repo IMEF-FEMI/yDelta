@@ -131,6 +131,7 @@ describe('decodeRestingOrder', () => {
     buf[47] = 0;                       // order_type = Limit
     buf[48] = 0;                       // flags
     writeU128LE(buf, 50, 1n << 48n);   // share_price_snapshot_fp48 = 1.0
+    writeU16LE(buf, 66, 1_250);        // ltv_buffer_bps (pins offset 66)
     const dv = new DataView(buf.buffer);
     const order = decodeRestingOrder(dv);
     expect(order.traderSeatIndex).toBe(0x12345678);
@@ -142,6 +143,7 @@ describe('decodeRestingOrder', () => {
     expect(order.rateBps).toBe(750);
     expect(order.side).toBe(1);
     expect(order.sharePriceSnapshotFp48).toBe(1n << 48n);
+    expect(order.ltvBufferBps).toBe(1_250);
   });
 
   it('reads a non-zero last_valid_unix_ts expiry', () => {

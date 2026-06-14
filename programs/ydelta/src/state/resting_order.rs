@@ -127,7 +127,14 @@ pub struct RestingOrder {
 
     share_price_snapshot_bytes: [u8; 16],
 
-    _pad2: [u8; 6],
+    /// Borrower-set LTV buffer in bps; `0` for vault asks. Tightens the
+    /// origination cap this bid will match at to
+    /// `sub_vault.max_ltv_bps − ltv_buffer_bps`, so a rested bid keeps
+    /// enforcing its owner's buffer when a later ask placement or
+    /// `MatchCrank` crosses it.
+    pub ltv_buffer_bps: u16,
+
+    _pad2: [u8; 4],
 
     _reserved: [u64; 9],
 }
@@ -150,6 +157,7 @@ impl RestingOrder {
         collateral_atoms: u64,
         last_valid_unix_ts: i64,
         flags: u8,
+        ltv_buffer_bps: u16,
         share_price_snapshot_fp48: crate::math::Fp48,
     ) -> Self {
         RestingOrder {
@@ -166,7 +174,8 @@ impl RestingOrder {
             flags,
             _pad1: [0; 1],
             share_price_snapshot_bytes: share_price_snapshot_fp48.raw().to_le_bytes(),
-            _pad2: [0; 6],
+            ltv_buffer_bps,
+            _pad2: [0; 4],
             _reserved: [0; 9],
         }
     }
@@ -271,6 +280,7 @@ mod tests {
             0,
             0,
             0,
+            0,
             crate::math::Fp48::ONE,
         )
     }
@@ -340,6 +350,7 @@ mod tests {
                             rate,
                             30,
                             100,
+                            0,
                             0,
                             0,
                             0,

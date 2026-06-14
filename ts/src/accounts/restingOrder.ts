@@ -18,7 +18,8 @@
  *   @48  1    u8    flags
  *   @49  1    u8    _pad1
  *   @50  16   u128  share_price_snapshot_fp48
- *   @66  6    u8[6] _pad2
+ *   @66  2    u16   ltv_buffer_bps      (borrower LTV buffer; persists on a rested bid)
+ *   @68  4    u8[4] _pad2
  *   @72  72   u64[9] _reserved
  */
 import { OrderType, Side } from '../types.js';
@@ -38,6 +39,12 @@ export interface RestingOrder {
   orderType: OrderType;
   flags: number;
   sharePriceSnapshotFp48: bigint;
+  /**
+   * Borrower-set LTV buffer (bps). On a rested bid it persists so a later
+   * ask / MatchCrank cross honors the same `effective_cap`. `0` for asks and
+   * for bids placed without a buffer.
+   */
+  ltvBufferBps: number;
 }
 
 export function decodeRestingOrder(payload: DataView): RestingOrder {
@@ -53,5 +60,6 @@ export function decodeRestingOrder(payload: DataView): RestingOrder {
     orderType: readU8(payload, 47) as OrderType,
     flags: readU8(payload, 48),
     sharePriceSnapshotFp48: readU128(payload, 50),
+    ltvBufferBps: readU16(payload, 66),
   };
 }

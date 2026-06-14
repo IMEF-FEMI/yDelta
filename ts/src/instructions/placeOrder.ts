@@ -53,6 +53,14 @@ export interface PlaceOrderArgs {
   /** Rested-bid expiry unix ts; `0` = never (only used with residualMode 1). */
   lastValidUnixTs?: bigint | BN | number;
   seatIndexHint?: number | null;
+  /**
+   * Optional borrower LTV buffer (bps, 0..=10_000). The collateral gate uses
+   * `effective_cap = sub_vault.max_ltv_bps.saturating_sub(buffer)`: a bid only
+   * fills against asks whose cap it clears WITH the buffer; unfilled principal
+   * follows `residualMode`. The same `effective_cap` is stamped onto the loan
+   * as `origination_ltv_bps`. Persists on a rested bid. `0` = prior behavior.
+   */
+  ltvBufferBps?: number;
 }
 
 export function placeOrderInstruction(args: PlaceOrderArgs): TransactionInstruction {
@@ -71,6 +79,7 @@ export function placeOrderInstruction(args: PlaceOrderArgs): TransactionInstruct
     .u32(args.termSeconds)
     .u64(args.principalAtoms)
     .u64(args.collateralAtoms)
+    .u16(args.ltvBufferBps ?? 0)
     .toBuffer();
 
   return ydeltaIx(

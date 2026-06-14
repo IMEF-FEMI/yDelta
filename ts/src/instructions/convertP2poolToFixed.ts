@@ -40,6 +40,13 @@ export interface ConvertP2PoolToFixedArgs {
   maxAcceptableRateBps: number;
   /** REQUIRED — bound to the P2Pool PDA's `created_by` at allocate time. */
   crankerRefund: PublicKey;
+  /**
+   * Optional borrower LTV buffer (bps, 0..=10_000) applied to the per-cross
+   * collateral gate: each ask cross uses `effective_cap =
+   * sub_vault.max_ltv_bps.saturating_sub(buffer)`, stamped onto the resulting
+   * fixed loan as `origination_ltv_bps`. Defaults to `0` (prior behavior).
+   */
+  ltvBufferBps?: number;
 }
 
 export function convertP2poolToFixedInstruction(
@@ -56,6 +63,7 @@ export function convertP2poolToFixedInstruction(
   const data = new Writer()
     .u8(InstructionTag.ConvertP2PoolToFixed)
     .u16(args.maxAcceptableRateBps)
+    .u16(args.ltvBufferBps ?? 0)
     .toBuffer();
 
   // NOTE: lender_marginfi_account is NOT in this account list. The

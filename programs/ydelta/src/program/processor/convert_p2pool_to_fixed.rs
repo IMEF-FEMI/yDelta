@@ -39,6 +39,10 @@ pub struct ConvertP2PoolToFixedParams {
     /// breaks the moment the rate-sorted asks tree exposes a maker
     /// above this cap.
     pub max_acceptable_rate_bps: u16,
+    /// Optional borrower LTV buffer in bps (default 0). Tightens the
+    /// origination cap on each refinance cross to
+    /// `sub_vault.max_ltv_bps − ltv_buffer_bps`.
+    pub ltv_buffer_bps: u16,
 }
 
 /// Refinance a P2Pool loan into vault-funded fixed loans. Signer must
@@ -51,6 +55,12 @@ pub fn process_convert_p2pool_to_fixed(
     data: &[u8],
 ) -> ProgramResult {
     let params = ConvertP2PoolToFixedParams::try_from_slice(data)?;
+    require!(
+        params.ltv_buffer_bps <= 10_000,
+        YdeltaError::InvalidArgument,
+        "ltv_buffer_bps {} exceeds 10000",
+        params.ltv_buffer_bps
+    )?;
     let ctx = ConvertP2PoolToFixedContext::load(accounts)?;
     let ConvertP2PoolToFixedContext {
         payer,
@@ -245,6 +255,7 @@ pub fn process_convert_p2pool_to_fixed(
                 debt_mint_decimals,
                 collateral_mint_decimals,
                 ask_floor_rate_bps,
+                ltv_buffer_bps: params.ltv_buffer_bps,
             },
             Some(global_vault.info),
         )?

@@ -96,3 +96,27 @@ export const GlobalVaultFixedOffsets = {
   PENDING_GLOBAL_VAULT_ADMIN: 240,
   IS_PAUSED: 304,
 } as const;
+
+// ─────────────────────────────────────────────────────────────────────
+// RestingOrder (144 bytes — bytemuck Pod tree-node payload)
+//
+// Mirrors `#[repr(C)] RestingOrder` (programs/ydelta/src/state/resting_order.rs).
+// `ltv_buffer_bps` (borrower LTV buffer) was added at offset 66, taken from
+// the leading 2 bytes of the old 6-byte `_pad2`; total size stays 144.
+// Decoder lives at ts/src/accounts/restingOrder.ts.
+// ─────────────────────────────────────────────────────────────────────
+
+export const RestingOrderOffsets = {
+  TRADER_SEAT_INDEX: 0,
+  SEQUENCE_NUMBER: 8,
+  PRINCIPAL_ATOMS: 16,
+  COLLATERAL_ATOMS: 24,
+  LAST_VALID_UNIX_TS: 32,
+  TERM_SECONDS: 40,
+  RATE_BPS: 44,
+  SIDE: 46,
+  ORDER_TYPE: 47,
+  FLAGS: 48,
+  SHARE_PRICE_SNAPSHOT_FP48: 50,
+  LTV_BUFFER_BPS: 66,
+} as const;

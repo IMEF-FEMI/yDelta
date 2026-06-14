@@ -16,6 +16,8 @@ use solana_program::{
 };
 
 use crate::logs::{emit_stack, OrderFilledIocLog};
+use crate::program::YdeltaError;
+use crate::require;
 use crate::protocol::marginfi::{wrapped_i80f48_to_u128, MarginfiV18Adapter};
 use crate::protocol::LendingProtocol;
 use crate::state::{
@@ -49,6 +51,11 @@ pub struct PlaceOrderParams {
     pub principal_atoms: u64,
     /// Collateral to encumber in collateral-mint atoms.
     pub collateral_atoms: u64,
+    /// Optional borrower LTV buffer in bps (default 0). Tightens the
+    /// origination cap to `sub_vault.max_ltv_bps − ltv_buffer_bps`; any
+    /// unfilled principal follows `residual_mode` and is never silently
+    /// reduced.
+    pub ltv_buffer_bps: u16,
 }
 
 /// Borrower IOC bid. Matches resting asks, encumbers borrower collateral, and
@@ -129,6 +136,13 @@ pub fn process_place_order(
             marginfi_group.info,
         )?;
 
+    require!(
+        params.ltv_buffer_bps <= 10_000,
+        YdeltaError::InvalidArgument,
+        "ltv_buffer_bps {} exceeds 10000",
+        params.ltv_buffer_bps
+    )?;
+
     let pre_borrow_liability_shares: u128 =
         read_debt_bank_liability_shares(borrower_marginfi_account.info, debt_bank.info.key)?;
 
@@ -163,6 +177,7 @@ pub fn process_place_order(
                 debt_liability_weight_init_fp48,
                 collateral_asset_weight_init_fp48,
                 ask_floor_rate_bps,
+                ltv_buffer_bps: params.ltv_buffer_bps,
             },
             vault_account,
         )?

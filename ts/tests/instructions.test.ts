@@ -263,8 +263,8 @@ describe('instruction builders — discriminator tags + key positions', () => {
     expectYdeltaIx(ix);
     expect(tagOf(ix.data)).toBe(InstructionTag.PlaceOrder);
     // tag(1) + Option<u32>(1 None) + u8 residual(1) + i64(8) + u16(2) + u32(4)
-    //  + u64(8) + u64(8) = 33
-    expect(ix.data.length).toBe(33);
+    //  + u64(8) + u64(8) + u16 ltv_buffer(2) = 35
+    expect(ix.data.length).toBe(35);
     expect(ix.data[2]).toBe(1); // residual_mode = Rest
     // Last account = global_vault PDA derived from the DEBT BANK (v1 keying).
     expect(ix.keys[ix.keys.length - 1].pubkey.equals(globalVaultPda(DEBT_BANK)[0])).toBe(true);
@@ -738,8 +738,8 @@ describe('instruction builders — discriminator tags + key positions', () => {
       crankerRefund: NEW_ADMIN,
     });
     expect(tagOf(ix.data)).toBe(InstructionTag.ConvertP2PoolToFixed);
-    // tag(1) + u16(2) = 3
-    expect(ix.data.length).toBe(3);
+    // tag(1) + u16 max_rate(2) + u16 ltv_buffer(2) = 5
+    expect(ix.data.length).toBe(5);
   });
 
   /* ── Tags 34, 35 ─────────────────────────────────────── */
@@ -879,8 +879,9 @@ describe('instruction builders — discriminator tags + key positions', () => {
       newLastValidUnixTs: 1_700_000_000n,
     });
     expect(tagOf(ix.data)).toBe(InstructionTag.UpdateOrder);
-    // tag(1) + u64(8) + Option<u32>(1 None) + u16(2) + u32(4) + i64(8) = 24
-    expect(ix.data.length).toBe(24);
+    // tag(1) + u64(8) + Option<u32>(1 None) + u16(2) + u32(4) + i64(8)
+    //  + u16 new_ltv_buffer(2) = 26
+    expect(ix.data.length).toBe(26);
     expect(ix.keys).toHaveLength(4);
     expect(ix.keys[3].pubkey.equals(userAccountPda(PAYER)[0])).toBe(true);
   });

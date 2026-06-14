@@ -111,7 +111,7 @@
       "name": "PlaceOrder",
       "tag": 4,
       "heavy": true,
-      "note": "v1 D6: residual_mode picks the unfilled-residual path — 0 P2PoolFallback (default), 1 Rest (rest the residual as a borrower bid; last_valid_unix_ts is its expiry, 0 = never), 2 Drop. Replaces the v0 OB_ONLY `flags` byte.",
+      "note": "v1 D6: residual_mode picks the unfilled-residual path — 0 P2PoolFallback (default), 1 Rest (rest the residual as a borrower bid; last_valid_unix_ts is its expiry, 0 = never), 2 Drop. Replaces the v0 OB_ONLY `flags` byte. ltv_buffer_bps (0..=10_000, last field) is an optional borrower LTV buffer: the collateral gate uses effective_cap = sub_vault.max_ltv_bps.saturating_sub(buffer); unfilled principal follows residual_mode. The same effective_cap is stamped on the loan as origination_ltv_bps and persists on a rested bid. 0 = prior behavior.",
       "accounts": [
         { "name": "payer", "signer": true, "writable": true },
         { "name": "global_config", "writable": false },
@@ -142,7 +142,8 @@
         { "name": "rate_bps", "type": "u16" },
         { "name": "term_seconds", "type": "u32" },
         { "name": "principal_atoms", "type": "u64" },
-        { "name": "collateral_atoms", "type": "u64" }
+        { "name": "collateral_atoms", "type": "u64" },
+        { "name": "ltv_buffer_bps", "type": "u16" }
       ]
     },
     {
@@ -682,7 +683,10 @@
         { "name": "global_vault_integration_account", "writable": true, "pda": ["b\"vault_integration\"", "global_vault"], "note": "Vault idle pool; funds the buyout shortfall on a full refinance" },
         { "name": "cranker_refund", "writable": true, "note": "REQUIRED — bound to P2Pool loan PDA's created_by" }
       ],
-      "args": [{ "name": "max_acceptable_rate_bps", "type": "u16" }]
+      "args": [
+        { "name": "max_acceptable_rate_bps", "type": "u16" },
+        { "name": "ltv_buffer_bps", "type": "u16" }
+      ]
     },
     {
       "name": "CheckLtvLiquidatable",
@@ -838,7 +842,8 @@
         { "name": "seat_index_hint", "type": { "option": "u32" } },
         { "name": "new_rate_bps", "type": "u16" },
         { "name": "new_term_seconds", "type": "u32" },
-        { "name": "new_last_valid_unix_ts", "type": "i64" }
+        { "name": "new_last_valid_unix_ts", "type": "i64" },
+        { "name": "new_ltv_buffer_bps", "type": "u16" }
       ]
     }
   ],
@@ -856,7 +861,7 @@
     { "name": "SubVaultDepositorSeat", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (owner, sub_vault_id u16). Carries shares + supply/delta yield-index snapshots." },
     { "name": "SubVaultOrderRef", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Keyed by (market, sub_vault_id u16). At most one live order per (sub_vault, market)." },
     { "name": "ClaimedSeat", "encoding": "bytemuck Pod tree-node payload", "note": "Per-trader bookkeeping in a market — debt/collateral × withdrawable/encumbered shares + matched-loan running aggregates. owner_kind at offset 104 (0=User, 1=SubVault); sub_vault_id u16 at offset 106." },
-    { "name": "RestingOrder", "encoding": "bytemuck Pod tree-node payload", "note": "Order body — rate_bps, term_seconds, sequence, last_valid_unix_ts (i64 at offset 32), side, order_type." },
+    { "name": "RestingOrder", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Order body — rate_bps, term_seconds, sequence, last_valid_unix_ts (i64 at offset 32), side, order_type, ltv_buffer_bps (u16 at offset 66 — borrower LTV buffer; persists on a rested bid so a later cross honors the same effective_cap)." },
     { "name": "MatchedLoan", "size": 144, "encoding": "bytemuck Pod tree-node payload", "note": "Transient queue node between match and promote. Carries curator_fee_bps_snapshot / origination_ltv_bps / liquidation_ltv_bps at offsets 88/90/92." },
     { "name": "LoanFixed", "encoding": "bytemuck Pod PDA", "note": "Per-loan PDA seeded by (b\"loan\", market, sequence_le). Carries origination_ltv_bps/liquidation_ltv_bps at 96/98 and lender_sub_vault_id (u16) at 202." },
     { "name": "UserAccount", "encoding": "bytemuck Pod", "note": "Per-wallet market-position + vault-position mirrors plus the resting-bid UserOrderRef tree (open_orders_root_index at offset 72, user_order_count at offset 76). Authoritative balances live on the canonical ClaimedSeat / SubVaultDepositorSeat trees." }

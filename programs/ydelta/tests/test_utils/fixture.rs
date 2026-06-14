@@ -653,7 +653,8 @@ impl TestFixture {
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            flags, // residual_mode (v1 D6)
+            0, // ltv_buffer_bps (off)
+            flags, // residual_mode
             0,     // last_valid_unix_ts
             None,
         );

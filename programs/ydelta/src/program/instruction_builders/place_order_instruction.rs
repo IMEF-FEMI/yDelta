@@ -45,6 +45,7 @@ pub fn place_order_instruction(
     term_seconds: u32,
     principal_atoms: u64,
     collateral_atoms: u64,
+    ltv_buffer_bps: u16,
     residual_mode: u8,
     last_valid_unix_ts: i64,
     seat_index_hint: Option<DataIndex>,
@@ -63,6 +64,7 @@ pub fn place_order_instruction(
         term_seconds,
         principal_atoms,
         collateral_atoms,
+        ltv_buffer_bps,
     }
     .serialize(&mut data)
     .unwrap();
