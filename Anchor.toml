@@ -17,7 +17,7 @@ seeds = false
 skip-lint = false
 
 [programs.mainnet]
-ydelta = "Ar38x7KobxmwvKwSL2VzdjFxrtXd3Gs2VfB3ZCakyJas"
+ydelta = "HfYCWUgFuUbuzZTeQAAGzVkXw2uFM51QRoDfhFV8vyCj"
 
 [provider]
 cluster = "Mainnet"
