@@ -17,7 +17,7 @@
  *   .local/curators.json   (only when curatorLabel is set)
  *
  * Writes (or extends):
- *   .local/risk-profiles.json   (keyed by mint; appends the new sub-vault)
+ *   .local/sub-vaults.json   (keyed by mint; appends the new sub-vault)
  *
  * ## sub_vault_id is program-assigned
  *
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
   log(`[create-private-sub-vault] signature = ${sig}`);
 
   const subVaultsByMint =
-    readJsonOptional<Record<string, SubVaultDump[]>>('risk-profiles.json') ?? {};
+    readJsonOptional<Record<string, SubVaultDump[]>>('sub-vaults.json') ?? {};
   const existing = subVaultsByMint[input.mint] ?? [];
   const created: SubVaultDump = {
     subVaultId: assignedSubVaultId,
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
   subVaultsByMint[input.mint] = [...existing, created].sort(
     (a, b) => a.subVaultId - b.subVaultId,
   );
-  writeJson('risk-profiles.json', subVaultsByMint);
+  writeJson('sub-vaults.json', subVaultsByMint);
 
   appendTxLog({
     script: 'create-private-sub-vault',

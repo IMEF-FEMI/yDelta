@@ -1,6 +1,6 @@
 //! `AdminCancelSubVaultOrder` instruction. Vault-admin-gated force
 //! cancel of a sunset sub-vault's resting market ask. Rejects when
-//! `profile.is_sunset == 0` — admin force-cancel is only available
+//! `sub_vault.is_sunset == 0` — admin force-cancel is only available
 //! during wind-down; curators use `CancelOrderForSubVault` otherwise.
 
 use std::cell::RefMut;
@@ -35,7 +35,7 @@ pub struct AdminCancelSubVaultOrderParams {
 
 /// Vault-admin force-cancel a sunset sub-vault's resting ask. Removes
 /// the market resting order and the vault-side `SubVaultOrderRef`,
-/// then emits `CancelOrderForSubVaultLog`. Errors when the profile
+/// then emits `CancelOrderForSubVaultLog`. Errors when the sub_vault
 /// is not sunset or the order ref is missing.
 pub fn process_admin_cancel_sub_vault_order(
     _program_id: &Pubkey,
@@ -57,20 +57,20 @@ pub fn process_admin_cancel_sub_vault_order(
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
 
-        let profile_probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
-            tree.lookup_index(&profile_probe)
+            tree.lookup_index(&sub_vault_probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "admin_cancel_sub_vault_order: sub_vault_id {} not found",
             params.sub_vault_id
         )?;
-        let profile = crate::state::vault::get_helper_sub_vault(dynamic, profile_idx).get_value();
+        let sub_vault = crate::state::vault::get_helper_sub_vault(dynamic, sub_vault_idx).get_value();
         require!(
-            profile.is_sunset != 0,
+            sub_vault.is_sunset != 0,
             YdeltaError::SubVaultNotSunset,
             "admin_cancel_sub_vault_order: sub_vault_id {} is not sunset; admin force-cancel is \
              only allowed during sunset wind-down (call SunsetSubVault first, or have the \

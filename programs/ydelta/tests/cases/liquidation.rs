@@ -46,7 +46,7 @@ async fn setup_vault_funded_loan(
     let bob = fixture.create_trader().await; // borrower
     let keeper = fixture.create_trader().await; // liquidator / cranker
 
-    // Lender side: vault profile, unbounded ask at 600bps.
+    // Lender side: vault sub_vault, unbounded ask at 600bps.
     fixture
         .provide_vault_liquidity(
             &admin,

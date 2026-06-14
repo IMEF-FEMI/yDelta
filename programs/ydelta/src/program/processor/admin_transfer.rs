@@ -167,23 +167,23 @@ pub fn process_transfer_curator(
     let (fixed_bytes, dynamic) = data_ref.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
     let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
     let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-    let profile_idx = {
+    let sub_vault_idx = {
         let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
         tree.lookup_index(&probe)
     };
     require!(
-        profile_idx != NIL,
+        sub_vault_idx != NIL,
         YdeltaError::SubVaultNotFound,
         "sub_vault_id {} not found",
         params.sub_vault_id
     )?;
-    let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
+    let sub_vault = get_mut_helper_sub_vault(dynamic, sub_vault_idx).get_mut_value();
     require!(
-        profile.curator == *payer.info.key,
+        sub_vault.curator == *payer.info.key,
         YdeltaError::VaultCuratorRequired,
         "transfer_curator: signer != SubVault.curator"
     )?;
-    profile.pending_curator = params.new_curator;
+    sub_vault.pending_curator = params.new_curator;
     msg!(
         "ydelta: curator transfer initiated for sub_vault {}, pending -> {}",
         params.sub_vault_id,
@@ -199,7 +199,7 @@ pub struct AcceptCuratorParams {
     pub sub_vault_id: u16,
 }
 
-/// Completes a curator transfer. Signer must equal the profile's
+/// Completes a curator transfer. Signer must equal the sub_vault's
 /// `pending_curator` (non-default); promotes it to `curator` and
 /// clears the pending slot.
 pub fn process_accept_curator(
@@ -213,31 +213,31 @@ pub fn process_accept_curator(
     let (fixed_bytes, dynamic) = data_ref.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
     let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
     let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-    let profile_idx = {
+    let sub_vault_idx = {
         let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
         tree.lookup_index(&probe)
     };
     require!(
-        profile_idx != NIL,
+        sub_vault_idx != NIL,
         YdeltaError::SubVaultNotFound,
         "sub_vault_id {} not found",
         params.sub_vault_id
     )?;
-    let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
+    let sub_vault = get_mut_helper_sub_vault(dynamic, sub_vault_idx).get_mut_value();
     require!(
-        profile.pending_curator == *payer.info.key,
+        sub_vault.pending_curator == *payer.info.key,
         YdeltaError::PendingAdminMismatch,
         "accept_curator: signer != SubVault.pending_curator"
     )?;
     require!(
-        profile.pending_curator != Pubkey::default(),
+        sub_vault.pending_curator != Pubkey::default(),
         YdeltaError::PendingAdminMismatch,
         "no pending curator set"
     )?;
-    profile.curator = profile.pending_curator;
-    profile.pending_curator = Pubkey::default();
+    sub_vault.curator = sub_vault.pending_curator;
+    sub_vault.pending_curator = Pubkey::default();
     msg!(
-        "ydelta: curator accepted for profile {} by {}",
+        "ydelta: curator accepted for sub_vault {} by {}",
         params.sub_vault_id,
         payer.info.key
     );

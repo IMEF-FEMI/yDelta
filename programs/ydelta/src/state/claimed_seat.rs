@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn ord_orders_by_owner_then_profile() {
+    fn ord_orders_by_owner_then_sub_vault() {
         let pk = Pubkey::new_unique();
         let a = ClaimedSeat::new_empty(pk, OWNER_KIND_USER, 0);
         let b = ClaimedSeat::new_empty(pk, OWNER_KIND_SUB_VAULT, 5);
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn display_includes_profile() {
+    fn display_includes_sub_vault() {
         let seat = ClaimedSeat::new_empty(Pubkey::default(), OWNER_KIND_USER, 0);
         let s = format!("{}", seat);
         assert!(s.contains("#0"));

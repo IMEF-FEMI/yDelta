@@ -444,7 +444,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
         // release borrower collateral, decrement borrower's
         // open_borrow_count.
         if did_full_repay {
-            // Vault asks take no seat-level debt encumbrance — the profile's
+            // Vault asks take no seat-level debt encumbrance — the sub_vault's
             // idle/deployed atom counters are the lender-side ledger — so the
             // only seat-side close-out is retiring the open-lend counter the
             // matching engine stamped at fill time.
@@ -494,20 +494,20 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             let (fixed_bytes, dynamic) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
             let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
             let probe = SubVault::new_empty(lender_sub_vault_id, Pubkey::default(), 1, 1);
-            let profile_idx = {
+            let sub_vault_idx = {
                 let tree =
                     SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
                 tree.lookup_index(&probe)
             };
             require!(
-                profile_idx != NIL,
+                sub_vault_idx != NIL,
                 YdeltaError::SubVaultNotFound,
                 "repay: sub_vault_id {} not found on global_vault",
                 lender_sub_vault_id
             )?;
-            let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
+            let sub_vault = get_mut_helper_sub_vault(dynamic, sub_vault_idx).get_mut_value();
             let share_value_fp48 = read_bank_asset_share_value_fp48(debt_bank.info)?;
-            accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
+            accrue_sub_vault(sub_vault, now_unix_ts, share_value_fp48)?;
 
             // Per-loan weighted-rate accumulator decrements. These can ONLY
             // be applied at close (the per-loan rate + principal facts go
@@ -515,7 +515,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             let weighted_delta: u128 = (loan_principal as u128)
                 .checked_mul(loan_lender_rate as u128)
                 .ok_or(YdeltaError::MathOverflow)?;
-            profile.total_weighted_rate_bps = profile
+            sub_vault.total_weighted_rate_bps = sub_vault
                 .total_weighted_rate_bps
                 .checked_sub(weighted_delta)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -525,16 +525,16 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
                 BPS_PER_UNIT as u128,
                 false,
             )?;
-            profile.total_weighted_net_rate_bps = profile
+            sub_vault.total_weighted_net_rate_bps = sub_vault
                 .total_weighted_net_rate_bps
                 .checked_sub(net_weighted_delta)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            profile.deployed_principal_atoms = profile
+            sub_vault.deployed_principal_atoms = sub_vault
                 .deployed_principal_atoms
                 .checked_sub(loan_principal)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             // retire the open-loan counter stamped at fill.
-            profile.open_loans_count = profile
+            sub_vault.open_loans_count = sub_vault
                 .open_loans_count
                 .checked_sub(1)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -555,34 +555,34 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
                 (loan_lender_claimable as i128) - (loan_principal as i128);
             if realized_net >= 0 {
                 let interest = realized_net as u64;
-                profile.total_principal_atoms = profile
+                sub_vault.total_principal_atoms = sub_vault
                     .total_principal_atoms
                     .checked_add(interest)
                     .ok_or(ProgramError::ArithmeticOverflow)?;
             } else {
                 let shortfall = (-realized_net) as u64;
-                profile.total_principal_atoms =
-                    profile.total_principal_atoms.saturating_sub(shortfall);
+                sub_vault.total_principal_atoms =
+                    sub_vault.total_principal_atoms.saturating_sub(shortfall);
             }
             let assets_delta: i128 = realized_net - (estimated_accrued_atoms as i128);
             if assets_delta >= 0 {
-                profile.total_assets_atoms = profile
+                sub_vault.total_assets_atoms = sub_vault
                     .total_assets_atoms
                     .checked_add(assets_delta as u64)
                     .ok_or(ProgramError::ArithmeticOverflow)?;
             } else {
-                profile.total_assets_atoms = profile
+                sub_vault.total_assets_atoms = sub_vault
                     .total_assets_atoms
                     .saturating_sub((-assets_delta) as u64);
             }
-            crate::state::vault::restore_assets_principal_invariant(profile);
+            crate::state::vault::restore_assets_principal_invariant(sub_vault);
 
             // Pending-claim bucket — atoms now physically in
             // lender_marginfi_account but not yet swept to this vault's
             // integration_account. Excluded from idle-MTM in
             // accrue_sub_vault. claim_repayment_for_sub_vault
             // decrements this as it sweeps.
-            profile.pending_claim_atoms = profile
+            sub_vault.pending_claim_atoms = sub_vault
                 .pending_claim_atoms
                 .checked_add(loan_lender_claimable)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -592,7 +592,7 @@ pub fn process_repay(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             // `claim_curator_fee` ix pulls from the vault integration
             // account using this counter.
             if loan_accumulated_curator_fee_atoms > 0 {
-                profile.accumulated_curator_fee_atoms = profile
+                sub_vault.accumulated_curator_fee_atoms = sub_vault
                     .accumulated_curator_fee_atoms
                     .checked_add(loan_accumulated_curator_fee_atoms)
                     .ok_or(ProgramError::ArithmeticOverflow)?;

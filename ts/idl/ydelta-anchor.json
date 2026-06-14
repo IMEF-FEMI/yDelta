@@ -3165,8 +3165,8 @@
     },
     {
       "code": 28,
-      "name": "VaultOrderTermExceedsProfileMax",
-      "msg": "VaultOrderTermExceedsProfileMax"
+      "name": "VaultOrderTermExceedsSubVaultMax",
+      "msg": "VaultOrderTermExceedsSubVaultMax"
     },
     {
       "code": 29,

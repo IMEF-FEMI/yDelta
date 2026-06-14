@@ -43,7 +43,7 @@ export interface RepayArgs {
   crankerRefund: PublicKey;
   /**
    * Lender vault PDA. **Required** for Fixed loans — the processor reads
-   * it on full repay to apply per-loan risk-profile decrements and bump
+   * it on full repay to apply per-loan risk-subVault decrements and bump
    * `pending_claim_atoms`. Omit / pass `null` for P2Pool loans (the
    * on-chain loader expects the slot absent in that case).
    */

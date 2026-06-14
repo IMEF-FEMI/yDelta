@@ -205,8 +205,8 @@ async fn cap_above_marginfi_fills_what_marginfi_would_refuse() {
         market.matched_loan_sequence, 1,
         "the fill marginfi would refuse must land under the 90% cap"
     );
-    let profile = fixture.read_sub_vault(1).await;
-    assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
+    let sub_vault = fixture.read_sub_vault(1).await;
+    assert_eq!(sub_vault.encumbered_in_orders_atoms, principal_atoms);
 }
 
 /// The same in-between collateral with the P2Pool-fallback residual mode

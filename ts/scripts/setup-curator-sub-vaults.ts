@@ -1,9 +1,9 @@
 /**
- * setup-curator-profiles.ts — create N pool sub-vaults in a vault, each
+ * setup-curator-sub-vaults.ts — create N pool sub-vaults in a vault, each
  * bound to a curator from `.local/curators.json`.
  *
  * Reads:
- *   .local/setup-curator-profiles-input.json {
+ *   .local/setup-curator-sub-vaults-input.json {
  *     mint: string,
  *     curatorLabel?: string,                 // default for all sub-vaults
  *     subVaults: [{
@@ -27,7 +27,7 @@
  *     }],
  *     createdAtUnix
  *   }
- *   .local/risk-profiles.json   (keyed by mint)
+ *   .local/sub-vaults.json   (keyed by mint)
  *
  * ## sub_vault_id is program-assigned
  *
@@ -141,7 +141,7 @@ async function readNextSubVaultId(
 }
 
 async function main(): Promise<void> {
-  const input = readJson<Input>('setup-curator-profiles-input.json');
+  const input = readJson<Input>('setup-curator-sub-vaults-input.json');
   const vaults = readJson<Record<string, VaultDump>>('vaults.json');
   const curators = readJson<CuratorDump[]>('curators.json');
   const vault = vaults[input.mint];
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
     const already = recordedMatches(setup.subVaults, wantedTuple);
     if (already) {
       log(
-        `[setup-curator-profiles] (curator=${curator.label}, spread=${p.spreadBps}bps, ` +
+        `[setup-curator-sub-vaults] (curator=${curator.label}, spread=${p.spreadBps}bps, ` +
           `ltv=${p.maxLtvBps}bps, liqLtv=${p.liquidationLtvBps}bps, term=${p.maxTermSeconds}s, ` +
           `fee=${p.curatorFeeBps}bps) already recorded as subVaultId=${already.subVaultId}; skipping`,
       );
@@ -201,7 +201,7 @@ async function main(): Promise<void> {
     const assignedSubVaultId = await readNextSubVaultId(conn, vaultPda);
 
     log(
-      `[setup-curator-profiles] mint=${input.mint} curator=${curator.pubkey} ` +
+      `[setup-curator-sub-vaults] mint=${input.mint} curator=${curator.pubkey} ` +
         `spread=${p.spreadBps}bps maxLtv=${p.maxLtvBps}bps liqLtv=${p.liquidationLtvBps}bps ` +
         `maxTerm=${p.maxTermSeconds}s curatorFee=${p.curatorFeeBps}bps → subVaultId=${assignedSubVaultId}`,
     );
@@ -216,7 +216,7 @@ async function main(): Promise<void> {
       curatorFeeBps: p.curatorFeeBps,
     });
     const sig = await sendIxs(conn, signer, [ix]);
-    log(`[setup-curator-profiles]   signature = ${sig}`);
+    log(`[setup-curator-sub-vaults]   signature = ${sig}`);
 
     const created: CuratorSetupSubVault = {
       subVaultId: assignedSubVaultId,
@@ -226,7 +226,7 @@ async function main(): Promise<void> {
     };
     setup.subVaults.push(created);
     appendTxLog({
-      script: 'setup-curator-profiles',
+      script: 'setup-curator-sub-vaults',
       signatures: [sig],
       summary: {
         mint: input.mint,
@@ -240,10 +240,10 @@ async function main(): Promise<void> {
   writeJson('curator-setup.json', setup);
 
   const subVaultsByMint =
-    readJsonOptional<Record<string, SubVaultDump[]>>('risk-profiles.json') ?? {};
+    readJsonOptional<Record<string, SubVaultDump[]>>('sub-vaults.json') ?? {};
   subVaultsByMint[input.mint] = setup.subVaults;
-  writeJson('risk-profiles.json', subVaultsByMint);
-  log(`[setup-curator-profiles] wrote .local/curator-setup.json and risk-profiles.json`);
+  writeJson('sub-vaults.json', subVaultsByMint);
+  log(`[setup-curator-sub-vaults] wrote .local/curator-setup.json and sub-vaults.json`);
 }
 
 main().catch((err) => {

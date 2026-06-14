@@ -29,7 +29,7 @@ pub struct RemoveSubVaultParams {
 }
 
 /// Remove a sunset sub-vault from the global vault. Errors with
-/// `SubVaultNotSunset` if the profile is still active.
+/// `SubVaultNotSunset` if the sub_vault is still active.
 pub fn process_remove_sub_vault(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -53,16 +53,16 @@ pub fn process_remove_sub_vault(
             "remove_sub_vault: sub_vault_id {} not found in vault",
             params.sub_vault_id
         )?;
-        let profile: &SubVault = get_helper_sub_vault(dynamic, idx).get_value();
+        let sub_vault: &SubVault = get_helper_sub_vault(dynamic, idx).get_value();
         require!(
-            profile.is_sunset != 0,
+            sub_vault.is_sunset != 0,
             YdeltaError::SubVaultNotSunset,
             "remove_sub_vault: sub_vault_id {} is not sunset; call SunsetSubVault and \
              complete the wind-down (depositors withdraw, admin force-cancels remaining orders) \
              before removing",
             params.sub_vault_id
         )?;
-        profile.curator
+        sub_vault.curator
     };
 
     {

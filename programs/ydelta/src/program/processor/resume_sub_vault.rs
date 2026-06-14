@@ -1,7 +1,7 @@
 //! `ResumeSubVault` — vault-admin un-sunset for a sub-vault. Signer is
 //! the vault admin (via `ResumeSubVaultContext`). Clears `is_sunset`, which
 //! re-enables deposits, new orders, order updates, and matching for the
-//! profile.
+//! sub_vault.
 
 use std::cell::RefMut;
 
@@ -50,7 +50,7 @@ pub fn process_resume_sub_vault(
         params.sub_vault_id
     )?;
 
-    let profile = get_mut_helper_sub_vault(dynamic, idx).get_mut_value();
-    profile.is_sunset = 0;
+    let sub_vault = get_mut_helper_sub_vault(dynamic, idx).get_mut_value();
+    sub_vault.is_sunset = 0;
     Ok(())
 }

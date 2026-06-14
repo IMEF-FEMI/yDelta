@@ -186,7 +186,7 @@ export interface BankrunHandle {
   }): Promise<void>;
   /**
    * Advance the bankrun clock by `seconds`. Used for time-gated ixs like
-   * `claim_repayment_for_risk_profile` (waits until `matures_at_unix`) and
+   * `claim_repayment_for_risk_subVault` (waits until `matures_at_unix`) and
    * `settle_matured_loan` (waits past `matures_at + grace`).
    */
   warpForward(seconds: number | bigint): Promise<void>;

@@ -37,7 +37,7 @@ fn user_and_sub_vault_seats_with_same_owner_are_distinct() {
 }
 
 #[test]
-fn sub_vault_seats_distinct_by_profile_id() {
+fn sub_vault_seats_distinct_by_sub_vault_id() {
     let owner = Pubkey::new_unique();
     let s0 = ClaimedSeat::new_empty(owner, OWNER_KIND_SUB_VAULT, 0);
     let s1 = ClaimedSeat::new_empty(owner, OWNER_KIND_SUB_VAULT, 1);

@@ -1,6 +1,6 @@
 //! Builds the `YdeltaInstruction::RemoveSubVault` instruction: vault-admin
 //! removes a `SubVault` from the vault tree (only allowed after the
-//! profile has been sunset and wound down).
+//! sub_vault has been sunset and wound down).
 
 use borsh::BorshSerialize;
 use solana_program::{

@@ -52,7 +52,7 @@ pub fn process_sunset_sub_vault(
         params.sub_vault_id
     )?;
 
-    let profile = get_mut_helper_sub_vault(dynamic, idx).get_mut_value();
-    profile.is_sunset = 1;
+    let sub_vault = get_mut_helper_sub_vault(dynamic, idx).get_mut_value();
+    sub_vault.is_sunset = 1;
     Ok(())
 }

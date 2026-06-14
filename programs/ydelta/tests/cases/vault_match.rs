@@ -1,13 +1,13 @@
 //! Vault-as-maker matching tests.
 //!
-//! Verifies the quote-only vault profile order design:
+//! Verifies the quote-only vault sub_vault order design:
 //!   1. A sub-vault rests one open-ended (unbounded) ask per market
 //!      via `place_order_for_sub_vault` — the vault market-seat is
 //!      auto-created on the curator's first such call.
 //!   2. A borrower IOC Bid crosses the resting vault ask → the matching
 //!      engine records a match and bumps the vault state inline:
 //!      `SubVault.encumbered_in_orders_atoms += matched`.
-//!   3. Each cross is capped by the profile's *live idle balance*
+//!   3. Each cross is capped by the sub_vault's *live idle balance*
 //!      (`total_principal - deployed - encumbered`), not a per-seat cap.
 //!   4. The resting sub-vault ask is never removed by the engine —
 //!      only the curator removes it.
@@ -26,7 +26,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
     let curator = fixture.create_trader().await;
     let borrower = fixture.create_trader().await;
 
-    // Depositor funds the vault profile with 100 USDC and the curator
+    // Depositor funds the vault sub_vault with 100 USDC and the curator
     // rests an unbounded ask at 500 bps / 30d.
     fixture
         .provide_vault_liquidity(
@@ -41,11 +41,11 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
         )
         .await;
 
-    // Verify pre-cross profile state — encumbered should be zero
+    // Verify pre-cross sub_vault state — encumbered should be zero
     // (vault hasn't matched yet; just rests open-ended).
-    let profile = fixture.read_sub_vault(1).await;
-    assert_eq!(profile.encumbered_in_orders_atoms, 0);
-    assert_eq!(profile.deployed_principal_atoms, 0);
+    let sub_vault = fixture.read_sub_vault(1).await;
+    assert_eq!(sub_vault.encumbered_in_orders_atoms, 0);
+    assert_eq!(sub_vault.deployed_principal_atoms, 0);
 
     // Borrower deposits wSOL collateral, then bids to cross the vault
     // ask.
@@ -76,19 +76,19 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
         .await
         .unwrap();
 
-    // Post-match: vault profile is encumbered for the matched amount;
+    // Post-match: vault sub_vault is encumbered for the matched amount;
     // total principal is untouched until the cranker settles.
-    let profile = fixture.read_sub_vault(1).await;
+    let sub_vault = fixture.read_sub_vault(1).await;
     assert_eq!(
-        profile.encumbered_in_orders_atoms, principal_atoms,
+        sub_vault.encumbered_in_orders_atoms, principal_atoms,
         "match-time vault encumbrance should bump encumbered_in_orders_atoms"
     );
     assert_eq!(
-        profile.total_principal_atoms, 99_999_999,
+        sub_vault.total_principal_atoms, 99_999_999,
         "total_principal_atoms unchanged by match (atoms still in vault.integration)"
     );
     assert_eq!(
-        profile.deployed_principal_atoms, 0,
+        sub_vault.deployed_principal_atoms, 0,
         "deployed_principal_atoms must remain 0 until cranker settles"
     );
     // Vault-idle invariant must hold post-match.
@@ -115,7 +115,7 @@ async fn vault_ask_crossed_by_borrower_bid_full_fill() {
 
 /// Match-time idle-pool cap: the vault has only N atoms idle but the
 /// borrower bids for more. The unbounded vault ask fills only up to the
-/// profile's live idle balance — `matched = min(bid, profile_idle)` —
+/// sub_vault's live idle balance — `matched = min(bid, sub_vault_idle)` —
 /// and the unfilled remainder of the bid drops (OB_ONLY) instead of
 /// failing the whole tx.
 #[tokio::test]
@@ -126,7 +126,7 @@ async fn vault_match_capped_at_idle_pool() {
     let curator = fixture.create_trader().await;
     let borrower = fixture.create_trader().await;
 
-    // Deposit only 50 atoms — the profile's idle pool is 50.
+    // Deposit only 50 atoms — the sub_vault's idle pool is 50.
     fixture
         .provide_vault_liquidity(
             &admin,
@@ -166,18 +166,18 @@ async fn vault_match_capped_at_idle_pool() {
         .await;
     result.expect("match-time idle cap (50 idle < 100 bid) must partial-fill, not fail the tx");
 
-    // Vault profile encumbered for the idle balance minus the matching
-    // engine's per-profile marginfi-rounding reserve — the cross caps
+    // Vault sub_vault encumbered for the idle balance minus the matching
+    // engine's per-sub_vault marginfi-rounding reserve — the cross caps
     // at `idle - reserve`, not at the gross idle.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    let profile = fixture.read_sub_vault(1).await;
+    let sub_vault = fixture.read_sub_vault(1).await;
     assert_eq!(
-        profile.encumbered_in_orders_atoms,
+        sub_vault.encumbered_in_orders_atoms,
         49 - MARGINFI_ROUNDING_RESERVE_ATOMS,
         "vault cross is capped at idle minus the marginfi-rounding reserve"
     );
     assert_eq!(
-        profile.deployed_principal_atoms, 0,
+        sub_vault.deployed_principal_atoms, 0,
         "deployed_principal_atoms only bumps when the cranker settles"
     );
 
@@ -189,7 +189,7 @@ async fn vault_match_capped_at_idle_pool() {
     );
 }
 
-/// Risk-profile orders persist on full-fill: the matching engine never
+/// Risk-sub_vault orders persist on full-fill: the matching engine never
 /// removes them. Only the curator removes via `cancel_order_for_sub_vault`.
 #[tokio::test]
 async fn sub_vault_order_persists_after_full_fill() {
@@ -250,11 +250,11 @@ async fn sub_vault_order_persists_after_full_fill() {
         "sub-vault ask must persist after full-fill (only the curator removes it)",
     );
 
-    // Vault profile encumbered for exactly the matched principal.
-    let profile = fixture.read_sub_vault(1).await;
+    // Vault sub_vault encumbered for exactly the matched principal.
+    let sub_vault = fixture.read_sub_vault(1).await;
     assert_eq!(
-        profile.encumbered_in_orders_atoms, 1_000_000,
-        "vault profile encumbered for the full match",
+        sub_vault.encumbered_in_orders_atoms, 1_000_000,
+        "vault sub_vault encumbered for the full match",
     );
     // Matched-collateral conservation: the single MatchedLoan must
     // carry exactly the bid's posted collateral (dust-sweep invariant).
@@ -263,7 +263,7 @@ async fn sub_vault_order_persists_after_full_fill() {
         50_000_000,
         "Σ MatchedLoan.collateral_atoms must equal bid collateral"
     );
-    // Vault-idle invariant on the crossed profile.
+    // Vault-idle invariant on the crossed sub_vault.
     fixture.assert_vault_idle_invariant(1).await;
     // Borrower seat: the matched collateral stays encumbered (it backs
     // the open loan) and `open_borrow_count` ticks to 1.
@@ -278,7 +278,7 @@ async fn sub_vault_order_persists_after_full_fill() {
     );
 }
 
-/// Once the profile's idle pool is exhausted, the matching engine
+/// Once the sub_vault's idle pool is exhausted, the matching engine
 /// silently skips subsequent matches — the resting order stays on book,
 /// the new bid rests un-matched (with OB_ONLY) instead of erroring.
 #[tokio::test]
@@ -333,7 +333,7 @@ async fn sub_vault_match_skips_at_idle_exhaustion() {
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Borrower B: tries to match, but the profile's idle pool is now
+    // Borrower B: tries to match, but the sub_vault's idle pool is now
     // fully encumbered. Use OB_ONLY so the unfilled residual rests
     // instead of falling into the P2Pool fallback. Match-time should
     // silently skip the now-idle-exhausted sub-vault maker.
@@ -375,33 +375,33 @@ async fn sub_vault_match_skips_at_idle_exhaustion() {
         "only borrower A's match should produce a MatchedLoan; borrower B's bid skipped past the idle-exhausted maker",
     );
 
-    // The profile is encumbered at the deposited idle minus the
+    // The sub_vault is encumbered at the deposited idle minus the
     // matching engine's marginfi-rounding reserve.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
-    let profile = fixture.read_sub_vault(1).await;
+    let sub_vault = fixture.read_sub_vault(1).await;
     assert_eq!(
-        profile.encumbered_in_orders_atoms,
+        sub_vault.encumbered_in_orders_atoms,
         99 - MARGINFI_ROUNDING_RESERVE_ATOMS,
     );
     let _ = mainnet::usdc_mint();
 }
 
-/// `global_vault_withdraw` must gate per-profile.
+/// `global_vault_withdraw` must gate per-sub_vault.
 ///
-/// Profile 0 deposits 1.5 USDC and a borrower draws a 1.0-USDC loan that
+/// SubVault 0 deposits 1.5 USDC and a borrower draws a 1.0-USDC loan that
 /// the cranker SETTLES — those 1.0 USDC physically leave the shared
-/// marginfi integration account, leaving profile 0 with only 0.5 USDC
-/// idle. Profile 1 separately deposits 5 USDC, all still sitting idle in
+/// marginfi integration account, leaving sub_vault 0 with only 0.5 USDC
+/// idle. SubVault 1 separately deposits 5 USDC, all still sitting idle in
 /// the SAME marginfi account.
 ///
-/// Profile 0's depositor then tries to redeem all their shares (~1.5
+/// SubVault 0's depositor then tries to redeem all their shares (~1.5
 /// USDC). The shared marginfi balance (5.5 USDC) would physically cover
 /// it — gating only on the vault-wide marginfi balance would let
-/// profile 0 drain 1.0 USDC that economically backs profile 1. The
-/// per-profile idle gate must REJECT: profile 0's own idle is only
+/// sub_vault 0 drain 1.0 USDC that economically backs sub_vault 1. The
+/// per-sub_vault idle gate must REJECT: sub_vault 0's own idle is only
 /// 0.5 USDC.
 #[tokio::test]
-async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
+async fn vault_withdraw_per_sub_vault_gate_rejects_cross_sub_vault_drain() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor_0 = fixture.create_trader().await;
@@ -424,7 +424,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         1_000_000_000,
     );
 
-    // Profile 0: deposit 1.5 USDC and rest an unbounded ask. The
+    // SubVault 0: deposit 1.5 USDC and rest an unbounded ask. The
     // `provide_vault_liquidity` helper runs create_vault →
     // create_sub_vault → deposit → place_order.
     fixture
@@ -440,7 +440,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         )
         .await;
 
-    // Profile 1: a second profile in the same vault with 5 USDC idle.
+    // SubVault 1: a second sub_vault in the same vault with 5 USDC idle.
     fixture.refresh_blockhash().await;
     fixture
         .create_sub_vault(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
@@ -452,7 +452,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         .await
         .unwrap();
 
-    // Borrower draws a 1.0-USDC loan against profile 0's ask.
+    // Borrower draws a 1.0-USDC loan against sub_vault 0's ask.
     fixture.claim_seat(&borrower).await;
     let borrower_wsol = solana_program::pubkey::Pubkey::new_unique();
     fixture.put_wsol_token_account(borrower_wsol, borrower.pubkey(), 200_000_000);
@@ -482,7 +482,7 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         .unwrap();
 
     // Settle the matched loan — moves the 1.0 USDC out of the shared
-    // marginfi account and bumps profile 0's deployed_principal_atoms.
+    // marginfi account and bumps sub_vault 0's deployed_principal_atoms.
     fixture.refresh_blockhash().await;
     fixture
         .crank_matched_loan_for_sub_vault(0)
@@ -492,25 +492,25 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
     let p0 = fixture.read_sub_vault(1).await;
     assert_eq!(
         p0.deployed_principal_atoms, 1_000_000,
-        "loan settled: 1.0 USDC of profile 0's principal is deployed",
+        "loan settled: 1.0 USDC of sub_vault 0's principal is deployed",
     );
-    // Profile 0's own idle is total_principal − deployed − encumbered.
+    // SubVault 0's own idle is total_principal − deployed − encumbered.
     let p0_idle = p0
         .total_principal_atoms
         .saturating_sub(p0.deployed_principal_atoms)
         .saturating_sub(p0.encumbered_in_orders_atoms);
-    assert_eq!(p0_idle, 499_998, "profile 0 has only 0.5 USDC idle (minus the 1-atom \
+    assert_eq!(p0_idle, 499_998, "sub_vault 0 has only 0.5 USDC idle (minus the 1-atom \
         vault-funded-match basis-debit for the ceil-rounded withdraw cushion)");
 
-    // Profile 0's depositor tries to redeem ALL their shares (~1.5 USDC
+    // SubVault 0's depositor tries to redeem ALL their shares (~1.5 USDC
     // of assets). The shared marginfi balance (~5.5 USDC) would cover it
-    // physically, but profile 0's own idle is only 0.5 USDC. The
-    // per-profile gate must reject.
+    // physically, but sub_vault 0's own idle is only 0.5 USDC. The
+    // per-sub_vault gate must reject.
     fixture.refresh_blockhash().await;
     let result = fixture
         .global_vault_withdraw(&depositor_0, token_0, 1, p0.total_shares)
         .await;
-    // Per-profile idle gate must surface the exact
+    // Per-sub_vault idle gate must surface the exact
     // VaultInsufficientIdleAtoms variant; a generic is_err() check
     // would also accept a different (incorrect) rejection path.
     crate::assert_custom_error!(
@@ -518,25 +518,25 @@ async fn vault_withdraw_per_profile_gate_rejects_cross_profile_drain() {
         ydelta::program::YdeltaError::VaultInsufficientIdleAtoms
     );
 
-    // A withdrawal WITHIN profile 0's idle (0.4 USDC) still succeeds.
+    // A withdrawal WITHIN sub_vault 0's idle (0.4 USDC) still succeeds.
     fixture.refresh_blockhash().await;
     let ok = fixture
         .global_vault_withdraw(&depositor_0, token_0, 1, 400_000_u128)
         .await;
     assert!(
         ok.is_ok(),
-        "a withdrawal within profile 0's idle must still succeed; got {:?}",
+        "a withdrawal within sub_vault 0's idle must still succeed; got {:?}",
         ok,
     );
 
-    // Profile 1's capital is untouched.
+    // SubVault 1's capital is untouched.
     let p1 = fixture.read_sub_vault(2).await;
     assert_eq!(
         p1.total_principal_atoms, 4_999_999,
-        "profile 1's principal must be untouched by profile 0's withdrawal",
+        "sub_vault 1's principal must be untouched by sub_vault 0's withdrawal",
     );
-    // Both profiles must satisfy the vault-idle invariant after the
-    // per-profile gate test exercises the share-burn path.
+    // Both sub_vaults must satisfy the vault-idle invariant after the
+    // per-sub_vault gate test exercises the share-burn path.
     fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
 }
@@ -658,24 +658,24 @@ async fn lender_open_lend_count_survives_full_repay_then_cancel() {
     assert_eq!(sv.open_orders_count, 0, "cancel retires the order counter (D16)");
 }
 
-/// The profile LTV cap is per-ask policy: a bid whose collateral fails a
-/// stricter profile's cap skips that ask and fills against a looser one
+/// The sub_vault LTV cap is per-ask policy: a bid whose collateral fails a
+/// stricter sub_vault's cap skips that ask and fills against a looser one
 /// further down the book.
 ///
-/// Regression: `match_order` used to hard-`require!` the profile-cap
+/// Regression: `match_order` used to hard-`require!` the sub_vault-cap
 /// gate, failing the whole bid on the FIRST too-strict ask even when a
 /// compatible ask rested right behind it (and the refinance engine
-/// already skipped). The strict profile must also end with zero stale
+/// already skipped). The strict sub_vault must also end with zero stale
 /// encumbrance — the engine only reserves the fill after every gate.
 #[tokio::test]
-async fn profile_ltv_cap_skips_strict_ask_and_fills_looser_one() {
+async fn sub_vault_ltv_cap_skips_strict_ask_and_fills_looser_one() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
     let borrower = fixture.create_trader().await;
 
-    // Profile 1: strict 10% LTV cap quoting the BEST rate — the scan
+    // SubVault 1: strict 10% LTV cap quoting the BEST rate — the scan
     // hits it first.
     fixture
         .provide_vault_liquidity(
@@ -690,7 +690,7 @@ async fn profile_ltv_cap_skips_strict_ask_and_fills_looser_one() {
         )
         .await;
 
-    // Profile 2: loose 80% cap at a worse rate, same vault, also funded.
+    // SubVault 2: loose 80% cap at a worse rate, same vault, also funded.
     fixture.refresh_blockhash().await;
     fixture
         .create_sub_vault(&admin, curator.pubkey(), Some(8_000), 30 * 86_400)
@@ -734,21 +734,21 @@ async fn profile_ltv_cap_skips_strict_ask_and_fills_looser_one() {
             /*flags=*/ 0,
         )
         .await;
-    result.expect("a stricter profile cap must skip the ask, not fail the bid");
+    result.expect("a stricter sub_vault cap must skip the ask, not fail the bid");
 
     let p1 = fixture.read_sub_vault(1).await;
     assert_eq!(
         p1.encumbered_in_orders_atoms, 0,
-        "skipped strict profile must carry no stale encumbrance"
+        "skipped strict sub_vault must carry no stale encumbrance"
     );
     let p2 = fixture.read_sub_vault(2).await;
     assert_eq!(
         p2.encumbered_in_orders_atoms, 1_000_000,
-        "the looser profile behind it fills the whole bid"
+        "the looser sub_vault behind it fills the whole bid"
     );
     let market = fixture.read_market_fixed().await;
     assert_eq!(
         market.matched_loan_sequence, 1,
-        "exactly one cross: profile 1 skipped, profile 2 filled"
+        "exactly one cross: sub_vault 1 skipped, sub_vault 2 filled"
     );
 }

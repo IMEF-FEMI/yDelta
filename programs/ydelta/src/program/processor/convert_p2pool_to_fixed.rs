@@ -473,9 +473,9 @@ pub fn process_convert_p2pool_to_fixed(
         debug_assert_eq!(header.loan_type, LoanType::P2Pool as u8);
     }
 
-    // ─── Per-profile vault bookkeeping for the crossed asks ───
+    // ─── Per-sub_vault vault bookkeeping for the crossed asks ───
     //
-    // `match_p2pool_residual_against_asks` bumped each crossed profile's
+    // `match_p2pool_residual_against_asks` bumped each crossed sub_vault's
     // `encumbered_in_orders_atoms` at accept time. The emitted nodes are
     // stamped `VAULT_PRESETTLED`, so the cranker (`process_matched_loan`)
     // SKIPS `do_vault_settle`. The convert processor must therefore run
@@ -495,33 +495,33 @@ pub fn process_convert_p2pool_to_fixed(
 
         for cross in &match_result.crosses {
             let probe = SubVault::new_empty(cross.lender_sub_vault_id, Pubkey::default(), 1, 1);
-            let profile_idx = {
+            let sub_vault_idx = {
                 let tree = SubVaultTreeReadOnly::new(dynamic, root, NIL);
                 tree.lookup_index(&probe)
             };
             require!(
-                profile_idx != NIL,
+                sub_vault_idx != NIL,
                 YdeltaError::SubVaultNotFound,
-                "convert_p2pool_to_fixed: crossed profile {} not found on global_vault",
+                "convert_p2pool_to_fixed: crossed sub_vault {} not found on global_vault",
                 cross.lender_sub_vault_id
             )?;
-            let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
+            let sub_vault = get_mut_helper_sub_vault(dynamic, sub_vault_idx).get_mut_value();
             // Crystallise yield at the OLD weighted rate before folding
             // in the new loan's contribution.
-            accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
+            accrue_sub_vault(sub_vault, now_unix_ts, share_value_fp48)?;
             // the curator fee is per-sub-vault — fold the net
             // weighted rate using THIS sub-vault's fee, matching the
             // snapshot the engine stamped on the cross's MatchedLoan.
-            let curator_fee_bps: u16 = profile.curator_fee_bps;
+            let curator_fee_bps: u16 = sub_vault.curator_fee_bps;
             let principal = cross.filled_principal_atoms;
-            profile.deployed_principal_atoms = profile
+            sub_vault.deployed_principal_atoms = sub_vault
                 .deployed_principal_atoms
                 .checked_add(principal)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             let weighted_delta: u128 = (principal as u128)
                 .checked_mul(cross.lender_rate_bps as u128)
                 .ok_or(crate::program::YdeltaError::MathOverflow)?;
-            profile.total_weighted_rate_bps = profile
+            sub_vault.total_weighted_rate_bps = sub_vault
                 .total_weighted_rate_bps
                 .checked_add(weighted_delta)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -531,11 +531,11 @@ pub fn process_convert_p2pool_to_fixed(
                 crate::state::loan::BPS_PER_UNIT as u128,
                 false,
             )?;
-            profile.total_weighted_net_rate_bps = profile
+            sub_vault.total_weighted_net_rate_bps = sub_vault
                 .total_weighted_net_rate_bps
                 .checked_add(net_weighted_delta)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            profile.encumbered_in_orders_atoms = profile
+            sub_vault.encumbered_in_orders_atoms = sub_vault
                 .encumbered_in_orders_atoms
                 .checked_sub(principal)
                 .ok_or(ProgramError::ArithmeticOverflow)?;

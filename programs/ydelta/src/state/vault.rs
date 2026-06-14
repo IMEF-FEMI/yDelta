@@ -1,5 +1,5 @@
 //! `GlobalVaultFixed` is the per-marginfi-bank lending vault account. Its dynamic
-//! tail holds two tree regions: a profile region (`SubVault` nodes)
+//! tail holds two tree regions: a sub_vault region (`SubVault` nodes)
 //! and a node region (`SubVaultDepositorSeat` and
 //! `SubVaultOrderRef` nodes), each backed by its own free list. A
 //! sub-vault aggregates per-curator parameters and per-tick MTM
@@ -71,7 +71,7 @@ pub fn global_vault_staging_pda(vault: &Pubkey) -> (Pubkey, u8) {
 
 /// Fixed-size global vault header. Holds the mint, the marginfi
 /// integration accounts the vault deposits through, the two tree roots
-/// (profile region and node region), their free-list heads, and the
+/// (sub_vault region and node region), their free-list heads, and the
 /// per-vault admin / pause state.
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, ShankAccount)]
@@ -92,15 +92,15 @@ pub struct GlobalVaultFixed {
     /// Marginfi bank pubkey for this mint.
     pub lending_pool: Pubkey,
 
-    /// Root of the `SubVault` tree (profile region).
+    /// Root of the `SubVault` tree (sub_vault region).
     pub sub_vaults_root_index: DataIndex,
     /// Root of the `SubVaultDepositorSeat` tree (node region).
     pub claimed_seats_root_index: DataIndex,
     /// Root of the `SubVaultOrderRef` tree (node region).
     pub market_orders_root_index: DataIndex,
 
-    /// Head of the profile-region free list.
-    pub profile_free_list_head_index: DataIndex,
+    /// Head of the sub_vault-region free list.
+    pub sub_vault_free_list_head_index: DataIndex,
     /// Head of the node-region free list.
     pub node_free_list_head_index: DataIndex,
 
@@ -142,7 +142,7 @@ const_assert_eq!(size_of::<GlobalVaultFixed>() % 8, 0);
 
 impl GlobalVaultFixed {
     /// Build a fresh vault header for `mint`. Trees and free lists are
-    /// empty; `next_sub_vault_id` starts at 1 so the first profile lands
+    /// empty; `next_sub_vault_id` starts at 1 so the first sub_vault lands
     /// at id 1 (id 0 stays reserved as the sentinel).
     #[allow(clippy::too_many_arguments)]
     pub fn new_empty(
@@ -165,7 +165,7 @@ impl GlobalVaultFixed {
             sub_vaults_root_index: NIL,
             claimed_seats_root_index: NIL,
             market_orders_root_index: NIL,
-            profile_free_list_head_index: NIL,
+            sub_vault_free_list_head_index: NIL,
             node_free_list_head_index: NIL,
             num_bytes_allocated: 0,
             sub_vault_count: 0,
@@ -189,9 +189,9 @@ impl GlobalVaultFixed {
         self.is_paused != 0
     }
 
-    /// `true` when the profile-region free list is non-empty.
-    pub fn has_free_profile_block(&self) -> bool {
-        self.profile_free_list_head_index != NIL
+    /// `true` when the sub_vault-region free list is non-empty.
+    pub fn has_free_sub_vault_block(&self) -> bool {
+        self.sub_vault_free_list_head_index != NIL
     }
 
     /// `true` when the node-region free list is non-empty.
@@ -229,13 +229,13 @@ impl YdeltaAccount for GlobalVaultFixed {
 /// Padding type sized to [`super::constants::SUB_VAULT_FREE_LIST_BLOCK_SIZE`].
 #[repr(C, packed)]
 #[derive(Default, Copy, Clone, Pod, Zeroable)]
-pub struct ProfileUnusedFreeListPadding {
+pub struct SubVaultUnusedFreeListPadding {
     _padding_a: [u64; 32],
     _padding_b: [u64; 31],
     _padding_tail: [u32; 1],
 }
 const_assert_eq!(
-    size_of::<ProfileUnusedFreeListPadding>(),
+    size_of::<SubVaultUnusedFreeListPadding>(),
     super::constants::SUB_VAULT_FREE_LIST_BLOCK_SIZE
 );
 
@@ -300,7 +300,7 @@ pub struct SubVault {
     pub open_loans_count: u32,
     _pad2: [u8; 8],
 
-    /// Total depositor shares outstanding in this profile.
+    /// Total depositor shares outstanding in this sub_vault.
     pub total_shares: u128,
     /// Mark-to-market total assets in atoms, inclusive of unrealized
     /// idle supply yield.
@@ -308,7 +308,7 @@ pub struct SubVault {
     /// Withdrawable principal basis in atoms (realized deposits +
     /// settled idle yield).
     pub total_principal_atoms: u64,
-    /// Atoms currently out on active loans against this profile.
+    /// Atoms currently out on active loans against this sub_vault.
     pub deployed_principal_atoms: u64,
     /// Atoms reserved against open match opportunities (lender side of
     /// resting asks).
@@ -361,7 +361,7 @@ const_assert_eq!(size_of::<SubVault>(), SUB_VAULT_BLOCK_PAYLOAD_SIZE);
 const_assert_eq!(size_of::<SubVault>() % 16, 0);
 
 impl SubVault {
-    /// Returns the tree key (the 1-based profile id).
+    /// Returns the tree key (the 1-based sub_vault id).
     pub fn key(&self) -> u16 {
         self.sub_vault_id
     }
@@ -454,7 +454,7 @@ impl std::fmt::Display for SubVault {
 }
 
 /// Per-depositor seat inside a vault, one per `(owner, sub_vault_id)`.
-/// Holds the depositor's share balance and snapshots of the profile's
+/// Holds the depositor's share balance and snapshots of the sub_vault's
 /// two cumulative yield indices so NAV growth between touches can be
 /// settled lazily.
 #[repr(C)]
@@ -681,30 +681,30 @@ pub fn read_bank_asset_share_value_fp48(
     Ok(crate::math::Fp48::from_raw(raw))
 }
 
-/// Walks the profile forward to `now`, applying two yield sources:
+/// Walks the sub_vault forward to `now`, applying two yield sources:
 /// (1) idle-supply MTM from the marginfi share-value delta against the
 /// stored snapshot, and (2) loan-yield from
 /// `total_weighted_net_rate_bps × elapsed`. Updates the two cumulative
 /// indices, the asset/principal pair, and `last_supply_share_value_fp48`,
 /// then calls [`restore_assets_principal_invariant`].
 pub fn accrue_sub_vault(
-    profile: &mut SubVault,
+    sub_vault: &mut SubVault,
     now: i64,
     current_share_value: crate::math::Fp48,
 ) -> ProgramResult {
-    if now <= profile.last_accrue_unix {
+    if now <= sub_vault.last_accrue_unix {
         return Ok(());
     }
-    if profile.total_principal_atoms == 0 {
-        profile.last_accrue_unix = now;
+    if sub_vault.total_principal_atoms == 0 {
+        sub_vault.last_accrue_unix = now;
         if !current_share_value.is_zero() {
-            profile.last_supply_share_value_fp48 = current_share_value;
+            sub_vault.last_supply_share_value_fp48 = current_share_value;
         }
         return Ok(());
     }
 
     let elapsed: u128 = now
-        .checked_sub(profile.last_accrue_unix)
+        .checked_sub(sub_vault.last_accrue_unix)
         .filter(|d| *d >= 0)
         .map(|d| d as u128)
         .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -718,14 +718,14 @@ pub fn accrue_sub_vault(
     // Pending-claim atoms live on the per-market lender_marginfi_account,
     // not here — including them in the MTM would credit this vault with
     // the OTHER account's share-value drift.
-    let idle: u64 = profile
+    let idle: u64 = sub_vault
         .total_principal_atoms
-        .checked_sub(profile.deployed_principal_atoms)
+        .checked_sub(sub_vault.deployed_principal_atoms)
         .ok_or(ProgramError::ArithmeticOverflow)?
-        .checked_sub(profile.pending_claim_atoms)
+        .checked_sub(sub_vault.pending_claim_atoms)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     let idle_delta_atoms: i128 = if idle > 0 && !current_share_value.is_zero() {
-        let snapshot = profile.last_supply_share_value_fp48;
+        let snapshot = sub_vault.last_supply_share_value_fp48;
         if snapshot.is_zero() {
             0
         } else {
@@ -752,7 +752,7 @@ pub fn accrue_sub_vault(
     };
 
     let loan_yield_atoms: u128 = crate::math::mul_div(
-        profile.total_weighted_net_rate_bps,
+        sub_vault.total_weighted_net_rate_bps,
         elapsed,
         denom,
         false,
@@ -765,11 +765,11 @@ pub fn accrue_sub_vault(
         // try_from for defense-in-depth.
         let idle_gain: u64 = u64::try_from(idle_delta_atoms)
             .map_err(|_| crate::program::YdeltaError::MathOverflow)?;
-        profile.total_assets_atoms = profile
+        sub_vault.total_assets_atoms = sub_vault
             .total_assets_atoms
             .checked_add(idle_gain)
             .ok_or(ProgramError::ArithmeticOverflow)?;
-        profile.total_principal_atoms = profile
+        sub_vault.total_principal_atoms = sub_vault
             .total_principal_atoms
             .checked_add(idle_gain)
             .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -778,26 +778,26 @@ pub fn accrue_sub_vault(
             .checked_neg()
             .and_then(|x| u64::try_from(x).ok())
             .ok_or(crate::program::YdeltaError::MathOverflow)?;
-        profile.total_assets_atoms = profile.total_assets_atoms.saturating_sub(idle_loss);
-        profile.total_principal_atoms = profile.total_principal_atoms.saturating_sub(idle_loss);
+        sub_vault.total_assets_atoms = sub_vault.total_assets_atoms.saturating_sub(idle_loss);
+        sub_vault.total_principal_atoms = sub_vault.total_principal_atoms.saturating_sub(idle_loss);
     }
     if loan_yield_atoms > u64::MAX as u128 {
         return Err(crate::program::YdeltaError::MathOverflow.into());
     }
-    profile.total_assets_atoms = profile
+    sub_vault.total_assets_atoms = sub_vault
         .total_assets_atoms
         .checked_add(loan_yield_atoms as u64)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    if profile.total_shares > 0 {
+    if sub_vault.total_shares > 0 {
         if idle_delta_atoms > 0 {
             let supply_growth = crate::math::mul_div(
                 idle_delta_atoms as u128,
                 ACCRUE_INDEX_SCALE,
-                profile.total_shares,
+                sub_vault.total_shares,
                 false,
             )?;
-            profile.cumulative_supply_yield_index_scaled = profile
+            sub_vault.cumulative_supply_yield_index_scaled = sub_vault
                 .cumulative_supply_yield_index_scaled
                 .checked_add(supply_growth)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -806,29 +806,29 @@ pub fn accrue_sub_vault(
         let delta_growth = crate::math::mul_div(
             loan_yield_atoms,
             ACCRUE_INDEX_SCALE,
-            profile.total_shares,
+            sub_vault.total_shares,
             false,
         )?;
-        profile.cumulative_delta_yield_index_scaled = profile
+        sub_vault.cumulative_delta_yield_index_scaled = sub_vault
             .cumulative_delta_yield_index_scaled
             .checked_add(delta_growth)
             .ok_or(ProgramError::ArithmeticOverflow)?;
     }
 
-    profile.last_accrue_unix = now;
+    sub_vault.last_accrue_unix = now;
     if !current_share_value.is_zero() {
-        profile.last_supply_share_value_fp48 = current_share_value;
+        sub_vault.last_supply_share_value_fp48 = current_share_value;
     }
-    restore_assets_principal_invariant(profile);
+    restore_assets_principal_invariant(sub_vault);
     Ok(())
 }
 
 /// Enforces `total_assets_atoms >= total_principal_atoms` by floor-ing
 /// the assets to the principal basis. Corrects the per-tick rounding
 /// drift between the two fields at deposit / withdraw / close boundaries.
-pub fn restore_assets_principal_invariant(profile: &mut SubVault) {
-    if profile.total_assets_atoms < profile.total_principal_atoms {
-        profile.total_assets_atoms = profile.total_principal_atoms;
+pub fn restore_assets_principal_invariant(sub_vault: &mut SubVault) {
+    if sub_vault.total_assets_atoms < sub_vault.total_principal_atoms {
+        sub_vault.total_assets_atoms = sub_vault.total_principal_atoms;
     }
 }
 
@@ -839,28 +839,28 @@ const _: () = {
     assert!(SUB_VAULT_BLOCK_PAYLOAD_SIZE != VAULT_NODE_BLOCK_PAYLOAD_SIZE);
 };
 
-/// Pops a free block off the profile region's free list.
-pub fn get_free_profile_address_on_vault_fixed(
+/// Pops a free block off the sub_vault region's free list.
+pub fn get_free_sub_vault_address_on_vault_fixed(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
 ) -> DataIndex {
-    let mut free_list: FreeList<ProfileUnusedFreeListPadding> =
-        FreeList::new(dynamic, fixed.profile_free_list_head_index);
+    let mut free_list: FreeList<SubVaultUnusedFreeListPadding> =
+        FreeList::new(dynamic, fixed.sub_vault_free_list_head_index);
     let free_address: DataIndex = free_list.remove();
-    fixed.profile_free_list_head_index = free_list.get_head();
+    fixed.sub_vault_free_list_head_index = free_list.get_head();
     free_address
 }
 
-/// Pushes `index` back onto the profile region's free list.
-pub fn release_profile_address_on_vault_fixed(
+/// Pushes `index` back onto the sub_vault region's free list.
+pub fn release_sub_vault_address_on_vault_fixed(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
     index: DataIndex,
 ) {
-    let mut free_list: FreeList<ProfileUnusedFreeListPadding> =
-        FreeList::new(dynamic, fixed.profile_free_list_head_index);
+    let mut free_list: FreeList<SubVaultUnusedFreeListPadding> =
+        FreeList::new(dynamic, fixed.sub_vault_free_list_head_index);
     free_list.add(index);
-    fixed.profile_free_list_head_index = free_list.get_head();
+    fixed.sub_vault_free_list_head_index = free_list.get_head();
 }
 
 /// Pops a free block off the node region's free list (used for
@@ -888,21 +888,21 @@ pub fn release_node_address_on_vault_fixed(
     fixed.node_free_list_head_index = free_list.get_head();
 }
 
-/// Grows the vault's dynamic tail by one profile-sized block, pushing
-/// it onto the profile free list. Caller must realloc the underlying
+/// Grows the vault's dynamic tail by one sub_vault-sized block, pushing
+/// it onto the sub_vault free list. Caller must realloc the underlying
 /// account first.
-pub fn vault_expand_profile_block(
+pub fn vault_expand_sub_vault_block(
     fixed: &mut GlobalVaultFixed,
     dynamic: &mut [u8],
 ) -> ProgramResult {
-    let mut free_list: FreeList<ProfileUnusedFreeListPadding> =
-        FreeList::new(dynamic, fixed.profile_free_list_head_index);
+    let mut free_list: FreeList<SubVaultUnusedFreeListPadding> =
+        FreeList::new(dynamic, fixed.sub_vault_free_list_head_index);
     free_list.add(fixed.num_bytes_allocated);
     fixed.num_bytes_allocated = fixed
         .num_bytes_allocated
         .checked_add(SUB_VAULT_BLOCK_SIZE as u32)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    fixed.profile_free_list_head_index = free_list.get_head();
+    fixed.sub_vault_free_list_head_index = free_list.get_head();
     Ok(())
 }
 
@@ -988,7 +988,7 @@ pub fn remove_sub_vault_depositor_seat(
 
 /// Inserts a `SubVaultOrderRef` keyed on `(market, sub_vault_id)`.
 /// Errors with `SubVaultOrderExists` when one already exists — the
-/// vault enforces at most one resting ask per profile per market.
+/// vault enforces at most one resting ask per sub_vault per market.
 #[allow(clippy::too_many_arguments)]
 /// Adjusts the per-sub-vault `open_orders_count`. `delta` is
 /// +1 on place, -1 on cancel/admin-cancel. Errors when the sub-vault is
@@ -1086,7 +1086,7 @@ pub fn insert_sub_vault_order_ref(
 }
 
 /// Removes the `SubVault` with `sub_vault_id` and returns the freed
-/// node index. Errors with `InvalidArgument` when the profile is not
+/// node index. Errors with `InvalidArgument` when the sub_vault is not
 /// empty (i.e. it still has shares, principal, deployed atoms, fees, or
 /// pending claims).
 pub fn remove_sub_vault(
@@ -1103,15 +1103,15 @@ pub fn remove_sub_vault(
         return Ok(NIL);
     }
     {
-        let profile = get_helper_sub_vault(dynamic, idx).get_value();
+        let sub_vault = get_helper_sub_vault(dynamic, idx).get_value();
         require!(
-            profile.is_empty(),
+            sub_vault.is_empty(),
             crate::program::YdeltaError::InvalidArgument,
-            "remove_sub_vault: profile {} not empty (deployed={}, shares={}, principal={})",
+            "remove_sub_vault: sub_vault {} not empty (deployed={}, shares={}, principal={})",
             sub_vault_id,
-            profile.deployed_principal_atoms,
-            profile.total_shares,
-            profile.total_principal_atoms,
+            sub_vault.deployed_principal_atoms,
+            sub_vault.total_shares,
+            sub_vault.total_principal_atoms,
         )?;
     }
     let mut tree = SubVaultTree::new(dynamic, fixed.sub_vaults_root_index, NIL);
@@ -1122,7 +1122,7 @@ pub fn remove_sub_vault(
         .sub_vault_count
         .checked_sub(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    release_profile_address_on_vault_fixed(fixed, dynamic, idx);
+    release_sub_vault_address_on_vault_fixed(fixed, dynamic, idx);
     Ok(idx)
 }
 
@@ -1199,7 +1199,7 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    fn fresh_profile() -> SubVault {
+    fn fresh_sub_vault() -> SubVault {
         SubVault::new_empty(7, Pubkey::default(), 5_000, 30 * 86_400)
     }
 
@@ -1207,7 +1207,7 @@ mod tests {
 
     #[test]
     fn accrue_zero_elapsed_is_noop() {
-        let mut p = fresh_profile();
+        let mut p = fresh_sub_vault();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
         p.total_assets_atoms = 1_000_000;
@@ -1219,7 +1219,7 @@ mod tests {
 
     #[test]
     fn accrue_supply_yield_from_share_value_delta() {
-        let mut p = fresh_profile();
+        let mut p = fresh_sub_vault();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
         p.total_assets_atoms = 1_000_000;
@@ -1240,7 +1240,7 @@ mod tests {
 
     #[test]
     fn accrue_supply_value_retrace_marks_down_assets_and_principal() {
-        let mut p = fresh_profile();
+        let mut p = fresh_sub_vault();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
         p.total_assets_atoms = 1_000_000;
@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn accrue_loan_yield_uses_total_weighted_net_rate_aggregate() {
-        let mut p = fresh_profile();
+        let mut p = fresh_sub_vault();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
         p.deployed_principal_atoms = 100_000;
@@ -1278,7 +1278,7 @@ mod tests {
         let gross_weighted: u128 = 100_000u128 * 800;
         let net_weighted: u128 = gross_weighted * (10_000 - curator_fee_bps) / 10_000;
 
-        let mut p = fresh_profile();
+        let mut p = fresh_sub_vault();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
         p.deployed_principal_atoms = 100_000;
@@ -1303,7 +1303,7 @@ mod tests {
 
     #[test]
     fn accrue_idempotent_when_run_again_at_same_now() {
-        let mut p = fresh_profile();
+        let mut p = fresh_sub_vault();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
         p.deployed_principal_atoms = 100_000;
@@ -1321,7 +1321,7 @@ mod tests {
 
     #[test]
     fn accrue_two_calls_match_one_call_within_tolerance() {
-        let mut a = fresh_profile();
+        let mut a = fresh_sub_vault();
         a.total_shares = 1_000_000;
         a.total_principal_atoms = 1_000_000;
         a.deployed_principal_atoms = 100_000;
@@ -1344,7 +1344,7 @@ mod tests {
 
     #[test]
     fn accrue_supply_yield_includes_encumbered_atoms() {
-        let mut p = fresh_profile();
+        let mut p = fresh_sub_vault();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
         p.deployed_principal_atoms = 0;
@@ -1364,13 +1364,13 @@ mod tests {
         assert_eq!(
             p.total_principal_atoms - 1_000_000,
             yield_atoms,
-            "encumbered idle-side yield must stay withdrawable by the profile"
+            "encumbered idle-side yield must stay withdrawable by the sub_vault"
         );
     }
 
     #[test]
     fn accrue_hard_fails_when_deployed_exceeds_principal() {
-        let mut p = fresh_profile();
+        let mut p = fresh_sub_vault();
         p.total_shares = 1_000_000;
         p.total_principal_atoms = 1_000_000;
 
@@ -1400,17 +1400,17 @@ mod tests {
         assert_eq!(vault.sub_vaults_root_index, NIL);
         assert_eq!(vault.claimed_seats_root_index, NIL);
         assert_eq!(vault.market_orders_root_index, NIL);
-        assert_eq!(vault.profile_free_list_head_index, NIL);
+        assert_eq!(vault.sub_vault_free_list_head_index, NIL);
         assert_eq!(vault.node_free_list_head_index, NIL);
         assert_eq!(vault.sub_vault_count, 0);
         assert_eq!(vault.claimed_seat_count, 0);
         assert_eq!(vault.open_order_count, 0);
         assert_eq!(vault.global_vault_signer_bump, 255);
-        assert!(!vault.has_free_profile_block());
+        assert!(!vault.has_free_sub_vault_block());
         assert!(!vault.has_free_node_block());
     }
 
-    fn profile_with(total_assets: u64, total_principal: u64) -> SubVault {
+    fn sub_vault_with(total_assets: u64, total_principal: u64) -> SubVault {
         let mut p = SubVault::new_empty(0, Pubkey::default(), 1, 1);
         p.total_assets_atoms = total_assets;
         p.total_principal_atoms = total_principal;
@@ -1419,15 +1419,15 @@ mod tests {
 
     #[test]
     fn restore_assets_principal_invariant_floor_bumps_assets_to_principal() {
-        let mut p = profile_with(99, 100);
+        let mut p = sub_vault_with(99, 100);
         restore_assets_principal_invariant(&mut p);
         assert_eq!(p.total_assets_atoms, 100);
         assert_eq!(p.total_principal_atoms, 100);
     }
 
     #[test]
-    fn restore_assets_principal_invariant_leaves_healthy_profile_alone() {
-        let mut p = profile_with(150, 100);
+    fn restore_assets_principal_invariant_leaves_healthy_sub_vault_alone() {
+        let mut p = sub_vault_with(150, 100);
         restore_assets_principal_invariant(&mut p);
         assert_eq!(p.total_assets_atoms, 150, "open-loan estimate must not be clipped");
         assert_eq!(p.total_principal_atoms, 100);
@@ -1435,7 +1435,7 @@ mod tests {
 
     #[test]
     fn restore_assets_principal_invariant_handles_equal_values() {
-        let mut p = profile_with(100, 100);
+        let mut p = sub_vault_with(100, 100);
         restore_assets_principal_invariant(&mut p);
         assert_eq!(p.total_assets_atoms, 100);
         assert_eq!(p.total_principal_atoms, 100);
@@ -1443,7 +1443,7 @@ mod tests {
 
     #[test]
     fn restore_assets_principal_invariant_handles_zero() {
-        let mut p = profile_with(0, 0);
+        let mut p = sub_vault_with(0, 0);
         restore_assets_principal_invariant(&mut p);
         assert_eq!(p.total_assets_atoms, 0);
         assert_eq!(p.total_principal_atoms, 0);
@@ -1451,7 +1451,7 @@ mod tests {
 
     #[test]
     fn restore_assets_principal_invariant_handles_large_drift() {
-        let mut p = profile_with(0, u64::MAX);
+        let mut p = sub_vault_with(0, u64::MAX);
         restore_assets_principal_invariant(&mut p);
         assert_eq!(p.total_assets_atoms, u64::MAX);
     }

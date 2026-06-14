@@ -9,7 +9,7 @@
  *      - The matched-loan queue node is gone (the cranker zeroed it).
  *      - A new Loan PDA exists, decoded as Fixed / Active with the locked
  *        rates + term + principal.
- *      - Profile: encumbered → 0, deployed = principal (atoms physically
+ *      - SubVault: encumbered → 0, deployed = principal (atoms physically
  *        moved from vault.integration to market.lender_integration).
  *      - Borrower seat: collateral_withdrawable → encumbered.
  */

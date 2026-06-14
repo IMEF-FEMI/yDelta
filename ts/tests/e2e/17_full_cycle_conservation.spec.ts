@@ -176,7 +176,7 @@ describe('e2e: atom-precise conservation borrower_paid = lender_claimable + prot
     //                 = lender_claimable + protocol_fee
     // Holds atom-exact at this stage: NO marginfi share-value rounding
     // has applied yet (we haven't touched the marginfi bank in the repay
-    // ix — that happens on `claim_repayment_for_risk_profile`). The
+    // ix — that happens on `claim_repayment_for_risk_subVault`). The
     // identity is the on-chain conservation invariant from the
     // `accrue_loan` doc-comment.
     expect(borrowerPaid).toBe(lenderClaimable + protocolFee);

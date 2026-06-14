@@ -1,5 +1,5 @@
 //! Builds the `YdeltaInstruction::ResumeSubVault` instruction: vault-admin
-//! escape hatch that flips `profile.is_sunset = 0`, reversing a prior
+//! escape hatch that flips `sub_vault.is_sunset = 0`, reversing a prior
 //! `SunsetSubVault`.
 
 use borsh::BorshSerialize;

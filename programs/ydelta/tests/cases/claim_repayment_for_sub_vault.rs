@@ -23,7 +23,7 @@ use ydelta::state::Side;
 
 use crate::test_utils::{mainnet, MarketFixture};
 
-const PROFILE_ID: u16 = 1;
+const SUB_VAULT_ID: u16 = 1;
 const VAULT_DEPOSIT_ATOMS: u64 = 100_000_000;
 const PRINCIPAL_ATOMS: u64 = 1_000_000;
 // The match-time LTV gate normalizes for the USDC(6-dec) /
@@ -92,15 +92,15 @@ async fn setup_through_promote_with_fee(
         .unwrap();
     fixture.refresh_blockhash().await;
     fixture
-        .global_vault_deposit(&depositor, depositor_token, PROFILE_ID, VAULT_DEPOSIT_ATOMS)
+        .global_vault_deposit(&depositor, depositor_token, SUB_VAULT_ID, VAULT_DEPOSIT_ATOMS)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
     // No claim-seat step — the vault market-seat is auto-created on the
     // curator's first place_order_for_sub_vault. The ask is
-    // unbounded; the cross is capped by the profile's idle balance.
+    // unbounded; the cross is capped by the sub_vault's idle balance.
     fixture
-        .place_order_for_sub_vault(&curator, PROFILE_ID, VAULT_RATE_BPS, TERM_SECONDS, 0)
+        .place_order_for_sub_vault(&curator, SUB_VAULT_ID, VAULT_RATE_BPS, TERM_SECONDS, 0)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
@@ -213,50 +213,50 @@ async fn claim_after_full_repay_drains_atoms_and_closes_loan() {
         gained,
     );
 
-    // Profile decrements applied at repay-close: deployed_principal == 0,
+    // SubVault decrements applied at repay-close: deployed_principal == 0,
     // total_weighted_rate_bps == 0, total_principal grew by realised interest.
-    let profile_post_repay = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault_post_repay = fixture.read_sub_vault(SUB_VAULT_ID).await;
     assert_eq!(
-        profile_post_repay.deployed_principal_atoms, 0,
+        sub_vault_post_repay.deployed_principal_atoms, 0,
         "deployed_principal_atoms must zero out at repay-close (no longer waits for claim)",
     );
     assert_eq!(
-        profile_post_repay.total_weighted_rate_bps, 0,
+        sub_vault_post_repay.total_weighted_rate_bps, 0,
         "total_weighted_rate_bps must zero out at repay-close (no active loans)",
     );
     assert!(
-        profile_post_repay.total_principal_atoms >= VAULT_DEPOSIT_ATOMS,
+        sub_vault_post_repay.total_principal_atoms >= VAULT_DEPOSIT_ATOMS,
         "total_principal_atoms must include realised interest (got {}, started at {})",
-        profile_post_repay.total_principal_atoms,
+        sub_vault_post_repay.total_principal_atoms,
         VAULT_DEPOSIT_ATOMS,
     );
     // pending_claim_atoms holds the atoms in-transit (lender_marginfi →
     // pending sweep by curator).
     assert!(
-        profile_post_repay.pending_claim_atoms > 0,
+        sub_vault_post_repay.pending_claim_atoms > 0,
         "repay-close must mark atoms as pending sweep — got {}",
-        profile_post_repay.pending_claim_atoms,
+        sub_vault_post_repay.pending_claim_atoms,
     );
 
     // Now the curator's claim — pure seat sweeper. Anyone can call.
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_sub_vault(&stranger, PROFILE_ID)
+        .claim_repayment_for_sub_vault(&stranger, SUB_VAULT_ID)
         .await
         .unwrap();
 
     // Claim moved atoms from lender_marginfi_account to the vault's
     // integration account; pending_claim_atoms decremented.
-    let profile_post_claim = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault_post_claim = fixture.read_sub_vault(SUB_VAULT_ID).await;
     assert!(
-        profile_post_claim.pending_claim_atoms < profile_post_repay.pending_claim_atoms,
+        sub_vault_post_claim.pending_claim_atoms < sub_vault_post_repay.pending_claim_atoms,
         "claim must shrink pending_claim_atoms (pre={}, post={})",
-        profile_post_repay.pending_claim_atoms,
-        profile_post_claim.pending_claim_atoms,
+        sub_vault_post_repay.pending_claim_atoms,
+        sub_vault_post_claim.pending_claim_atoms,
     );
     // Vault-idle invariant must still hold.
-    fixture.assert_vault_idle_invariant(PROFILE_ID).await;
+    fixture.assert_vault_idle_invariant(SUB_VAULT_ID).await;
 }
 
 /// Burning the LAST vault share while a loan is still
@@ -271,14 +271,14 @@ async fn last_share_burn_rejected_while_loan_deployed() {
         setup_through_promote(&fixture).await;
 
     // A loan is deployed (setup_through_promote cranks the match).
-    let profile = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault = fixture.read_sub_vault(SUB_VAULT_ID).await;
     assert_eq!(
-        profile.deployed_principal_atoms, PRINCIPAL_ATOMS,
+        sub_vault.deployed_principal_atoms, PRINCIPAL_ATOMS,
         "test invariant: a loan must be deployed before this check"
     );
     // Genesis 1:1 mint — the sole depositor holds every share.
     assert_eq!(
-        profile.total_shares,
+        sub_vault.total_shares,
         (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "test invariant: depositor holds the entire share supply"
     );
@@ -292,8 +292,8 @@ async fn last_share_burn_rejected_while_loan_deployed() {
         .global_vault_withdraw(
             &depositor,
             depositor_token,
-            PROFILE_ID,
-            profile.total_shares,
+            SUB_VAULT_ID,
+            sub_vault.total_shares,
         )
         .await;
     crate::assert_custom_error!(
@@ -301,22 +301,22 @@ async fn last_share_burn_rejected_while_loan_deployed() {
         ydelta::program::YdeltaError::VaultInsufficientIdleAtoms
     );
 
-    // The profile state must be untouched — the rejection reverts the tx.
-    let profile_after = fixture.read_sub_vault(PROFILE_ID).await;
+    // The sub_vault state must be untouched — the rejection reverts the tx.
+    let sub_vault_after = fixture.read_sub_vault(SUB_VAULT_ID).await;
     assert_eq!(
-        profile_after.total_shares, profile.total_shares,
+        sub_vault_after.total_shares, sub_vault.total_shares,
         "rejected last-share burn must not mutate total_shares",
     );
     assert_eq!(
-        profile_after.total_principal_atoms, profile.total_principal_atoms,
+        sub_vault_after.total_principal_atoms, sub_vault.total_principal_atoms,
         "rejected last-share burn must not orphan deployed principal",
     );
 
-    // A PARTIAL withdraw within the profile's idle still works — only the
+    // A PARTIAL withdraw within the sub_vault's idle still works — only the
     // LAST share is gated. Idle = total_principal − deployed = ~99M atoms.
     fixture.refresh_blockhash().await;
     let partial = fixture
-        .global_vault_withdraw(&depositor, depositor_token, PROFILE_ID, 1_000_000_u128)
+        .global_vault_withdraw(&depositor, depositor_token, SUB_VAULT_ID, 1_000_000_u128)
         .await;
     assert!(
         partial.is_ok(),
@@ -360,7 +360,7 @@ async fn claim_allowed_pre_maturity_after_early_repay() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_sub_vault(&stranger, PROFILE_ID)
+        .claim_repayment_for_sub_vault(&stranger, SUB_VAULT_ID)
         .await
         .unwrap();
 }
@@ -381,29 +381,29 @@ async fn claim_with_empty_seat_is_noop() {
         setup_through_promote(&fixture).await;
 
     // No repay — borrower hasn't paid back, so no shares accumulated on
-    // the lender seat. Profile state pre-claim:
-    let profile_pre = fixture.read_sub_vault(PROFILE_ID).await;
+    // the lender seat. SubVault state pre-claim:
+    let sub_vault_pre = fixture.read_sub_vault(SUB_VAULT_ID).await;
 
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     // Must succeed (no-op), not error.
     fixture
-        .claim_repayment_for_sub_vault(&stranger, PROFILE_ID)
+        .claim_repayment_for_sub_vault(&stranger, SUB_VAULT_ID)
         .await
         .expect("claim with empty seat must be a no-op, not error");
 
-    // Profile state untouched.
-    let profile_post = fixture.read_sub_vault(PROFILE_ID).await;
+    // SubVault state untouched.
+    let sub_vault_post = fixture.read_sub_vault(SUB_VAULT_ID).await;
     assert_eq!(
-        profile_post.deployed_principal_atoms, profile_pre.deployed_principal_atoms,
+        sub_vault_post.deployed_principal_atoms, sub_vault_pre.deployed_principal_atoms,
         "no-op claim must not change deployed_principal_atoms",
     );
     assert_eq!(
-        profile_post.pending_claim_atoms, profile_pre.pending_claim_atoms,
+        sub_vault_post.pending_claim_atoms, sub_vault_pre.pending_claim_atoms,
         "no-op claim must not change pending_claim_atoms",
     );
     assert_eq!(
-        profile_post.total_principal_atoms, profile_pre.total_principal_atoms,
+        sub_vault_post.total_principal_atoms, sub_vault_pre.total_principal_atoms,
         "no-op claim must not change total_principal_atoms",
     );
 }
@@ -420,12 +420,12 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     let (_admin, depositor, _curator, borrower, borrower_usdc) =
         setup_through_promote(&fixture).await;
 
-    // Snapshot pre-claim profile state. Depositor went in at genesis
+    // Snapshot pre-claim sub_vault state. Depositor went in at genesis
     // share-price = 1.0 (1 share = 1 atom), so their deposit minted
     // exactly VAULT_DEPOSIT_ATOMS shares.
-    let profile_pre = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault_pre = fixture.read_sub_vault(SUB_VAULT_ID).await;
     assert_eq!(
-        profile_pre.total_shares,
+        sub_vault_pre.total_shares,
         (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "test invariant: genesis SP=1.0, shares == atoms after first deposit"
     );
@@ -454,12 +454,12 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_sub_vault(&stranger, PROFILE_ID)
+        .claim_repayment_for_sub_vault(&stranger, SUB_VAULT_ID)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // Profile NAV: total_assets must have grown by ≥ lender interest.
+    // SubVault NAV: total_assets must have grown by ≥ lender interest.
     // Expected lender interest (simple, single-segment):
     //   principal × VAULT_RATE × term / (10000 × SECONDS_PER_YEAR)
     //   = 1_000_000 × 500 × 2_592_000 / (10_000 × 31_536_000)
@@ -475,13 +475,13 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
         "test parameters too small to observe yield"
     );
 
-    let profile_post_claim = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault_post_claim = fixture.read_sub_vault(SUB_VAULT_ID).await;
     // total_principal_atoms now carries BOTH:
     //   - realized lender interest from the matched loan
     //   - physically accrued supply yield on the idle pool
     //
     // The realized loan interest must still be present inside that gain.
-    let total_principal_gain = profile_post_claim
+    let total_principal_gain = sub_vault_post_claim
         .total_principal_atoms
         .saturating_sub(VAULT_DEPOSIT_ATOMS);
     assert!(
@@ -494,7 +494,7 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     // The depositor's claim on the vault is the SAME number of shares,
     // but each share now backs more atoms — that's yield realization.
     assert_eq!(
-        profile_post_claim.total_shares,
+        sub_vault_post_claim.total_shares,
         (VAULT_DEPOSIT_ATOMS - 1) as u128,
         "total_shares must not change between deposit and yield realization"
     );
@@ -503,14 +503,14 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
     // Since total_shares == VAULT_DEPOSIT_ATOMS (1:1 at genesis), this
     // reduces to total_assets > VAULT_DEPOSIT_ATOMS.
     assert!(
-        profile_post_claim.total_assets_atoms > VAULT_DEPOSIT_ATOMS,
+        sub_vault_post_claim.total_assets_atoms > VAULT_DEPOSIT_ATOMS,
         "vault share price must have grown strictly above 1.0 (assets={} vs shares={})",
-        profile_post_claim.total_assets_atoms,
-        profile_post_claim.total_shares
+        sub_vault_post_claim.total_assets_atoms,
+        sub_vault_post_claim.total_shares
     );
 
     // Full-shares withdrawal must now succeed: idle-side supply yield is
-    // part of the profile's withdrawable basis, not just its displayed
+    // part of the sub_vault's withdrawable basis, not just its displayed
     // NAV.
     let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
     let balance_pre = fixture.token_balance(depositor_token).await;
@@ -519,8 +519,8 @@ async fn vault_depositor_share_price_grows_after_repaid_loan() {
         .global_vault_withdraw(
             &depositor,
             depositor_token,
-            PROFILE_ID,
-            profile_post_claim.total_shares,
+            SUB_VAULT_ID,
+            sub_vault_post_claim.total_shares,
         )
         .await
         .unwrap();
@@ -588,19 +588,19 @@ async fn claim_reconciles_total_assets_to_realized_interest() {
             * TERM_SECONDS as u128
             / (10_000u128 * SECONDS_PER_YEAR);
 
-    let profile_post = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault_post = fixture.read_sub_vault(SUB_VAULT_ID).await;
 
     // total_principal grew from two streams:
     //   - supply yield on idle atoms
     //   - realized lender interest from the loan close
     //
     // Strip the supply-yield component to isolate the loan-close effect.
-    let principal_gain = profile_post
+    let principal_gain = sub_vault_post
         .total_principal_atoms
         .saturating_sub(VAULT_DEPOSIT_ATOMS);
     const INDEX_SCALE: u128 = 1u128 << 48;
     let supply_yield_atoms: u128 =
-        profile_post.cumulative_supply_yield_index_scaled * profile_post.total_shares / INDEX_SCALE;
+        sub_vault_post.cumulative_supply_yield_index_scaled * sub_vault_post.total_shares / INDEX_SCALE;
     let principal_loan_component: i128 = principal_gain as i128 - supply_yield_atoms as i128;
     assert!(
         (principal_loan_component - realized_interest as i128).abs() <= 16,
@@ -627,9 +627,9 @@ async fn claim_reconciles_total_assets_to_realized_interest() {
     // maturity. Without reconciliation the loan-rate component would be
     // ~2× realized.
     let supply_yield_atoms: u128 =
-        profile_post.cumulative_supply_yield_index_scaled * profile_post.total_shares / INDEX_SCALE;
+        sub_vault_post.cumulative_supply_yield_index_scaled * sub_vault_post.total_shares / INDEX_SCALE;
     let assets_gain: u128 =
-        (profile_post.total_assets_atoms as u128).saturating_sub(VAULT_DEPOSIT_ATOMS as u128);
+        (sub_vault_post.total_assets_atoms as u128).saturating_sub(VAULT_DEPOSIT_ATOMS as u128);
     let loan_rate_component: i128 = assets_gain as i128 - supply_yield_atoms as i128;
     // The loan-rate component of total_assets growth must track realized
     // interest within marginfi share-rounding + per-call index flooring.
@@ -654,7 +654,7 @@ async fn claim_reconciles_total_assets_to_realized_interest() {
     );
     // And yield realization is real: total_assets did grow.
     assert!(
-        profile_post.total_assets_atoms > VAULT_DEPOSIT_ATOMS,
+        sub_vault_post.total_assets_atoms > VAULT_DEPOSIT_ATOMS,
         "total_assets must reflect realized yield growth",
     );
 }
@@ -700,14 +700,14 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
 
     // Borrower repays — accrue_loan runs at the maturity timestamp and
     // closes the loan PDA, applying the per-loan curator fee
-    // accumulator directly to the profile (per repay/claim split).
+    // accumulator directly to the sub_vault (per repay/claim split).
     fixture
         .repay(&borrower, 0, borrower_usdc, 0, /*full_repay=*/ true)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // (2) Profile holds the curator slice — applied at repay-close, NOT
+    // (2) SubVault holds the curator slice — applied at repay-close, NOT
     // at claim time. Computed expectation:
     //   lender_interest = principal × VAULT_RATE × term / (10_000 × Y)
     //   curator_take    = lender_interest × 1000 / 10_000
@@ -723,15 +723,15 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
         "test parameters too small to observe curator fee ({} atoms)",
         expected_curator_take
     );
-    let profile_post_repay = fixture.read_sub_vault(PROFILE_ID).await;
-    let profile_curator_drift = (profile_post_repay.accumulated_curator_fee_atoms as i128
+    let sub_vault_post_repay = fixture.read_sub_vault(SUB_VAULT_ID).await;
+    let sub_vault_curator_drift = (sub_vault_post_repay.accumulated_curator_fee_atoms as i128
         - expected_curator_take as i128)
         .abs();
     assert!(
-        profile_curator_drift <= 2,
+        sub_vault_curator_drift <= 2,
         "SubVault.accumulated_curator_fee_atoms drift > 2 atoms after \
          repay-close (got {}, expected {})",
-        profile_post_repay.accumulated_curator_fee_atoms,
+        sub_vault_post_repay.accumulated_curator_fee_atoms,
         expected_curator_take
     );
 
@@ -739,17 +739,17 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
     let stranger = fixture.create_trader().await;
     fixture.refresh_blockhash().await;
     fixture
-        .claim_repayment_for_sub_vault(&stranger, PROFILE_ID)
+        .claim_repayment_for_sub_vault(&stranger, SUB_VAULT_ID)
         .await
         .unwrap();
     fixture.refresh_blockhash().await;
 
     // (3) Curator fee accumulator unchanged across the claim (already
     // applied at repay) — claim is purely a token movement.
-    let profile_post_claim = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault_post_claim = fixture.read_sub_vault(SUB_VAULT_ID).await;
     assert_eq!(
-        profile_post_claim.accumulated_curator_fee_atoms,
-        profile_post_repay.accumulated_curator_fee_atoms,
+        sub_vault_post_claim.accumulated_curator_fee_atoms,
+        sub_vault_post_repay.accumulated_curator_fee_atoms,
         "claim is a pure seat sweep; must NOT mutate accumulated_curator_fee_atoms",
     );
 
@@ -764,7 +764,7 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
     let curator_balance_pre = fixture.token_balance(curator_token).await;
 
     fixture
-        .claim_curator_fee(&curator, curator_token, PROFILE_ID)
+        .claim_curator_fee(&curator, curator_token, SUB_VAULT_ID)
         .await
         .expect("curator must be able to claim accumulated fee atoms");
 
@@ -785,7 +785,7 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
         expected_curator_take
     );
 
-    // Profile accumulator after claim. `claim_curator_fee` decrements the
+    // SubVault accumulator after claim. `claim_curator_fee` decrements the
     // accumulator by the marginfi-reported `actual_atoms`
     // (`accumulator' = fee_atoms.saturating_sub(actual_atoms)`), NOT a
     // blanket zero. When marginfi's withdraw returns the full requested
@@ -793,19 +793,19 @@ async fn curator_accrues_and_claims_fee_end_to_end() {
     // makes marginfi return one atom short, that 1-atom un-realised
     // remainder stays on the accumulator (claimable on a later call)
     // rather than being silently lost. Allow that sub-atom residual.
-    let profile_final = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault_final = fixture.read_sub_vault(SUB_VAULT_ID).await;
     assert!(
-        profile_final.accumulated_curator_fee_atoms <= 1,
+        sub_vault_final.accumulated_curator_fee_atoms <= 1,
         "claim_curator_fee must drain the accumulator to <= a 1-atom \
          marginfi-drift residual; got {}",
-        profile_final.accumulated_curator_fee_atoms
+        sub_vault_final.accumulated_curator_fee_atoms
     );
 }
 
 /// Test A — sub-vault lending in TWO markets earns the SUM of both
 /// markets' lender interests. Stands up a second `(USDC, wSOL)` market
-/// on the same fixture, has the profile claim seats in both, runs
-/// matching-loan lifecycles in both, and asserts the profile's
+/// on the same fixture, has the sub_vault claim seats in both, runs
+/// matching-loan lifecycles in both, and asserts the sub_vault's
 /// `total_principal_atoms` grew by approximately the sum of both
 /// markets' lender_net_interest realisations.
 ///
@@ -818,7 +818,7 @@ async fn sub_vault_earns_yield_from_two_markets() {
     let fixture = MarketFixture::new().await;
 
     // ── Market 1 lifecycle via the existing setup helper. After this
-    // returns, profile_post.deployed_principal_atoms == PRINCIPAL_ATOMS,
+    // returns, sub_vault_post.deployed_principal_atoms == PRINCIPAL_ATOMS,
     // a single matched loan is open, borrower funded.
     let (admin, _depositor, curator, borrower1, borrower1_usdc) =
         setup_through_promote(&fixture).await;
@@ -831,13 +831,13 @@ async fn sub_vault_earns_yield_from_two_markets() {
 
     // Curator places an ask in market 2. No claim-seat step and no
     // market cap — the quote-only model auto-creates the vault seat on
-    // the first place_order_for_sub_vault, and a profile may quote
+    // the first place_order_for_sub_vault, and a sub_vault may quote
     // any market sharing the vault's mint.
     let _ = admin;
     fixture
         .place_order_for_sub_vault_in_market(
             &curator,
-            PROFILE_ID,
+            SUB_VAULT_ID,
             market2_pk,
             VAULT_RATE_BPS,
             TERM_SECONDS,
@@ -950,11 +950,11 @@ async fn sub_vault_earns_yield_from_two_markets() {
         .unwrap();
     fixture.refresh_blockhash().await;
 
-    // ── Assertion: profile.total_principal grew by ≈ 2× lender interest
+    // ── Assertion: sub_vault.total_principal grew by ≈ 2× lender interest
     //    of one loan (both loans had identical params — same principal,
     //    same rate, same term). One-loan baseline is exercised by the
     //    existing single-market test above.
-    let profile_final = fixture.read_sub_vault(PROFILE_ID).await;
+    let sub_vault_final = fixture.read_sub_vault(SUB_VAULT_ID).await;
     const SECONDS_PER_YEAR: u128 = 365 * 24 * 60 * 60;
     let single_loan_lender_interest: u128 =
         PRINCIPAL_ATOMS as u128
@@ -962,7 +962,7 @@ async fn sub_vault_earns_yield_from_two_markets() {
             * TERM_SECONDS as u128
             / (10_000u128 * SECONDS_PER_YEAR);
     let expected_two_loan_yield: u128 = 2 * single_loan_lender_interest;
-    let observed_gain: u128 = profile_final
+    let observed_gain: u128 = sub_vault_final
         .total_principal_atoms
         .saturating_sub(VAULT_DEPOSIT_ATOMS) as u128;
     // ±4 atoms tolerance per loan for marginfi share rounding.
@@ -973,13 +973,13 @@ async fn sub_vault_earns_yield_from_two_markets() {
         expected_two_loan_yield
     );
     assert!(
-        profile_final.deployed_principal_atoms == 0,
+        sub_vault_final.deployed_principal_atoms == 0,
         "all loans repaid → deployed_principal must be 0"
     );
     assert_eq!(
-        profile_final.encumbered_in_orders_atoms, 0,
+        sub_vault_final.encumbered_in_orders_atoms, 0,
         "encumbered_in_orders must zero out after both loans claim"
     );
     // Vault-idle invariant post-claim of both loans.
-    fixture.assert_vault_idle_invariant(PROFILE_ID).await;
+    fixture.assert_vault_idle_invariant(SUB_VAULT_ID).await;
 }

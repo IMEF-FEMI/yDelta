@@ -566,7 +566,7 @@ pub fn process_settle_matured_loan(
                 1,
                 1,
             );
-            let profile_idx = {
+            let sub_vault_idx = {
                 let tree = crate::state::vault::SubVaultTreeReadOnly::new(
                     dynamic,
                     header.sub_vaults_root_index,
@@ -575,21 +575,21 @@ pub fn process_settle_matured_loan(
                 <crate::state::vault::SubVaultTreeReadOnly as hypertree::HyperTreeReadOperations>::lookup_index(&tree, &probe)
             };
             require!(
-                profile_idx != hypertree::NIL,
+                sub_vault_idx != hypertree::NIL,
                 YdeltaError::SubVaultNotFound,
                 "settle_matured_loan: sub_vault_id {} not found on global_vault",
                 lender_sub_vault_id
             )?;
-            let profile = crate::state::vault::get_mut_helper_sub_vault(dynamic, profile_idx)
+            let sub_vault = crate::state::vault::get_mut_helper_sub_vault(dynamic, sub_vault_idx)
                 .get_mut_value();
             let share_value_fp48 =
                 crate::state::vault::read_bank_asset_share_value_fp48(debt_bank.info)?;
-            crate::state::vault::accrue_sub_vault(profile, now, share_value_fp48)?;
+            crate::state::vault::accrue_sub_vault(sub_vault, now, share_value_fp48)?;
 
             let weighted_delta: u128 = (loan_principal as u128)
                 .checked_mul(loan_lender_rate as u128)
                 .ok_or(YdeltaError::MathOverflow)?;
-            profile.total_weighted_rate_bps = profile
+            sub_vault.total_weighted_rate_bps = sub_vault
                 .total_weighted_rate_bps
                 .checked_sub(weighted_delta)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -599,16 +599,16 @@ pub fn process_settle_matured_loan(
                 crate::state::loan::BPS_PER_UNIT as u128,
                 false,
             )?;
-            profile.total_weighted_net_rate_bps = profile
+            sub_vault.total_weighted_net_rate_bps = sub_vault
                 .total_weighted_net_rate_bps
                 .checked_sub(net_weighted_delta)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            profile.deployed_principal_atoms = profile
+            sub_vault.deployed_principal_atoms = sub_vault
                 .deployed_principal_atoms
                 .checked_sub(loan_principal)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             // retire the open-loan counter stamped at fill.
-            profile.open_loans_count = profile
+            sub_vault.open_loans_count = sub_vault
                 .open_loans_count
                 .checked_sub(1)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -622,32 +622,32 @@ pub fn process_settle_matured_loan(
             let realized_net: i128 =
                 (loan_lender_claimable as i128) - (loan_principal as i128);
             if realized_net >= 0 {
-                profile.total_principal_atoms = profile
+                sub_vault.total_principal_atoms = sub_vault
                     .total_principal_atoms
                     .checked_add(realized_net as u64)
                     .ok_or(ProgramError::ArithmeticOverflow)?;
             } else {
-                profile.total_principal_atoms =
-                    profile.total_principal_atoms.saturating_sub((-realized_net) as u64);
+                sub_vault.total_principal_atoms =
+                    sub_vault.total_principal_atoms.saturating_sub((-realized_net) as u64);
             }
             let assets_delta: i128 = realized_net - (estimated_accrued_atoms as i128);
             if assets_delta >= 0 {
-                profile.total_assets_atoms = profile
+                sub_vault.total_assets_atoms = sub_vault
                     .total_assets_atoms
                     .checked_add(assets_delta as u64)
                     .ok_or(ProgramError::ArithmeticOverflow)?;
             } else {
-                profile.total_assets_atoms =
-                    profile.total_assets_atoms.saturating_sub((-assets_delta) as u64);
+                sub_vault.total_assets_atoms =
+                    sub_vault.total_assets_atoms.saturating_sub((-assets_delta) as u64);
             }
-            crate::state::vault::restore_assets_principal_invariant(profile);
+            crate::state::vault::restore_assets_principal_invariant(sub_vault);
 
-            profile.pending_claim_atoms = profile
+            sub_vault.pending_claim_atoms = sub_vault
                 .pending_claim_atoms
                 .checked_add(loan_lender_claimable)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             if loan_accumulated_curator_fee_atoms > 0 {
-                profile.accumulated_curator_fee_atoms = profile
+                sub_vault.accumulated_curator_fee_atoms = sub_vault
                     .accumulated_curator_fee_atoms
                     .checked_add(loan_accumulated_curator_fee_atoms)
                     .ok_or(ProgramError::ArithmeticOverflow)?;

@@ -35,7 +35,7 @@ pub struct UpdateSubVaultParams {
     pub new_spread_bps: Option<u16>,
 }
 
-/// Update mutable parameters on a sub-vault. Rejected when the profile is
+/// Update mutable parameters on a sub-vault. Rejected when the sub_vault is
 /// sunset.
 pub fn process_update_sub_vault(
     _program_id: &Pubkey,
@@ -55,28 +55,28 @@ pub fn process_update_sub_vault(
     let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
     let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-    let profile_idx = {
+    let sub_vault_idx = {
         let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
         tree.lookup_index(&probe)
     };
     require!(
-        profile_idx != NIL,
+        sub_vault_idx != NIL,
         YdeltaError::SubVaultNotFound,
         "sub_vault_id {} not found",
         params.sub_vault_id
     )?;
 
-    let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
+    let sub_vault = get_mut_helper_sub_vault(dynamic, sub_vault_idx).get_mut_value();
     // curator-gated (the owner, for Private sub-vaults).
     require!(
-        profile.curator == *payer.info.key,
+        sub_vault.curator == *payer.info.key,
         YdeltaError::VaultCuratorRequired,
         "update_sub_vault: signer ({}) is not the sub-vault curator ({})",
         payer.info.key,
-        profile.curator
+        sub_vault.curator
     )?;
     require!(
-        profile.is_sunset == 0,
+        sub_vault.is_sunset == 0,
         YdeltaError::SubVaultSunset,
         "update_sub_vault: sub_vault_id {} is sunset; parameter updates are rejected \
          during wind-down",
@@ -85,24 +85,24 @@ pub fn process_update_sub_vault(
 
     // Validate the RESULTING pair/term so partial overrides cannot break
     // the liq-gap invariant.
-    let next_max_ltv = params.new_max_ltv_bps.unwrap_or(profile.max_ltv_bps);
+    let next_max_ltv = params.new_max_ltv_bps.unwrap_or(sub_vault.max_ltv_bps);
     let next_liq_ltv = params
         .new_liquidation_ltv_bps
-        .unwrap_or(profile.liquidation_ltv_bps);
+        .unwrap_or(sub_vault.liquidation_ltv_bps);
     let next_term = params
         .new_max_term_seconds
-        .unwrap_or(profile.max_term_seconds);
+        .unwrap_or(sub_vault.max_term_seconds);
     crate::program::processor::create_sub_vault::validate_sub_vault_risk_params(
         next_max_ltv,
         next_liq_ltv,
         next_term,
     )?;
 
-    profile.max_ltv_bps = next_max_ltv;
-    profile.liquidation_ltv_bps = next_liq_ltv;
-    profile.max_term_seconds = next_term;
+    sub_vault.max_ltv_bps = next_max_ltv;
+    sub_vault.liquidation_ltv_bps = next_liq_ltv;
+    sub_vault.max_term_seconds = next_term;
     if let Some(v) = params.new_spread_bps {
-        profile.spread_bps = v;
+        sub_vault.spread_bps = v;
     }
 
     Ok(())

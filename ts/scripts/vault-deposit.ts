@@ -7,7 +7,7 @@
  *     mint: string,                          // debt mint of the vault
  *     depositorKeypairPath?: string,         // path; defaults to signer
  *     depositorTokenAta: string,             // depositor's mint ATA
- *     subVaultId: number,                    // u16 (v1; was profileId u8)
+ *     subVaultId: number,                    // u16 (v1; was subVaultId u8)
  *     amountAtoms: string | number
  *   }
  *   .local/vaults.json

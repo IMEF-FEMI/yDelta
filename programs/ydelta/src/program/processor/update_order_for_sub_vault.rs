@@ -1,5 +1,5 @@
 //! `UpdateOrderForSubVault` — atomic cancel-and-replace of the existing
-//! vault-owned ask for `(market, sub_vault_id)`. Signer is the profile's
+//! vault-owned ask for `(market, sub_vault_id)`. Signer is the sub_vault's
 //! curator; blocked when the sub-vault is sunset (curators may still cancel
 //! during wind-down). Looks up the old order via the vault's
 //! `SubVaultOrderRef`, cancels it on the market, rests a new ask with the
@@ -77,36 +77,36 @@ pub fn process_update_order_for_sub_vault(
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
 
-        let profile_probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
-            tree.lookup_index(&profile_probe)
+            tree.lookup_index(&sub_vault_probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "sub_vault_id {} not found",
             params.sub_vault_id
         )?;
-        let profile_node = crate::state::vault::get_helper_sub_vault(dynamic, profile_idx);
-        let profile = profile_node.get_value();
+        let sub_vault_node = crate::state::vault::get_helper_sub_vault(dynamic, sub_vault_idx);
+        let sub_vault = sub_vault_node.get_value();
         require!(
-            profile.is_sunset == 0,
+            sub_vault.is_sunset == 0,
             YdeltaError::SubVaultSunset,
             "update_order_for_sub_vault: sub_vault_id {} is sunset; updates are rejected \
              during wind-down (cancel is allowed)",
             params.sub_vault_id
         )?;
         require!(
-            *curator.info.key == profile.curator,
+            *curator.info.key == sub_vault.curator,
             YdeltaError::VaultCuratorRequired,
             "update_order_for_sub_vault: signer is not sub_vault.curator"
         )?;
-        sub_vault_spread_bps = profile.spread_bps;
-        sub_vault_term_seconds = profile.max_term_seconds;
-        sub_vault_max_ltv_bps = profile.max_ltv_bps;
-        sub_vault_liquidation_ltv_bps = profile.liquidation_ltv_bps;
-        sub_vault_curator_fee_bps = profile.curator_fee_bps;
+        sub_vault_spread_bps = sub_vault.spread_bps;
+        sub_vault_term_seconds = sub_vault.max_term_seconds;
+        sub_vault_max_ltv_bps = sub_vault.max_ltv_bps;
+        sub_vault_liquidation_ltv_bps = sub_vault.liquidation_ltv_bps;
+        sub_vault_curator_fee_bps = sub_vault.curator_fee_bps;
 
         let order_probe = SubVaultOrderRef::probe(market_key, params.sub_vault_id);
         let order_idx = {

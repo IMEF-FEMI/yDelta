@@ -37,7 +37,7 @@ markets. It invents no new tooling.
 |---|---|---|
 | Deployer / upgrade authority | `YDELTA_DEPLOYER_KEYPAIR_PATH` | program rent + upgrades |
 | Protocol admin | signer of `create-global-config` | gates Pool sub-vaults, fee config, global pause |
-| Curator (`curator-main`) | signer of `create-curators` / `setup-curator-profiles` | sub-vault policy |
+| Curator (`curator-main`) | signer of `create-curators` / `setup-curator-sub-vaults` | sub-vault policy |
 | LP depositor | `YDELTA_DEPOSITOR_KEYPAIR_B58` | seeds liquidity |
 | Borrower | `YDELTA_BORROWER_KEYPAIR_B58` | smoke test |
 
@@ -48,7 +48,7 @@ markets. It invents no new tooling.
 **`.local/` inputs** (copy from `.local.example/`, gitignored):
 - `mainnet-banks.json` — **verify every pubkey against `solana account <bank>`** before
   use (the file says so). Sole source of bank/oracle/vault/group pubkeys; no discovery API.
-- `curators-input.json`, `vault-input.json`, `setup-curator-profiles-input.json`,
+- `curators-input.json`, `vault-input.json`, `setup-curator-sub-vaults-input.json`,
   `markets-input.json` — review the defaults (Section 3).
 
 ## 2. Deploy / upgrade
@@ -80,12 +80,12 @@ output exists), then prints a summary. With the default inputs:
 | 1 | `create-global-config` | `global-config.json` | protocol global config (admin = signer) |
 | 2 | `create-curators` | `curators.json` | `curator-main` |
 | 3 | `create-vault` | `vaults.json` | **USDC vault** on bank `2s37…` |
-| 4 | `setup-curator-profiles` | `risk-profiles.json` | **3 sub-vaults** in the USDC vault |
+| 4 | `setup-curator-sub-vaults` | `sub-vaults.json` | **3 sub-vaults** in the USDC vault |
 | 5 | `init-market` | `markets.json` | **USDC/SOL** + **USDC/JitoSOL** markets |
 
-Default sub-vault profiles (`setup-curator-profiles-input.json`) — review first:
+Default sub-vaults (`setup-curator-sub-vaults-input.json`) — review first:
 
-| Profile | max LTV | max term | liquidation LTV |
+| Sub-vault | max LTV | max term | liquidation LTV |
 |---|---|---|---|
 | conservative | 65% | 7 days | ≥ max_ltv + 2% |
 | balanced | 75% | 30 days | ≥ 77% |
@@ -101,7 +101,7 @@ limit. Do this before any real order flow.
 **Markets are live at creation** — no paused handshake. A market trades the instant a
 curator posts an ask into a funded sub-vault.
 
-Verify: the bootstrap summary shows `global-config: OK`, `vaults: 1`, `profiles: 3`,
+Verify: the bootstrap summary shows `global-config: OK`, `vaults: 1`, `sub-vaults: 3`,
 `markets: 2`.
 
 ## 4. Liquidity & go-live
@@ -133,7 +133,7 @@ Verify: the bootstrap summary shows `global-config: OK`, `vaults: 1`, `profiles:
 - [ ] `.env` `YDELTA_RPC_URL` = your mainnet RPC; deployer funded
 - [ ] Upgrade-authority / admin / curator key split decided
 - [ ] `.local/mainnet-banks.json` pubkeys verified against `solana account …`
-- [ ] Sub-vault profiles reviewed (LTV / term / liquidation gap / spread)
+- [ ] Sub-vaults reviewed (LTV / term / liquidation gap / spread)
 - [ ] Verifiable build produced and deployed
 - [ ] `protocol.json` written; IDL uploaded; verified build registered
 - [ ] Market LUTs created

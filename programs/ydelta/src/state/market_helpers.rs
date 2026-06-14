@@ -467,7 +467,7 @@ pub fn match_order(
         // self-cross is a SKIP, not an abort — the scan walks on
         // to other makers. Seat-level check here; the owner-level check
         // (wallet vs the maker sub-vault's curator) runs once the
-        // profile is read below.
+        // sub_vault is read below.
         if maker.trader_seat_index == args.taker_seat_index {
             current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
             continue;
@@ -494,11 +494,11 @@ pub fn match_order(
         let matched_principal: u64;
         let sub_vault_id: u16;
 
-        let mut profile_max_ltv_bps: u16 = 0;
-        let mut profile_liquidation_ltv_bps: u16 = 0;
-        let mut profile_max_term_seconds: u32 = 0;
-        let mut profile_curator_fee_bps: u16 = 0;
-        let mut profile_curator: Pubkey = Pubkey::default();
+        let mut sub_vault_max_ltv_bps: u16 = 0;
+        let mut sub_vault_liquidation_ltv_bps: u16 = 0;
+        let mut sub_vault_max_term_seconds: u32 = 0;
+        let mut sub_vault_curator_fee_bps: u16 = 0;
+        let mut sub_vault_curator: Pubkey = Pubkey::default();
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             require!(
@@ -516,7 +516,7 @@ pub fn match_order(
             };
             sub_vault_id = lender_seat.sub_vault_id;
 
-            let profile_idle: u64 = {
+            let sub_vault_idle: u64 = {
                 let vault_data = vault_ai_ref.try_borrow_data()?;
                 let (fixed_bytes, vault_dyn) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
                 let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
@@ -531,11 +531,11 @@ pub fn match_order(
                     if p.is_sunset != 0 {
                         0
                     } else {
-                        profile_max_ltv_bps = p.max_ltv_bps;
-                        profile_liquidation_ltv_bps = p.liquidation_ltv_bps;
-                        profile_max_term_seconds = p.max_term_seconds;
-                        profile_curator_fee_bps = p.curator_fee_bps;
-                        profile_curator = p.curator;
+                        sub_vault_max_ltv_bps = p.max_ltv_bps;
+                        sub_vault_liquidation_ltv_bps = p.liquidation_ltv_bps;
+                        sub_vault_max_term_seconds = p.max_term_seconds;
+                        sub_vault_curator_fee_bps = p.curator_fee_bps;
+                        sub_vault_curator = p.curator;
                         p.total_principal_atoms
                             .saturating_sub(p.deployed_principal_atoms)
                             .saturating_sub(p.encumbered_in_orders_atoms)
@@ -543,15 +543,15 @@ pub fn match_order(
                     }
                 }
             };
-            if profile_idle == 0 {
+            if sub_vault_idle == 0 {
                 current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                 continue;
             }
-            if profile_max_term_seconds > 0 && maker.term_seconds > profile_max_term_seconds {
+            if sub_vault_max_term_seconds > 0 && maker.term_seconds > sub_vault_max_term_seconds {
                 current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                 continue;
             }
-            matched_principal = remaining_principal.min(profile_idle);
+            matched_principal = remaining_principal.min(sub_vault_idle);
         }
 
         // owner-level self-cross: a wallet may not borrow from a
@@ -559,7 +559,7 @@ pub fn match_order(
         {
             let taker_owner =
                 get_helper_seat(dynamic, args.taker_seat_index).get_value().owner;
-            if profile_curator == taker_owner {
+            if sub_vault_curator == taker_owner {
                 current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                 continue;
             }
@@ -582,16 +582,16 @@ pub fn match_order(
         // the sub-vault's `max_ltv_bps` is the ONLY origination
         // gate — marginfi weights no longer constrain fixed fills. The
         // cap is per-ask policy, not a property of the bid: a stricter
-        // profile skips and the scan walks on to asks whose cap the
+        // sub_vault skips and the scan walks on to asks whose cap the
         // bid's collateral does satisfy. A zero cap fails closed (skip).
         // Borrower's buffer tightens the per-ask cap; the same effective
         // cap is stamped onto the loan below.
         let effective_cap_bps = crate::state::ltv::effective_origination_cap_bps(
-            profile_max_ltv_bps,
+            sub_vault_max_ltv_bps,
             args.ltv_buffer_bps,
         );
         {
-            let required_at_profile_cap = crate::state::ltv::required_collateral_at_ltv_cap(
+            let required_at_sub_vault_cap = crate::state::ltv::required_collateral_at_ltv_cap(
                 matched_principal,
                 args.debt_oracle_price_fp48,
                 args.collateral_oracle_price_fp48,
@@ -599,13 +599,13 @@ pub fn match_order(
                 fixed.debt_mint_decimals,
                 fixed.collateral_mint_decimals,
             )?;
-            if total_collateral_for_match < required_at_profile_cap {
+            if total_collateral_for_match < required_at_sub_vault_cap {
                 current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                 continue;
             }
         }
 
-        // Every gate has passed — only now reserve the fill on the profile,
+        // Every gate has passed — only now reserve the fill on the sub_vault,
         // so a skipped ask leaves no stale encumbrance behind.
         if let Some(vault_ai_ref) = vault_ai {
             let mut vault_data = vault_ai_ref.try_borrow_mut_data()?;
@@ -677,11 +677,11 @@ pub fn match_order(
         node.flags = vault_flag;
         // the curator fee lives on the sub-vault, snapshotted at
         // match so later changes never touch open loans.
-        node.curator_fee_bps_snapshot = profile_curator_fee_bps;
+        node.curator_fee_bps_snapshot = sub_vault_curator_fee_bps;
         // stamp the LTV pair — curator updates never move thresholds on
         // open loans. Origination reflects the borrower's buffer.
         node.origination_ltv_bps = effective_cap_bps;
-        node.liquidation_ltv_bps = profile_liquidation_ltv_bps;
+        node.liquidation_ltv_bps = sub_vault_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 = lender_debt_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 = borrower_collateral_snapshot;
         let node_index = get_free_address_on_market_fixed_for_matched_loan(fixed, dynamic);
@@ -797,13 +797,13 @@ impl<'a> MarketRefMut<'a> {
     /// Convenience wrapper that claims a seat with `sub_vault_id = 0`
     /// (the user-seat default).
     pub fn claim_seat(&mut self, owner: &Pubkey, owner_kind: u8) -> ProgramResult {
-        self.claim_seat_with_profile(owner, owner_kind, 0)
+        self.claim_seat_with_sub_vault(owner, owner_kind, 0)
     }
 
     /// Inserts a fresh, zeroed `ClaimedSeat` into the market's seat tree.
     /// Errors with `AlreadyClaimedSeat` when one already exists for the
     /// `(owner, owner_kind, sub_vault_id)` triple.
-    pub fn claim_seat_with_profile(
+    pub fn claim_seat_with_sub_vault(
         &mut self,
         owner: &Pubkey,
         owner_kind: u8,
@@ -1643,7 +1643,7 @@ pub fn match_p2pool_residual_against_asks(
         }
 
         // self-cross skips (seat level here; owner level below
-        // once the profile is read).
+        // once the sub_vault is read).
         if maker.trader_seat_index == args.borrower_seat_index {
             current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
             continue;
@@ -1661,10 +1661,10 @@ pub fn match_p2pool_residual_against_asks(
         let matched_principal: u64;
         let lender_sub_vault_id: u16;
 
-        let mut profile_max_ltv_bps: u16 = 0;
-        let mut profile_liquidation_ltv_bps: u16 = 0;
-        let mut profile_curator_fee_bps: u16 = 0;
-        let mut profile_curator: Pubkey = Pubkey::default();
+        let mut sub_vault_max_ltv_bps: u16 = 0;
+        let mut sub_vault_liquidation_ltv_bps: u16 = 0;
+        let mut sub_vault_curator_fee_bps: u16 = 0;
+        let mut sub_vault_curator: Pubkey = Pubkey::default();
         {
             let lender_seat = *get_helper_seat(dynamic, maker.trader_seat_index).get_value();
             require!(
@@ -1682,7 +1682,7 @@ pub fn match_p2pool_residual_against_asks(
             };
             let sub_vault_id = lender_seat.sub_vault_id;
             lender_sub_vault_id = sub_vault_id;
-            let profile_idle: u64 = {
+            let sub_vault_idle: u64 = {
                 let vault_data = vault_ai_ref.try_borrow_data()?;
                 let (fixed_bytes, vault_dyn) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
                 let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
@@ -1697,10 +1697,10 @@ pub fn match_p2pool_residual_against_asks(
                     if p.is_sunset != 0 {
                         0
                     } else {
-                        profile_max_ltv_bps = p.max_ltv_bps;
-                        profile_liquidation_ltv_bps = p.liquidation_ltv_bps;
-                        profile_curator_fee_bps = p.curator_fee_bps;
-                        profile_curator = p.curator;
+                        sub_vault_max_ltv_bps = p.max_ltv_bps;
+                        sub_vault_liquidation_ltv_bps = p.liquidation_ltv_bps;
+                        sub_vault_curator_fee_bps = p.curator_fee_bps;
+                        sub_vault_curator = p.curator;
                         p.total_principal_atoms
                             .saturating_sub(p.deployed_principal_atoms)
                             .saturating_sub(p.encumbered_in_orders_atoms)
@@ -1708,17 +1708,17 @@ pub fn match_p2pool_residual_against_asks(
                     }
                 }
             };
-            if profile_idle == 0 {
+            if sub_vault_idle == 0 {
                 current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                 continue;
             }
-            matched_principal = remaining_principal.min(profile_idle);
+            matched_principal = remaining_principal.min(sub_vault_idle);
 
             // owner-level self-cross (skip).
             {
                 let borrower_owner =
                     get_helper_seat(dynamic, args.borrower_seat_index).get_value().owner;
-                if profile_curator == borrower_owner {
+                if sub_vault_curator == borrower_owner {
                     current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                     continue;
                 }
@@ -1735,19 +1735,19 @@ pub fn match_p2pool_residual_against_asks(
             // health of the source P2Pool position is checked by the
             // processor before the scan). Zero cap fails closed (skip).
             {
-                let required_at_profile_cap =
+                let required_at_sub_vault_cap =
                     crate::state::ltv::required_collateral_at_ltv_cap(
                         matched_principal,
                         args.debt_oracle_price_fp48,
                         args.collateral_oracle_price_fp48,
                         crate::state::ltv::effective_origination_cap_bps(
-                            profile_max_ltv_bps,
+                            sub_vault_max_ltv_bps,
                             args.ltv_buffer_bps,
                         ),
                         args.debt_mint_decimals,
                         args.collateral_mint_decimals,
                     )?;
-                if matched_collateral_for_gate < required_at_profile_cap {
+                if matched_collateral_for_gate < required_at_sub_vault_cap {
                     current_maker_index = next_maker_index(fixed, dynamic, current_maker_index);
                     continue;
                 }
@@ -1814,13 +1814,13 @@ pub fn match_p2pool_residual_against_asks(
 
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_PRESETTLED
             | crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
-        node.curator_fee_bps_snapshot = profile_curator_fee_bps;
+        node.curator_fee_bps_snapshot = sub_vault_curator_fee_bps;
         // stamp the LTV pair; origination reflects the borrower's buffer.
         node.origination_ltv_bps = crate::state::ltv::effective_origination_cap_bps(
-            profile_max_ltv_bps,
+            sub_vault_max_ltv_bps,
             args.ltv_buffer_bps,
         );
-        node.liquidation_ltv_bps = profile_liquidation_ltv_bps;
+        node.liquidation_ltv_bps = sub_vault_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 = maker_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 =
             args.borrower_collateral_share_price_snapshot_fp48;
@@ -1914,10 +1914,10 @@ pub struct MatchRestingBidsArgs {
     pub ask_curator_fee_bps: u16,
     /// Sub-vault's origination LTV cap — the ONLY origination gate;
     /// stamped onto each fill as `origination_ltv_bps`.
-    pub profile_max_ltv_bps: u16,
+    pub sub_vault_max_ltv_bps: u16,
     /// Sub-vault's liquidation threshold, stamped onto each fill (v1
     /// D17: curator updates never move thresholds on open loans).
-    pub profile_liquidation_ltv_bps: u16,
+    pub sub_vault_liquidation_ltv_bps: u16,
     /// The taking sub-vault's curator — bids owned by the same wallet
     /// are skipped (owner-level self-cross).
     pub ask_curator: Pubkey,
@@ -2032,7 +2032,7 @@ pub fn match_resting_bids(
         }
 
         // Idle capacity, read live from the vault (same as match_order).
-        let profile_idle: u64 = {
+        let sub_vault_idle: u64 = {
             let vault_data = vault_ai.try_borrow_data()?;
             let (fixed_bytes, vault_dyn) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
             let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
@@ -2054,12 +2054,12 @@ pub fn match_resting_bids(
                 }
             }
         };
-        if profile_idle == 0 {
+        if sub_vault_idle == 0 {
             // The taking ask has no more capacity — stop.
             break;
         }
 
-        let fill: u64 = bid.principal_atoms.min(profile_idle);
+        let fill: u64 = bid.principal_atoms.min(sub_vault_idle);
         let full_consumption: bool = fill == bid.principal_atoms;
         let consumed_collateral: u64 = if full_consumption {
             bid.collateral_atoms
@@ -2072,20 +2072,20 @@ pub fn match_resting_bids(
         // collateral may satisfy a looser ask later). Zero cap fails
         // closed (skip).
         {
-            let required_at_profile_cap = crate::state::ltv::required_collateral_at_ltv_cap(
+            let required_at_sub_vault_cap = crate::state::ltv::required_collateral_at_ltv_cap(
                 fill,
                 args.debt_oracle_price_fp48,
                 args.collateral_oracle_price_fp48,
                 // the resting bid carries its owner's LTV buffer; honor it
                 // when a later ask crosses it.
                 crate::state::ltv::effective_origination_cap_bps(
-                    args.profile_max_ltv_bps,
+                    args.sub_vault_max_ltv_bps,
                     bid.ltv_buffer_bps,
                 ),
                 args.debt_mint_decimals,
                 args.collateral_mint_decimals,
             )?;
-            if consumed_collateral < required_at_profile_cap {
+            if consumed_collateral < required_at_sub_vault_cap {
                 current_bid_index = next_bid_index;
                 continue;
             }
@@ -2149,10 +2149,10 @@ pub fn match_resting_bids(
         node.curator_fee_bps_snapshot = args.ask_curator_fee_bps;
         // stamp the LTV pair; origination reflects the bid's buffer.
         node.origination_ltv_bps = crate::state::ltv::effective_origination_cap_bps(
-            args.profile_max_ltv_bps,
+            args.sub_vault_max_ltv_bps,
             bid.ltv_buffer_bps,
         );
-        node.liquidation_ltv_bps = args.profile_liquidation_ltv_bps;
+        node.liquidation_ltv_bps = args.sub_vault_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 =
             args.lender_debt_share_price_snapshot_fp48;
         node.borrower_collateral_share_price_snapshot_fp48 = bid.share_price_snapshot();

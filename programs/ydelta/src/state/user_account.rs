@@ -165,7 +165,7 @@ pub struct VaultPosition {
     /// Sub-vault id within the vault.
     pub sub_vault_id: u16,
     _pad0: [u8; 14],
-    /// User's share balance in the profile.
+    /// User's share balance in the sub_vault.
     pub shares: u128,
     /// Snapshot of the sub-vault's `cumulative_supply_yield_index_scaled`
     /// at last touch.

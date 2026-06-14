@@ -7,7 +7,7 @@ use solana_sdk::signer::Signer;
 
 use crate::test_utils::{mainnet, MarketFixture};
 
-/// Smoke test: vault create → profile create → deposit → withdraw
+/// Smoke test: vault create → sub_vault create → deposit → withdraw
 /// round trip with no fills. Validates that the `create_vault`,
 /// `create_sub_vault`, `global_vault_deposit`, and `global_vault_withdraw`
 /// processors compose end-to-end against a real marginfi bank.
@@ -59,11 +59,11 @@ async fn vault_genesis_round_trip() {
         "deposit must move exactly 100 USDC out of the depositor's ATA"
     );
 
-    // Verify profile state reflects the deposit.
-    let profile = fixture.read_sub_vault(1).await;
-    let total_principal = profile.total_principal_atoms;
-    let total_assets = profile.total_assets_atoms;
-    let total_shares = profile.total_shares;
+    // Verify sub_vault state reflects the deposit.
+    let sub_vault = fixture.read_sub_vault(1).await;
+    let total_principal = sub_vault.total_principal_atoms;
+    let total_assets = sub_vault.total_assets_atoms;
+    let total_shares = sub_vault.total_shares;
     assert_eq!(total_principal, 99_999_999);
     assert_eq!(total_assets, 99_999_999);
     // Genesis: 1 share = 1 atom.
@@ -78,8 +78,8 @@ async fn vault_genesis_round_trip() {
         .await
         .unwrap();
 
-    let profile = fixture.read_sub_vault(1).await;
-    let total_shares = profile.total_shares;
+    let sub_vault = fixture.read_sub_vault(1).await;
+    let total_shares = sub_vault.total_shares;
     assert_eq!(total_shares, 59_999_999_u128);
 
     // Withdraw the rest (60).
@@ -89,10 +89,10 @@ async fn vault_genesis_round_trip() {
         .await
         .unwrap();
 
-    let profile = fixture.read_sub_vault(1).await;
-    let total_shares = profile.total_shares;
-    let total_assets = profile.total_assets_atoms;
-    let total_principal = profile.total_principal_atoms;
+    let sub_vault = fixture.read_sub_vault(1).await;
+    let total_shares = sub_vault.total_shares;
+    let total_assets = sub_vault.total_assets_atoms;
+    let total_principal = sub_vault.total_principal_atoms;
     assert_eq!(total_shares, 0_u128);
     assert_eq!(total_assets, 0);
     assert_eq!(total_principal, 0);
@@ -155,7 +155,7 @@ async fn global_vault_withdraw_rejects_overburn() {
 }
 
 /// First `place_order_for_sub_vault` on a market auto-creates the
-/// vault's per-(profile, market) `ClaimedSeat` — there is no explicit
+/// vault's per-(sub_vault, market) `ClaimedSeat` — there is no explicit
 /// claim-seat step in the quote-only model.
 #[tokio::test]
 async fn first_place_order_auto_creates_vault_seat() {
@@ -193,7 +193,7 @@ async fn first_place_order_auto_creates_vault_seat() {
         hypertree::NIL,
         "place_order_for_sub_vault must rest an ask",
     );
-    // Vault-idle invariant: nothing in flight yet, profile is fully
+    // Vault-idle invariant: nothing in flight yet, sub_vault is fully
     // idle. Tightens this test to verify no spurious encumbrance.
     fixture.assert_vault_idle_invariant(1).await;
     let p = fixture.read_sub_vault(1).await;

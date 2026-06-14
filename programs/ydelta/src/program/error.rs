@@ -76,7 +76,7 @@ pub enum YdeltaError {
     SubVaultNotFound = 26,
 
     #[error("vault order: term_seconds exceeds SubVault.max_term_seconds")]
-    VaultOrderTermExceedsProfileMax = 28,
+    VaultOrderTermExceedsSubVaultMax = 28,
     #[error("vault: signer is not SubVault.curator")]
     VaultCuratorRequired = 29,
     #[error("vault: signer is not GlobalVaultFixed.global_vault_admin")]
@@ -86,7 +86,7 @@ pub enum YdeltaError {
     SubVaultOrderExists = 32,
     #[error("global_vault_withdraw: idle_principal_atoms < requested atoms (deployed liquidity cannot be withdrawn until repaid)")]
     VaultInsufficientIdleAtoms = 33,
-    #[error("vault: profile has nonzero seats / orders / loans / shares; cannot remove")]
+    #[error("vault: sub_vault has nonzero seats / orders / loans / shares; cannot remove")]
     SubVaultNotEmpty = 34,
 
     #[error("create_sub_vault: sub_vault_id already exists in vault")]
@@ -137,7 +137,7 @@ pub enum YdeltaError {
              are allowed during wind-down")]
     SubVaultSunset = 54,
 
-    #[error("sub-vault is not sunset: this admin operation requires the profile \
+    #[error("sub-vault is not sunset: this admin operation requires the sub_vault \
              to be in sunset state first (call SunsetSubVault)")]
     SubVaultNotSunset = 55,
 

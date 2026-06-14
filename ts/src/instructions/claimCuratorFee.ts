@@ -14,7 +14,7 @@ import { InstructionTag } from './_tags.js';
 
 /**
  * Tag 15 — `ClaimCuratorFee`. Drains
- * `RiskProfile.accumulated_curator_fee_atoms` to the curator's wallet ATA
+ * `SubVault.accumulated_curator_fee_atoms` to the curator's wallet ATA
  * via `marginfi.withdraw + SPL transfer`. No-op (Ok) when zero, so curators
  * can poll.
  */

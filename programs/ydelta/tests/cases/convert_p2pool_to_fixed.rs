@@ -114,7 +114,7 @@ async fn full_conversion_closes_p2pool_pda() {
     let liability_pre = borrower_liability_shares(&fixture).await;
     assert!(liability_pre > 0, "P2Pool loan must carry a live liability");
 
-    // Vault profile rests an unbounded ask with plenty of idle (10_000
+    // Vault sub_vault rests an unbounded ask with plenty of idle (10_000
     // atoms) at 600 bps / 30d — comfortably covers the 100-atom debt.
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
@@ -197,7 +197,7 @@ async fn partial_conversion_is_rejected() {
     let liability_pre = borrower_liability_shares(&fixture).await;
     assert!(liability_pre > 0);
 
-    // Vault profile rests an ask with only 40 atoms idle — strictly
+    // Vault sub_vault rests an ask with only 40 atoms idle — strictly
     // less than the ~100-atom P2Pool debt, so the matcher can only
     // partially fill.
     let admin = fixture.create_trader().await;
@@ -249,7 +249,7 @@ async fn partial_conversion_is_rejected() {
 }
 
 /// The P2Pool→fixed refinance matcher MUST enforce the crossed vault
-/// profile's curator-set `max_ltv_bps` cap per cross, just like the
+/// sub_vault's curator-set `max_ltv_bps` cap per cross, just like the
 /// primary `match_order`. A market-level aggregate check at the
 /// marginfi-init weights alone is not enough: a borrower could
 /// otherwise refinance variable debt into a conservative low-LTV
@@ -257,17 +257,17 @@ async fn partial_conversion_is_rejected() {
 ///
 /// Setup: a P2Pool loan that comfortably passes the aggregate
 /// marginfi-init-weight check (SOL collateral is ~0.8-weighted), but the
-/// only resting vault ask belongs to a profile with `max_ltv_bps = 100`
+/// only resting vault ask belongs to a sub_vault with `max_ltv_bps = 100`
 /// (1% LTV) — that cap demands ~100× the collateral the aggregate check
-/// needs. The per-cross profile-cap gate must reject (skip) the ask, and
+/// needs. The per-cross sub_vault-cap gate must reject (skip) the ask, and
 /// the convert must then fail with "no asks crossed" rather than minting
 /// a Fixed loan at an LTV the curator never agreed to.
 #[tokio::test]
-async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
+async fn convert_rejected_when_cross_breaches_sub_vault_max_ltv() {
     let fixture = MarketFixture::new().await;
 
     // A small P2Pool loan with collateral sized to clear the aggregate
-    // marginfi-init-weight check but NOT a 1%-LTV profile cap.
+    // marginfi-init-weight check but NOT a 1%-LTV sub_vault cap.
     let principal_atoms: u64 = 100;
     let collateral_atoms: u64 = 5_000;
     let bob = open_p2pool_loan(&fixture, principal_atoms, collateral_atoms).await;
@@ -275,10 +275,10 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
     let liability_pre = borrower_liability_shares(&fixture).await;
     assert!(liability_pre > 0, "P2Pool loan must carry a live liability");
 
-    // The only resting ask belongs to a profile with an aggressively
+    // The only resting ask belongs to a sub_vault with an aggressively
     // low `max_ltv_bps` of 100 (1% LTV). The marginfi-init-weight
     // aggregate check passes (SOL collateral comfortably backs $-tiny
-    // debt), but the per-cross profile-cap gate must reject this cross.
+    // debt), but the per-cross sub_vault-cap gate must reject this cross.
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
@@ -297,13 +297,13 @@ async fn convert_rejected_when_cross_breaches_profile_max_ltv() {
     fixture.refresh_blockhash().await;
 
     // Convert must FAIL: the sole vault ask is skipped by the per-cross
-    // profile-LTV-cap gate, leaving no compatible maker → the processor
+    // sub_vault-LTV-cap gate, leaving no compatible maker → the processor
     // errors. Exact reject path is the "no asks crossed" branch which
     // surfaces InvalidArgument from convert_p2pool_to_fixed.
     let result = fixture
         .convert_p2pool_to_fixed(&bob, /*loan_sequence=*/ 0, 3_000)
         .await;
-    // The per-cross profile-LTV gate SKIPS the only ask, so the matcher
+    // The per-cross sub_vault-LTV gate SKIPS the only ask, so the matcher
     // crosses nothing and the processor's "no asks crossed" guard fires
     // with InvalidArgument — not just any error.
     crate::assert_custom_error!(result, ydelta::program::YdeltaError::InvalidArgument);
@@ -349,7 +349,7 @@ async fn convert_new_fixed_debt_never_exceeds_retired_variable_debt() {
     let collateral_atoms: u64 = 5_000;
     let bob = open_p2pool_loan(&fixture, principal_atoms, collateral_atoms).await;
 
-    // Vault profile with PLENTY of idle to fully refinance the loan
+    // Vault sub_vault with PLENTY of idle to fully refinance the loan
     // (must-full-fill requires `vault_idle >= live_outstanding`). Test
     // exercises the predictive-repay path on a single full cross.
     let admin = fixture.create_trader().await;
@@ -428,7 +428,7 @@ async fn convert_produces_fixed_loan_with_expected_fields() {
     assert_eq!(p2pool_pre.loan_type, LoanType::P2Pool as u8);
     assert_eq!(p2pool_pre.state, LoanState::Active as u8);
 
-    // Vault profile rests an ask at a SPECIFIC rate (425 bps) and term
+    // Vault sub_vault rests an ask at a SPECIFIC rate (425 bps) and term
     // (30 days) — the new Fixed loan must adopt these.
     const ASK_RATE_BPS: u16 = 425;
     const ASK_TERM_SECONDS: u32 = 30 * 86_400;

@@ -8,7 +8,7 @@
  *     mint: string,
  *     depositorKeypairPath?: string,
  *     depositorTokenAta: string,
- *     subVaultId: number,                    // u16 (v1; was profileId u8)
+ *     subVaultId: number,                    // u16 (v1; was subVaultId u8)
  *     sharesToBurn?: string | number,        // u128; required unless withdrawAll
  *     withdrawAll?: boolean                  // sets sharesToBurn to the on-chain stake
  *   }

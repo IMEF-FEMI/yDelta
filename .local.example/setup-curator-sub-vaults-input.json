@@ -1,0 +1,27 @@
+{
+  "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "curatorLabel": "curator-main",
+  "subVaults": [
+    {
+      "spreadBps": 100,
+      "maxLtvBps": 6500,
+      "liquidationLtvBps": 7200,
+      "maxTermSeconds": 604800,
+      "curatorFeeBps": 1000
+    },
+    {
+      "spreadBps": 175,
+      "maxLtvBps": 7500,
+      "liquidationLtvBps": 8200,
+      "maxTermSeconds": 2592000,
+      "curatorFeeBps": 1000
+    },
+    {
+      "spreadBps": 300,
+      "maxLtvBps": 8500,
+      "liquidationLtvBps": 9000,
+      "maxTermSeconds": 7776000,
+      "curatorFeeBps": 1000
+    }
+  ]
+}

@@ -3,7 +3,7 @@
 //! `CreatePrivateSubVault` is permissionless — the signer becomes the
 //! curator/sole depositor and the fee is forced to 0. Both auto-assign
 //! `sub_vault_id` from `header.next_sub_vault_id` (monotonic, starts at
-//! 1) and grow the vault by one profile block if no free slot remains.
+//! 1) and grow the vault by one sub_vault block if no free slot remains.
 
 use std::cell::{Ref, RefMut};
 
@@ -19,7 +19,7 @@ use crate::program::YdeltaError;
 use crate::require;
 use crate::state::constants::{MAX_CURATOR_FEE_BPS, MIN_LIQ_GAP_BPS};
 use crate::state::vault::{
-    get_free_profile_address_on_vault_fixed, vault_expand_profile_block, GlobalVaultFixed,
+    get_free_sub_vault_address_on_vault_fixed, vault_expand_sub_vault_block, GlobalVaultFixed,
     SubVault, SubVaultTree, SUB_VAULT_KIND_POOL, SUB_VAULT_KIND_PRIVATE,
 };
 use crate::state::{GLOBAL_VAULT_FIXED_SIZE, SUB_VAULT_BLOCK_SIZE};
@@ -176,7 +176,7 @@ pub fn process_create_private_sub_vault(
     )
 }
 
-/// Shared append: expands the vault by one profile block when needed,
+/// Shared append: expands the vault by one sub_vault block when needed,
 /// assigns the monotonic id, inserts the `SubVault`, bumps the count,
 /// and emits `SubVaultCreatedLog`.
 #[allow(clippy::too_many_arguments)]
@@ -197,7 +197,7 @@ fn append_sub_vault<'a, 'info>(
         let vault_data: &Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let header: &GlobalVaultFixed =
             bytemuck::from_bytes(&vault_data[..GLOBAL_VAULT_FIXED_SIZE]);
-        !header.has_free_profile_block()
+        !header.has_free_sub_vault_block()
     };
     if needs_grow {
         let new_size = vault.info.data_len() + SUB_VAULT_BLOCK_SIZE;
@@ -218,7 +218,7 @@ fn append_sub_vault<'a, 'info>(
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
-        vault_expand_profile_block(header, dynamic)?;
+        vault_expand_sub_vault_block(header, dynamic)?;
     }
 
     let assigned_sub_vault_id: u16;
@@ -234,11 +234,11 @@ fn append_sub_vault<'a, 'info>(
             .checked_add(1)
             .ok_or(YdeltaError::SubVaultIdExists)?;
 
-        let order_index = get_free_profile_address_on_vault_fixed(header, dynamic);
+        let order_index = get_free_sub_vault_address_on_vault_fixed(header, dynamic);
         require!(
             order_index != NIL,
             ProgramError::AccountDataTooSmall,
-            "no free profile block (vault_expand_profile_block should have run)"
+            "no free sub_vault block (vault_expand_sub_vault_block should have run)"
         )?;
 
         let mut sub_vault = SubVault::new_empty(

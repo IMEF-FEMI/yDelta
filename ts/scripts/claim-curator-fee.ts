@@ -8,7 +8,7 @@
  *     subVaultId: number,
  *     curatorTokenAta: string
  *   }
- *   .local/vaults.json, .local/risk-profiles.json, .local/curators.json
+ *   .local/vaults.json, .local/sub-vaults.json, .local/curators.json
  */
 import { PublicKey } from '@solana/web3.js';
 
@@ -40,7 +40,7 @@ interface Input {
 async function main(): Promise<void> {
   const input = readJson<Input>('claim-curator-fee-input.json');
   const vaults = readJson<Record<string, VaultDump>>('vaults.json');
-  const subVaults = readJson<Record<string, SubVaultDump[]>>('risk-profiles.json');
+  const subVaults = readJson<Record<string, SubVaultDump[]>>('sub-vaults.json');
   const curators = readJson<CuratorDump[]>('curators.json');
 
   const vault = vaults[input.mint];

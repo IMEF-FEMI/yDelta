@@ -89,7 +89,7 @@ describe('e2e: TS `requiredCollateralAtoms` matches the on-chain LTV gate atom-f
       maxTermSeconds: TERM_SECONDS,
     });
 
-    // Fund the vault profile.
+    // Fund the vault subVault.
     const depositor = await bk.fundedKeypair();
     const depositorAta = Keypair.generate().publicKey;
     await bk.putTokenAccount({

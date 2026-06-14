@@ -452,7 +452,7 @@ fn set_vault_pause_ix_has_three_accounts() {
 fn loan_fixed_grows_to_carry_vault_lender_fields() {
     // LoanFixed carries (lender_kind, lender_sub_vault_id, _pad,
     // lender_global_vault) so vault-funded loans can route repayment
-    // back to the originating profile.
+    // back to the originating sub_vault.
     assert_eq!(size_of::<LoanFixed>(), LOAN_FIXED_SIZE);
     // Sanity: LoanFixed has the new fields and they default to zero
     // for a fresh wallet-funded loan.

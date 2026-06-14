@@ -47,7 +47,7 @@
     "create-global-config": "tsx ts/scripts/create-global-config.ts",
     "create-curators": "tsx ts/scripts/create-curators.ts",
     "create-vault": "tsx ts/scripts/create-vault.ts",
-    "setup-curator-profiles": "tsx ts/scripts/setup-curator-profiles.ts",
+    "setup-curator-sub-vaults": "tsx ts/scripts/setup-curator-sub-vaults.ts",
     "create-pool-sub-vault": "tsx ts/scripts/create-pool-sub-vault.ts",
     "create-private-sub-vault": "tsx ts/scripts/create-private-sub-vault.ts",
     "remove-sub-vault": "tsx ts/scripts/remove-sub-vault.ts",

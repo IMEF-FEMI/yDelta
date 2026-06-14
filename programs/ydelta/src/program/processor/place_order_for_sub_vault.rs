@@ -67,42 +67,42 @@ pub fn process_place_order_for_sub_vault(
     let market_key = *market.info.key;
     let now: i64 = Clock::get()?.unix_timestamp;
 
-    let (spread_bps, term_seconds, profile_max_ltv_bps, profile_liquidation_ltv_bps, profile_curator_fee_bps): (u16, u32, u16, u16, u16) = {
+    let (spread_bps, term_seconds, sub_vault_max_ltv_bps, sub_vault_liquidation_ltv_bps, sub_vault_curator_fee_bps): (u16, u32, u16, u16, u16) = {
         let vault_data: &std::cell::Ref<&mut [u8]> = &vault.info.try_borrow_data()?;
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
 
         let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "sub_vault_id {} not found",
             params.sub_vault_id
         )?;
-        let profile_node = crate::state::vault::get_helper_sub_vault(dynamic, profile_idx);
-        let profile = profile_node.get_value();
+        let sub_vault_node = crate::state::vault::get_helper_sub_vault(dynamic, sub_vault_idx);
+        let sub_vault = sub_vault_node.get_value();
         require!(
-            profile.is_sunset == 0,
+            sub_vault.is_sunset == 0,
             YdeltaError::SubVaultSunset,
             "place_order_for_sub_vault: sub_vault_id {} is sunset; no new orders during \
              wind-down (curator may still cancel existing orders)",
             params.sub_vault_id
         )?;
         require!(
-            *curator.info.key == profile.curator,
+            *curator.info.key == sub_vault.curator,
             YdeltaError::VaultCuratorRequired,
             "place_order_for_sub_vault: signer is not sub_vault.curator"
         )?;
         (
-            profile.spread_bps,
-            profile.max_term_seconds,
-            profile.max_ltv_bps,
-            profile.liquidation_ltv_bps,
-            profile.curator_fee_bps,
+            sub_vault.spread_bps,
+            sub_vault.max_term_seconds,
+            sub_vault.max_ltv_bps,
+            sub_vault.liquidation_ltv_bps,
+            sub_vault.curator_fee_bps,
         )
     };
 
@@ -150,7 +150,7 @@ pub fn process_place_order_for_sub_vault(
                     fixed: da.fixed,
                     dynamic: da.dynamic,
                 };
-                market_ref.claim_seat_with_profile(
+                market_ref.claim_seat_with_sub_vault(
                     &vault_key,
                     OWNER_KIND_SUB_VAULT,
                     params.sub_vault_id,
@@ -213,10 +213,10 @@ pub fn process_place_order_for_sub_vault(
             params.sub_vault_id,
             rate_bps,
             term_seconds,
-            profile_curator_fee_bps,
+            sub_vault_curator_fee_bps,
             *curator.info.key,
-            profile_max_ltv_bps,
-            profile_liquidation_ltv_bps,
+            sub_vault_max_ltv_bps,
+            sub_vault_liquidation_ltv_bps,
             now,
             u32::MAX,
         )?;
@@ -297,8 +297,8 @@ pub(crate) fn take_resting_bids<'a, 'info>(
     ask_term_seconds: u32,
     ask_curator_fee_bps: u16,
     ask_curator: Pubkey,
-    profile_max_ltv_bps: u16,
-    profile_liquidation_ltv_bps: u16,
+    sub_vault_max_ltv_bps: u16,
+    sub_vault_liquidation_ltv_bps: u16,
     now: i64,
     max_fills: u32,
 ) -> Result<crate::state::market_helpers::MatchRestingBidsResult, solana_program::program_error::ProgramError>
@@ -361,8 +361,8 @@ pub(crate) fn take_resting_bids<'a, 'info>(
             ask_term_seconds,
             ask_curator_fee_bps,
             ask_curator,
-            profile_max_ltv_bps,
-            profile_liquidation_ltv_bps,
+            sub_vault_max_ltv_bps,
+            sub_vault_liquidation_ltv_bps,
             fee_floor_bps,
             origination_bps,
             now_unix_ts: now,

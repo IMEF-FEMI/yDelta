@@ -14,7 +14,7 @@
  *     flags?: number
  *   }
  *   .local/markets.json
- *   .local/risk-profiles.json
+ *   .local/sub-vaults.json
  *   .local/curators.json
  *
  * The curator key is loaded from `curators.json` via the sub-vault's
@@ -45,7 +45,7 @@ interface Input {
 async function main(): Promise<void> {
   const input = readJson<Input>('vault-place-ask-input.json');
   const markets = readJson<Record<string, MarketDump>>('markets.json');
-  const subVaults = readJson<Record<string, SubVaultDump[]>>('risk-profiles.json');
+  const subVaults = readJson<Record<string, SubVaultDump[]>>('sub-vaults.json');
   const curators = readJson<CuratorDump[]>('curators.json');
 
   const market = markets[input.marketLabel];

@@ -96,7 +96,7 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
       maxTermSeconds: TERM_SECONDS,
     });
 
-    // Depositor funds the profile.
+    // Depositor funds the subVault.
     depositor = await bk.fundedKeypair();
     depositorUsdcAta = Keypair.generate().publicKey;
     await bk.putTokenAccount({
@@ -229,7 +229,7 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
       [borrower],
     );
 
-    // Vault profile state: match-time bookkeeping bumps encumbered, NOT
+    // Vault subVault state: match-time bookkeeping bumps encumbered, NOT
     // deployed. Atoms physically stay in the vault's marginfi integration
     // account until the cranker promotes the queue node to a real Loan PDA.
     const [vaultPda] = globalVaultPda(USDC_BANK);
@@ -271,8 +271,8 @@ describe('e2e: borrower IOC bid crosses curator vault ask', () => {
     expect(m.asks).toHaveLength(1);
     expect(m.asks[0].order.rateBps).toBe(askRateBps);
     expect(m.asks[0].order.termSeconds).toBe(TERM_SECONDS);
-    // Profile is the ONLY one in the vault and the seat invariant holds:
-    // post-cross profile state is what the match-engine writes — no
+    // SubVault is the ONLY one in the vault and the seat invariant holds:
+    // post-cross subVault state is what the match-engine writes — no
     // collateral or debt counters touched until the cranker promotes.
     expect(vault.depositorSeats).toHaveLength(1); // the original depositor
   });

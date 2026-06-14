@@ -86,7 +86,7 @@ async fn protocol_accumulates_origination_fee_on_fixed_match() {
         "no fees accrued yet"
     );
 
-    // ── Quote-only match: vault profile rests an ask, borrower bids. ──
+    // ── Quote-only match: vault sub_vault rests an ask, borrower bids. ──
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
     let curator = fixture.create_trader().await;

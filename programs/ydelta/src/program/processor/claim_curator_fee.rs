@@ -63,23 +63,23 @@ pub fn process_claim_curator_fee(
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
         let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "sub_vault_id {} not found",
             params.sub_vault_id
         )?;
-        let profile = get_helper_sub_vault(dynamic, profile_idx).get_value();
+        let sub_vault = get_helper_sub_vault(dynamic, sub_vault_idx).get_value();
         require!(
-            *payer.info.key == profile.curator,
+            *payer.info.key == sub_vault.curator,
             YdeltaError::VaultCuratorRequired,
             "claim_curator_fee: signer is not sub_vault.curator"
         )?;
-        profile.accumulated_curator_fee_atoms
+        sub_vault.accumulated_curator_fee_atoms
     };
 
     if fee_atoms == 0 {
@@ -180,13 +180,13 @@ pub fn process_claim_curator_fee(
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
         let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
-        if profile_idx != NIL {
-            let profile_node = get_mut_helper_sub_vault(dynamic, profile_idx);
-            let acc = &mut profile_node.get_mut_value().accumulated_curator_fee_atoms;
+        if sub_vault_idx != NIL {
+            let sub_vault_node = get_mut_helper_sub_vault(dynamic, sub_vault_idx);
+            let acc = &mut sub_vault_node.get_mut_value().accumulated_curator_fee_atoms;
 
             *acc = acc.saturating_sub(payout_atoms);
         }

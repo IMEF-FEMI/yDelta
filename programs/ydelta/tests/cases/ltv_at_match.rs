@@ -7,7 +7,7 @@
 //! In the quote-only model the lender is a vault sub-vault resting
 //! an unbounded ask; the borrower crosses it with an IOC bid carrying
 //! `collateral_atoms`. The gate checks
-//! `actual_ltv <= profile.max_ltv_bps` at live oracle prices.
+//! `actual_ltv <= sub_vault.max_ltv_bps` at live oracle prices.
 //!
 //! The market is USDC(6-dec) debt / wSOL(9-dec) collateral. The
 //! required-collateral helper normalizes for the 3-decimal gap. These
@@ -88,7 +88,7 @@ async fn match_passes_with_overcollateralized_bid() {
     // USDC(6 dec) debt / wSOL(9 dec) collateral. Compute the TRUE
     // requirement to back $1 (1_000_000 atoms) of USDC debt, then post
     // 5× that — comfortably over-collateralized and well under the
-    // profile's 80% max_ltv cap.
+    // sub_vault's 80% max_ltv cap.
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
@@ -143,10 +143,10 @@ async fn match_passes_with_overcollateralized_bid() {
     // Match landed.
     let market = fixture.read_market_fixed().await;
     assert_eq!(market.matched_loan_sequence, 1);
-    // Vault profile encumbered for exactly the matched principal —
+    // Vault sub_vault encumbered for exactly the matched principal —
     // the cross fully filled.
-    let profile = fixture.read_sub_vault(1).await;
-    assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
+    let sub_vault = fixture.read_sub_vault(1).await;
+    assert_eq!(sub_vault.encumbered_in_orders_atoms, principal_atoms);
     fixture.assert_vault_idle_invariant(1).await;
 }
 
@@ -215,9 +215,9 @@ async fn undercollateralized_bid_is_skipped_not_filled() {
     // No match landed and nothing was reserved on the sub-vault.
     let market = fixture.read_market_fixed().await;
     assert_eq!(market.matched_loan_sequence, 0);
-    let profile = fixture.read_sub_vault(1).await;
-    assert_eq!(profile.encumbered_in_orders_atoms, 0);
-    assert_eq!(profile.open_loans_count, 0);
+    let sub_vault = fixture.read_sub_vault(1).await;
+    assert_eq!(sub_vault.encumbered_in_orders_atoms, 0);
+    assert_eq!(sub_vault.open_loans_count, 0);
     // The dropped residual released the borrower's collateral.
     let seat = fixture.read_seat(&bob.pubkey()).await;
     assert_eq!(seat.collateral_encumbered_shares, 0);

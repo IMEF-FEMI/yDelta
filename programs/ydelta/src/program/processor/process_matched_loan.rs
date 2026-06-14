@@ -452,31 +452,31 @@ fn do_vault_settle<'a, 'info>(
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
         let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "sub_vault_id {} not found during vault settlement",
             sub_vault_id
         )?;
-        let profile_node = get_mut_helper_sub_vault(dynamic, profile_idx);
-        let profile = profile_node.get_mut_value();
+        let sub_vault_node = get_mut_helper_sub_vault(dynamic, sub_vault_idx);
+        let sub_vault = sub_vault_node.get_mut_value();
 
         let share_value_fp48 =
             crate::state::vault::read_bank_asset_share_value_fp48(debt_bank.info)?;
-        crate::state::vault::accrue_sub_vault(profile, now_unix_ts, share_value_fp48)?;
+        crate::state::vault::accrue_sub_vault(sub_vault, now_unix_ts, share_value_fp48)?;
 
-        profile.deployed_principal_atoms = profile
+        sub_vault.deployed_principal_atoms = sub_vault
             .deployed_principal_atoms
             .checked_add(principal_atoms)
             .ok_or(ProgramError::ArithmeticOverflow)?;
         let weighted_delta: u128 = (principal_atoms as u128)
             .checked_mul(lender_rate_bps as u128)
             .ok_or(crate::program::YdeltaError::MathOverflow)?;
-        profile.total_weighted_rate_bps = profile
+        sub_vault.total_weighted_rate_bps = sub_vault
             .total_weighted_rate_bps
             .checked_add(weighted_delta)
             .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -487,25 +487,25 @@ fn do_vault_settle<'a, 'info>(
             crate::state::loan::BPS_PER_UNIT as u128,
             false,
         )?;
-        profile.total_weighted_net_rate_bps = profile
+        sub_vault.total_weighted_net_rate_bps = sub_vault
             .total_weighted_net_rate_bps
             .checked_add(net_weighted_delta)
             .ok_or(ProgramError::ArithmeticOverflow)?;
-        profile.encumbered_in_orders_atoms = profile
+        sub_vault.encumbered_in_orders_atoms = sub_vault
             .encumbered_in_orders_atoms
             .checked_sub(principal_atoms)
             .ok_or(ProgramError::ArithmeticOverflow)?;
 
         if surplus_atoms > 0 {
-            profile.total_principal_atoms = profile
+            sub_vault.total_principal_atoms = sub_vault
                 .total_principal_atoms
                 .checked_sub(surplus_atoms)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            profile.total_assets_atoms = profile
+            sub_vault.total_assets_atoms = sub_vault
                 .total_assets_atoms
                 .checked_sub(surplus_atoms)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            crate::state::vault::restore_assets_principal_invariant(profile);
+            crate::state::vault::restore_assets_principal_invariant(sub_vault);
         }
     }
 

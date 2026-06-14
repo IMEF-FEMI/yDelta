@@ -44,7 +44,7 @@ export function ydeltaIx(
 
 /**
  * Heavy ixs (PlaceOrder, ProcessMatchedLoan, LiquidateLoan, SettleMaturedLoan,
- * ClaimRepaymentForRiskProfile) need the BPF CU limit raised. Callers compose
+ * ClaimRepaymentForSubVault) need the BPF CU limit raised. Callers compose
  * the budget ix at the head of their tx — this helper returns it precomputed.
  */
 export function cuBudgetIx(limit: number = HEAVY_IX_CU_LIMIT): TransactionInstruction {

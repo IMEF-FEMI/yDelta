@@ -305,7 +305,7 @@
                 "bank_config_view",
                 "borrower_ltv",
                 "claim_repayment",
-                "claim_repayment_for_risk_profile",
+                "claim_repayment_for_sub_vault",
                 "claim_seat",
                 "convert_p2pool_to_fixed",
                 "create_market",
@@ -322,16 +322,16 @@
                 "place_order",
                 "process_matched_loan",
                 "repay",
-                "secondary_cross_to_risk_profile",
+                "secondary_cross_to_sub_vault",
                 "secondary_lifecycle",
                 "secondary_orders",
                 "self_match",
-                "sync_market_seats_for_risk_profile",
+                "sync_market_seats_for_sub_vault",
                 "user_account",
                 "vault",
                 "vault_e2e",
                 "vault_match",
-                "vault_multi_profile"
+                "vault_multi_sub_vault"
             ]
         }
     ]

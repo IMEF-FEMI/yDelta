@@ -1,7 +1,7 @@
 //! `GlobalVaultDeposit` instruction. Lender deposits atoms into a risk
-//! profile, minting sub-vault shares pro-rata against
-//! `profile.total_assets_atoms`. Atoms route through the vault staging
-//! account into marginfi. Rejects when `profile.is_sunset != 0`.
+//! sub_vault, minting sub-vault shares pro-rata against
+//! `sub_vault.total_assets_atoms`. Atoms route through the vault staging
+//! account into marginfi. Rejects when `sub_vault.is_sunset != 0`.
 
 use std::cell::RefMut;
 
@@ -37,7 +37,7 @@ pub struct GlobalVaultDepositParams {
 }
 
 /// Deposit atoms into a sub-vault and mint pro-rata shares. Accrues
-/// the profile, computes shares against `total_assets_atoms`, updates
+/// the sub_vault, computes shares against `total_assets_atoms`, updates
 /// the depositor seat + `UserAccountFixed` vault position, and emits
 /// `GlobalVaultDepositLog`. Errors with `SubVaultSunset` when sunset.
 pub fn process_global_vault_deposit(
@@ -153,31 +153,31 @@ pub fn process_global_vault_deposit(
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
         let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "sub_vault_id {} not found in vault",
             params.sub_vault_id
         )?;
 
         let (shares, total_shares_after, total_assets_after, snapshot_supply, snapshot_delta) = {
-            let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
+            let sub_vault = get_mut_helper_sub_vault(dynamic, sub_vault_idx).get_mut_value();
             // Private sub-vaults accept deposits only from their
             // owner (the curator).
             require!(
-                profile.kind != crate::state::vault::SUB_VAULT_KIND_PRIVATE
-                    || profile.curator == *payer.info.key,
+                sub_vault.kind != crate::state::vault::SUB_VAULT_KIND_PRIVATE
+                    || sub_vault.curator == *payer.info.key,
                 YdeltaError::VaultCuratorRequired,
                 "global_vault_deposit: sub_vault_id {} is Private; only its \
                  owner may deposit",
                 params.sub_vault_id
             )?;
             require!(
-                profile.is_sunset == 0,
+                sub_vault.is_sunset == 0,
                 YdeltaError::SubVaultSunset,
                 "global_vault_deposit: sub_vault_id {} is sunset; new deposits are rejected \
                  during wind-down (existing depositors may still withdraw)",
@@ -185,24 +185,24 @@ pub fn process_global_vault_deposit(
             )?;
             let share_value_fp48 =
                 crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info)?;
-            accrue_sub_vault(profile, now, share_value_fp48)?;
+            accrue_sub_vault(sub_vault, now, share_value_fp48)?;
 
             let atoms_u128 = credited_atoms as u128;
-            let shares: u128 = if profile.total_shares == 0 {
-                profile.total_assets_atoms = 0;
+            let shares: u128 = if sub_vault.total_shares == 0 {
+                sub_vault.total_assets_atoms = 0;
                 atoms_u128
             } else {
                 require!(
-                    profile.total_assets_atoms != 0,
+                    sub_vault.total_assets_atoms != 0,
                     YdeltaError::InvalidArgument,
-                    "profile fully impaired (0 assets, {} shares) — deposits disabled \
+                    "sub_vault fully impaired (0 assets, {} shares) — deposits disabled \
                      until existing shares are burned",
-                    { profile.total_shares }
+                    { sub_vault.total_shares }
                 )?;
                 crate::math::mul_div(
                     atoms_u128,
-                    profile.total_shares,
-                    profile.total_assets_atoms as u128,
+                    sub_vault.total_shares,
+                    sub_vault.total_assets_atoms as u128,
                     false,
                 )?
             };
@@ -214,24 +214,24 @@ pub fn process_global_vault_deposit(
                 received_atoms
             )?;
 
-            profile.total_shares = profile
+            sub_vault.total_shares = sub_vault
                 .total_shares
                 .checked_add(shares)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            profile.total_principal_atoms = profile
+            sub_vault.total_principal_atoms = sub_vault
                 .total_principal_atoms
                 .checked_add(credited_atoms)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            profile.total_assets_atoms = profile
+            sub_vault.total_assets_atoms = sub_vault
                 .total_assets_atoms
                 .checked_add(credited_atoms)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
             (
                 shares,
-                profile.total_shares,
-                profile.total_assets_atoms,
-                profile.cumulative_supply_yield_index_scaled,
-                profile.cumulative_delta_yield_index_scaled,
+                sub_vault.total_shares,
+                sub_vault.total_assets_atoms,
+                sub_vault.cumulative_supply_yield_index_scaled,
+                sub_vault.cumulative_delta_yield_index_scaled,
             )
         };
 
@@ -273,10 +273,10 @@ pub fn process_global_vault_deposit(
         global_vault: vault_key,
         depositor: *payer.info.key,
         shares_minted,
-        profile_total_shares: total_shares_after,
+        sub_vault_total_shares: total_shares_after,
         atoms_in: received_atoms,
         gain_atoms: 0,
-        profile_total_assets_atoms: total_assets_after,
+        sub_vault_total_assets_atoms: total_assets_after,
         sub_vault_id: params.sub_vault_id,
         _padding: [0; 6],
     })?;

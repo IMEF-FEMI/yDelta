@@ -16,7 +16,7 @@ import { InstructionTag } from './_tags.js';
  * `encumberedInOrdersAtoms`, `accumulatedCuratorFeeAtoms` — must be zero or
  * the ix rejects with `SubVaultNotEmpty`.
  *
- * The freed block returns to the vault's profile free list; `subVaultCount`
+ * The freed block returns to the vault's subVault free list; `subVaultCount`
  * decrements. The vault's `nextSubVaultId` counter is **not** touched: once
  * a `subVaultId` has been used in a vault it is never re-issued, so
  * historical loan references stay unambiguous.

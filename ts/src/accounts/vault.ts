@@ -42,7 +42,7 @@ export interface GlobalVaultHeader {
   subVaultsRootIndex: number;
   claimedSeatsRootIndex: number;
   marketOrdersRootIndex: number;
-  profileFreeListHeadIndex: number;
+  subVaultFreeListHeadIndex: number;
   nodeFreeListHeadIndex: number;
   numBytesAllocated: number;
   subVaultCount: number;
@@ -93,7 +93,7 @@ export function decodeGlobalVaultHeader(data: Uint8Array | Buffer): GlobalVaultH
     subVaultsRootIndex: readU32(dv, 200),
     claimedSeatsRootIndex: readU32(dv, 204),
     marketOrdersRootIndex: readU32(dv, 208),
-    profileFreeListHeadIndex: readU32(dv, 212),
+    subVaultFreeListHeadIndex: readU32(dv, 212),
     nodeFreeListHeadIndex: readU32(dv, 216),
     numBytesAllocated: readU32(dv, 220),
     subVaultCount: readU16(dv, 224),
@@ -155,8 +155,8 @@ export function* iterMarketOrders(
   }
 }
 
-export function iterProfileFreeList(data: Uint8Array | Buffer, headIndex?: number): Iterable<number> {
-  const head = headIndex ?? decodeGlobalVaultHeader(data).profileFreeListHeadIndex;
+export function iterSubVaultFreeList(data: Uint8Array | Buffer, headIndex?: number): Iterable<number> {
+  const head = headIndex ?? decodeGlobalVaultHeader(data).subVaultFreeListHeadIndex;
   return walkFreeList(vaultDynamicRegion(data), head);
 }
 

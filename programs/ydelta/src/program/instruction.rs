@@ -39,7 +39,7 @@ pub enum YdeltaInstruction {
 
     /// Borrower-side repay against a `LoanFixed`. Pays atoms from the
     /// borrower's debt ATA. Full repay closes the loan PDA and folds
-    /// the close-out accounting into the lender vault profile in-place.
+    /// the close-out accounting into the lender vault sub_vault in-place.
     Repay = 6,
 
     /// Permissionless: copy a market `ClaimedSeat`'s balances onto the
@@ -100,7 +100,7 @@ pub enum YdeltaInstruction {
 
     /// Permissionless: sweep a sub-vault's `pending_claim_atoms` from the
     /// per-market `lender_marginfi_account` back into the vault's own
-    /// `integration_account` (one-way profile → vault sweeper).
+    /// `integration_account` (one-way sub_vault → vault sweeper).
     ClaimRepaymentForSubVault = 20,
 
     /// Initiate market-admin handoff (two-step transfer). Signer must
@@ -169,12 +169,12 @@ pub enum YdeltaInstruction {
     /// state via the sunset wind-down workflow before invoking remove.
     RemoveSubVault = 37,
 
-    /// Vault-admin gated: flip `profile.is_sunset = 1`. Disables new
-    /// deposits / orders / order updates / matches against the profile,
+    /// Vault-admin gated: flip `sub_vault.is_sunset = 1`. Disables new
+    /// deposits / orders / order updates / matches against the sub_vault,
     /// while withdrawals and curator-side cleanups remain enabled.
     SunsetSubVault = 38,
 
-    /// Vault-admin gated: flip `profile.is_sunset = 0`. Reverses
+    /// Vault-admin gated: flip `sub_vault.is_sunset = 0`. Reverses
     /// `SunsetSubVault` (admin escape hatch).
     ResumeSubVault = 39,
 

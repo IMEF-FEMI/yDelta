@@ -17,7 +17,7 @@ import { InstructionTag } from './_tags.js';
 
 /**
  * Tag 33 — `ConvertP2PoolToFixed`. Borrower-initiated. Walks the asks tree
- * and crosses every compatible vault risk-profile ask whose `rate_bps ≤
+ * and crosses every compatible vault risk-subVault ask whose `rate_bps ≤
  * maxAcceptableRateBps` AND `term_seconds ≥ remaining_term`. Each cross
  * emits a fresh Fixed `MatchedLoan` queue node; unfilled residual stays
  * on the P2Pool loan body. The P2Pool PDA closes only when the live

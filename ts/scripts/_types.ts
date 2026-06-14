@@ -67,14 +67,14 @@ export function resolveCuratorForSubVault(
   subVaultId: number,
 ): CuratorDump {
   const arr = subVaults[mint];
-  if (!arr) throw new Error(`risk-profiles.json: no entries for mint ${mint}`);
+  if (!arr) throw new Error(`sub-vaults.json: no entries for mint ${mint}`);
   const sv = arr.find((x) => x.subVaultId === subVaultId);
-  if (!sv) throw new Error(`risk-profiles.json[${mint}]: no subVaultId=${subVaultId}`);
+  if (!sv) throw new Error(`sub-vaults.json[${mint}]: no subVaultId=${subVaultId}`);
   const c = curators.find((x) => x.pubkey === sv.curator);
   if (!c) {
     throw new Error(
       `curators.json: no curator with pubkey ${sv.curator} (subVaultId=${subVaultId}). ` +
-      `Did curators.json get regenerated after risk-profiles.json was written?`,
+      `Did curators.json get regenerated after sub-vaults.json was written?`,
     );
   }
   return c;

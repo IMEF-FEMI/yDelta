@@ -13,7 +13,7 @@
 //!      there (released only at repay/settle/liquidate), and bumps
 //!      `open_borrow_count` once per loan created. A *dropped* residual
 //!      (OB_ONLY / empty book) is the one case that returns to withdrawable.
-//!   2. Vault side: the crossed profile's
+//!   2. Vault side: the crossed sub_vault's
 //!      `encumbered_in_orders_atoms` is bumped by exactly the matched
 //!      principal, and `total_principal_atoms` is untouched until the
 //!      cranker settles.
@@ -24,7 +24,7 @@ use crate::test_utils::{mainnet, MarketFixture};
 
 /// A borrower bid fully matched by a vault ask: the matched collateral
 /// stays in the borrower seat's `encumbered` bucket (it backs the open
-/// loan), `open_borrow_count` ticks to 1, and the vault profile records
+/// loan), `open_borrow_count` ticks to 1, and the vault sub_vault records
 /// the matched principal as encumbered.
 #[tokio::test]
 async fn borrower_encumbrance_retained_on_full_match() {
@@ -56,7 +56,7 @@ async fn borrower_encumbrance_retained_on_full_match() {
     fixture.refresh_blockhash().await;
     // No claim-seat step — the vault market-seat is auto-created on the
     // curator's first place_order_for_sub_vault. The ask is
-    // unbounded; each cross is capped by the profile's idle balance.
+    // unbounded; each cross is capped by the sub_vault's idle balance.
     fixture
         .place_order_for_sub_vault(&curator, 1, /*rate_bps=*/ 500, 30 * 86_400, 0)
         .await
@@ -123,20 +123,20 @@ async fn borrower_encumbrance_retained_on_full_match() {
         "one Fixed cross created one open loan → open_borrow_count == 1"
     );
 
-    // Vault side: the crossed profile is encumbered by exactly the
+    // Vault side: the crossed sub_vault is encumbered by exactly the
     // matched principal; total principal is untouched (atoms migrate
     // only when the cranker settles).
-    let profile = fixture.read_sub_vault(1).await;
+    let sub_vault = fixture.read_sub_vault(1).await;
     assert_eq!(
-        profile.encumbered_in_orders_atoms, principal_atoms,
-        "vault profile encumbered for exactly the matched principal"
+        sub_vault.encumbered_in_orders_atoms, principal_atoms,
+        "vault sub_vault encumbered for exactly the matched principal"
     );
     assert_eq!(
-        profile.total_principal_atoms, 99_999_999,
+        sub_vault.total_principal_atoms, 99_999_999,
         "total_principal_atoms unchanged until the cranker settles"
     );
     assert_eq!(
-        profile.deployed_principal_atoms, 0,
+        sub_vault.deployed_principal_atoms, 0,
         "deployed_principal_atoms only bumps when the cranker settles"
     );
     // Matched-collateral conservation: Σ MatchedLoan.collateral_atoms

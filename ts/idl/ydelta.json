@@ -894,7 +894,7 @@
     { "code": 24, "name": "CollateralBelowMatchLTV" },
     { "code": 25, "name": "VaultWrongMint" },
     { "code": 26, "name": "SubVaultNotFound" },
-    { "code": 28, "name": "VaultOrderTermExceedsProfileMax" },
+    { "code": 28, "name": "VaultOrderTermExceedsSubVaultMax" },
     { "code": 29, "name": "VaultCuratorRequired" },
     { "code": 30, "name": "VaultAdminRequired" },
     { "code": 32, "name": "SubVaultOrderExists" },

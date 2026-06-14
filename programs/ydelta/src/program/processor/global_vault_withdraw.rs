@@ -116,18 +116,18 @@ pub fn process_global_vault_withdraw(
         tree.lookup_index(&probe)
     };
 
-    let (atoms_out, new_total_shares, mut profile_total_assets_after, _) = {
+    let (atoms_out, new_total_shares, mut sub_vault_total_assets_after, _) = {
         let data: &mut RefMut<&mut [u8]> = &mut vault.info.try_borrow_mut_data()?;
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
 
         let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "sub_vault_id {} not found in vault",
             params.sub_vault_id
@@ -140,14 +140,14 @@ pub fn process_global_vault_withdraw(
         let mfi_atoms: u64 =
             MarginfiV18Adapter.shares_to_amount(&[lending_pool.info.clone()], mfi_asset_shares)?;
 
-        let profile_node = get_mut_helper_sub_vault(dynamic, profile_idx);
-        let profile = profile_node.get_mut_value();
+        let sub_vault_node = get_mut_helper_sub_vault(dynamic, sub_vault_idx);
+        let sub_vault = sub_vault_node.get_mut_value();
         // Private sub-vaults pay out only to their owner. (The
         // depositor-seat key already scopes shares to the signer; this is
         // defense-in-depth so a stray Private seat can never exist.)
         require!(
-            profile.kind != crate::state::vault::SUB_VAULT_KIND_PRIVATE
-                || profile.curator == *payer.info.key,
+            sub_vault.kind != crate::state::vault::SUB_VAULT_KIND_PRIVATE
+                || sub_vault.curator == *payer.info.key,
             YdeltaError::VaultCuratorRequired,
             "global_vault_withdraw: sub_vault_id {} is Private; only its \
              owner may withdraw",
@@ -156,42 +156,42 @@ pub fn process_global_vault_withdraw(
 
         let share_value_fp48 =
             crate::state::vault::read_bank_asset_share_value_fp48(lending_pool.info)?;
-        accrue_sub_vault(profile, now, share_value_fp48)?;
+        accrue_sub_vault(sub_vault, now, share_value_fp48)?;
 
         let principal_decrement: u64 = u64::try_from(crate::math::mul_div(
             params.shares_to_burn,
-            profile.total_principal_atoms as u128,
-            profile.total_shares,
+            sub_vault.total_principal_atoms as u128,
+            sub_vault.total_shares,
             false,
         )?)
         .map_err(|_| crate::program::YdeltaError::MathOverflow)?;
 
         require!(
-            principal_decrement > 0 || profile.total_assets_atoms == 0,
+            principal_decrement > 0 || sub_vault.total_assets_atoms == 0,
             YdeltaError::InvalidArgument,
             "computed payout is 0 — shares too small to redeem any atoms"
         )?;
 
-        let burns_last_share: bool = profile.total_shares == params.shares_to_burn;
+        let burns_last_share: bool = sub_vault.total_shares == params.shares_to_burn;
         let atoms_out = if burns_last_share {
             principal_decrement.min(mfi_atoms)
         } else {
             principal_decrement
         };
 
-        let profile_idle: u64 = profile
+        let sub_vault_idle: u64 = sub_vault
             .total_principal_atoms
-            .saturating_sub(profile.deployed_principal_atoms)
-            .saturating_sub(profile.encumbered_in_orders_atoms);
+            .saturating_sub(sub_vault.deployed_principal_atoms)
+            .saturating_sub(sub_vault.encumbered_in_orders_atoms);
         require!(
-            profile_idle >= atoms_out,
+            sub_vault_idle >= atoms_out,
             YdeltaError::VaultInsufficientIdleAtoms,
-            "profile idle ({} = total_principal {} − deployed {} − encumbered {}) \
+            "sub_vault idle ({} = total_principal {} − deployed {} − encumbered {}) \
              < atoms_out ({}) — wait for loans to close or orders to cancel",
-            profile_idle,
-            { profile.total_principal_atoms },
-            { profile.deployed_principal_atoms },
-            { profile.encumbered_in_orders_atoms },
+            sub_vault_idle,
+            { sub_vault.total_principal_atoms },
+            { sub_vault.deployed_principal_atoms },
+            { sub_vault.encumbered_in_orders_atoms },
             atoms_out
         )?;
 
@@ -205,34 +205,34 @@ pub fn process_global_vault_withdraw(
 
         if burns_last_share {
             require!(
-                profile.deployed_principal_atoms == 0 && profile.encumbered_in_orders_atoms == 0,
+                sub_vault.deployed_principal_atoms == 0 && sub_vault.encumbered_in_orders_atoms == 0,
                 YdeltaError::VaultInsufficientIdleAtoms,
                 "cannot burn the last vault share while capital is in flight \
                  (deployed {} + encumbered {} > 0) — wait for loans to close \
                  and orders to cancel",
-                { profile.deployed_principal_atoms },
-                { profile.encumbered_in_orders_atoms }
+                { sub_vault.deployed_principal_atoms },
+                { sub_vault.encumbered_in_orders_atoms }
             )?;
         }
 
-        profile.total_shares = profile
+        sub_vault.total_shares = sub_vault
             .total_shares
             .checked_sub(params.shares_to_burn)
             .ok_or(ProgramError::ArithmeticOverflow)?;
 
-        profile.total_assets_atoms = profile
+        sub_vault.total_assets_atoms = sub_vault
             .total_assets_atoms
             .checked_sub(atoms_out)
             .ok_or(ProgramError::ArithmeticOverflow)?;
-        profile.total_principal_atoms = profile
+        sub_vault.total_principal_atoms = sub_vault
             .total_principal_atoms
             .checked_sub(atoms_out)
             .ok_or(ProgramError::ArithmeticOverflow)?;
 
         (
             atoms_out,
-            profile.total_shares,
-            profile.total_assets_atoms,
+            sub_vault.total_shares,
+            sub_vault.total_assets_atoms,
             atoms_out,
         )
     };
@@ -274,15 +274,15 @@ pub fn process_global_vault_withdraw(
         let (fixed_bytes, dynamic) = data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &mut GlobalVaultFixed = bytemuck::from_bytes_mut(fixed_bytes);
         let probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
-        if profile_idx != NIL {
-            let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
-            profile.total_assets_atoms = 0;
-            profile.total_principal_atoms = 0;
-            profile_total_assets_after = profile.total_assets_atoms;
+        if sub_vault_idx != NIL {
+            let sub_vault = get_mut_helper_sub_vault(dynamic, sub_vault_idx).get_mut_value();
+            sub_vault.total_assets_atoms = 0;
+            sub_vault.total_principal_atoms = 0;
+            sub_vault_total_assets_after = sub_vault.total_assets_atoms;
         }
     }
 
@@ -374,9 +374,9 @@ pub fn process_global_vault_withdraw(
         global_vault: vault_key,
         depositor: *payer.info.key,
         shares_burned: params.shares_to_burn,
-        profile_total_shares: new_total_shares,
+        sub_vault_total_shares: new_total_shares,
         atoms_out: payout_atoms,
-        profile_total_assets_atoms: profile_total_assets_after,
+        sub_vault_total_assets_atoms: sub_vault_total_assets_after,
         sub_vault_id: params.sub_vault_id,
         _padding: [0; 14],
     })?;

@@ -6,7 +6,7 @@
  * cross and falls back to `marginfi.borrow` on the borrower-side marginfi
  * account for the full residual.
  *
- *   1. Global config + market (no vault / no profile).
+ *   1. Global config + market (no vault / no subVault).
  *   2. Borrower: claim seat + deposit wSOL collateral.
  *   3. Borrower: PlaceOrder with `flags = 0`, no asks on book.
  *      → marginfi.borrow fires → atoms land on `market.lender_integration`,

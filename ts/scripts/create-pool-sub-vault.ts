@@ -16,7 +16,7 @@
  *   .local/curators.json
  *
  * Writes (or extends):
- *   .local/risk-profiles.json   (keyed by mint; appends the new sub-vault)
+ *   .local/sub-vaults.json   (keyed by mint; appends the new sub-vault)
  *
  * ## sub_vault_id is program-assigned
  *
@@ -106,11 +106,11 @@ async function main(): Promise<void> {
   const sig = await sendIxs(conn, signer, [ix]);
   log(`[create-pool-sub-vault] signature = ${sig}`);
 
-  // Persist to risk-profiles.json (the canonical artifact downstream
+  // Persist to sub-vaults.json (the canonical artifact downstream
   // scripts read). Appends; does not deduplicate by content — the
   // operator is expected to invoke this script for a NEW sub-vault.
   const subVaultsByMint =
-    readJsonOptional<Record<string, SubVaultDump[]>>('risk-profiles.json') ?? {};
+    readJsonOptional<Record<string, SubVaultDump[]>>('sub-vaults.json') ?? {};
   const existing = subVaultsByMint[input.mint] ?? [];
   const created: SubVaultDump = {
     subVaultId: assignedSubVaultId,
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
   subVaultsByMint[input.mint] = [...existing, created].sort(
     (a, b) => a.subVaultId - b.subVaultId,
   );
-  writeJson('risk-profiles.json', subVaultsByMint);
+  writeJson('sub-vaults.json', subVaultsByMint);
 
   appendTxLog({
     script: 'create-pool-sub-vault',

@@ -8,7 +8,7 @@ import { InstructionTag } from './_tags.js';
 
 /**
  * Extra accounts required when the matched loan's lender is a vault risk
- * profile (i.e. the matched loan's `flags & VAULT_LENDER` is set).
+ * subVault (i.e. the matched loan's `flags & VAULT_LENDER` is set).
  * The cranker uses these to drain principal from the vault → market
  * during the primary-promote.
  */

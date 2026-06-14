@@ -57,20 +57,20 @@ pub fn process_cancel_order_for_sub_vault(
         let (fixed_bytes, dynamic) = vault_data.split_at(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
 
-        let profile_probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_probe = SubVault::new_empty(params.sub_vault_id, Pubkey::default(), 1, 1);
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
-            tree.lookup_index(&profile_probe)
+            tree.lookup_index(&sub_vault_probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "sub_vault_id {} not found",
             params.sub_vault_id
         )?;
-        let profile_node = crate::state::vault::get_helper_sub_vault(dynamic, profile_idx);
+        let sub_vault_node = crate::state::vault::get_helper_sub_vault(dynamic, sub_vault_idx);
         require!(
-            *curator.info.key == profile_node.get_value().curator,
+            *curator.info.key == sub_vault_node.get_value().curator,
             YdeltaError::VaultCuratorRequired,
             "cancel_order_for_sub_vault: signer is not sub_vault.curator"
         )?;

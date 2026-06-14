@@ -81,7 +81,7 @@ export {
   iterSubVaults,
   iterDepositorSeats,
   iterMarketOrders,
-  iterProfileFreeList,
+  iterSubVaultFreeList,
   iterNodeFreeList,
   vaultDynamicRegion,
   GLOBAL_VAULT_FIXED_SIZE,

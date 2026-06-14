@@ -1,5 +1,5 @@
 //! Builds the `YdeltaInstruction::SunsetSubVault` instruction: vault-admin
-//! flips `profile.is_sunset = 1`, disabling new deposits / orders / matches
+//! flips `sub_vault.is_sunset = 1`, disabling new deposits / orders / matches
 //! while leaving withdrawals and curator cleanups enabled.
 
 use borsh::BorshSerialize;

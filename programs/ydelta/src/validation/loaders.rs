@@ -2385,10 +2385,10 @@ impl<'a, 'info> GlobalVaultDepositContext<'a, 'info> {
     }
 }
 
-/// Account context for `GlobalVaultWithdraw` (tag 11). Burns profile
+/// Account context for `GlobalVaultWithdraw` (tag 11). Burns sub_vault
 /// shares, withdraws atoms from the vault's marginfi account to the
 /// depositor's ATA. Rejects burns that would drop idle below the per-
-/// profile gate.
+/// sub_vault gate.
 pub(crate) struct GlobalVaultWithdrawContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -3072,7 +3072,7 @@ impl<'a, 'info> RemoveSubVaultContext<'a, 'info> {
 }
 
 /// Account context for `SunsetSubVault` (tag 38). Vault-admin
-/// gated; flips `profile.is_sunset = 1`.
+/// gated; flips `sub_vault.is_sunset = 1`.
 pub(crate) struct SunsetSubVaultContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -3102,7 +3102,7 @@ impl<'a, 'info> SunsetSubVaultContext<'a, 'info> {
 }
 
 /// Account context for `ResumeSubVault` (tag 39). Vault-admin
-/// gated; flips `profile.is_sunset = 0`.
+/// gated; flips `sub_vault.is_sunset = 0`.
 pub(crate) struct ResumeSubVaultContext<'a, 'info> {
     pub _payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,
@@ -3241,8 +3241,8 @@ impl<'a, 'info> AcceptGlobalVaultAdminContext<'a, 'info> {
     }
 }
 
-/// Account context for `TransferCurator` (tag 25). Per-profile
-/// two-step handoff; gated on `signer == profile.curator`.
+/// Account context for `TransferCurator` (tag 25). Per-sub_vault
+/// two-step handoff; gated on `signer == sub_vault.curator`.
 pub(crate) struct TransferCuratorContext<'a, 'info> {
     pub payer: Signer<'a, 'info>,
     pub vault: YdeltaAccountInfo<'a, 'info, crate::state::vault::GlobalVaultFixed>,

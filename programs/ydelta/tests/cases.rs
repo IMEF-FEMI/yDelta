@@ -78,5 +78,5 @@ mod cases {
     #[cfg(feature = "test-sbf")]
     mod vault_match;
     #[cfg(feature = "test-sbf")]
-    mod vault_multi_profile;
+    mod vault_multi_sub_vault;
 }

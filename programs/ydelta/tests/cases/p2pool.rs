@@ -221,9 +221,9 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await; // borrower
 
-    // Lender side: a vault profile rests an unbounded ask, funded with
+    // Lender side: a vault sub_vault rests an unbounded ask, funded with
     // `deposit_atoms` (40 atoms) idle. The matching engine reserves
-    // `MARGINFI_ROUNDING_RESERVE_ATOMS = 1` per profile to absorb
+    // `MARGINFI_ROUNDING_RESERVE_ATOMS = 1` per sub_vault to absorb
     // marginfi v0.1.8's deposit-share-mint rounding tax — see the
     // doc-comment on that constant. The deposit itself also floors one
     // atom on the share mint, so the cross caps at
@@ -293,7 +293,7 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     );
 
     // Crank both queue nodes → two `LoanFixed` PDAs. The Fixed cross
-    // has a vault-profile lender → sub-vault cranker; the P2Pool
+    // has a vault-sub_vault lender → sub-vault cranker; the P2Pool
     // residual has no vault lender → plain cranker.
     fixture
         .crank_matched_loan_for_sub_vault(0)
@@ -302,7 +302,7 @@ async fn bid_partial_match_residual_p2pool_borrows() {
     fixture.refresh_blockhash().await;
     fixture.crank_matched_loan(1).await.unwrap();
 
-    // Loan 0: Fixed, vault profile as lender, sized to the vault's
+    // Loan 0: Fixed, vault sub_vault as lender, sized to the vault's
     // matchable idle (`deposit - MARGINFI_ROUNDING_RESERVE_ATOMS`).
     let loan_fixed = fixture.read_loan(0).await;
     assert_eq!(

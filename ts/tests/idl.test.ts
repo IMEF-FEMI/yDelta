@@ -18,7 +18,7 @@ describe('ydelta idl shape', () => {
     expect('optionalVaultSettleAccounts' in (processMatched as Record<string, unknown>)).toBe(false);
   });
 
-  it('exposes the v1 sub-vault instruction surface (no risk-profile names)', () => {
+  it('exposes the v1 sub-vault instruction surface (no legacy Profile names)', () => {
     const names = new Set(idl.instructions.map((ix) => ix.name));
     expect(names.has('ClaimRepaymentForSubVault')).toBe(true);
     expect(names.has('CreatePoolSubVault')).toBe(true);
@@ -29,9 +29,9 @@ describe('ydelta idl shape', () => {
     expect(names.has('CancelOrder')).toBe(true);
     expect(names.has('MatchCrank')).toBe(true);
     expect(names.has('UpdateOrder')).toBe(true);
-    // No legacy risk-profile names survive.
+    // No legacy Profile names survive.
     for (const name of names) {
-      expect(name).not.toMatch(/RiskProfile/);
+      expect(name).not.toMatch(/Profile/);
     }
   });
 
@@ -44,15 +44,15 @@ describe('ydelta idl shape', () => {
     expect(refund).toBeUndefined();
   });
 
-  it('renames the SubVault error family and adds FallbackLtvInsufficient (56)', () => {
+  it('renames the Profile error family and adds FallbackLtvInsufficient (56)', () => {
     const byCode = new Map(idl.errors.map((e) => [e.code, e.name]));
     expect(byCode.get(26)).toBe('SubVaultNotFound');
     expect(byCode.get(54)).toBe('SubVaultSunset');
     expect(byCode.get(55)).toBe('SubVaultNotSunset');
     expect(byCode.get(56)).toBe('FallbackLtvInsufficient');
-    // No error name still references the old risk-profile concept.
+    // No error name still references the old Profile concept.
     for (const e of idl.errors) {
-      expect(e.name).not.toMatch(/RiskProfile/);
+      expect(e.name).not.toMatch(/Profile/);
     }
   });
 });

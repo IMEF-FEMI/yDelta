@@ -221,14 +221,14 @@ export interface MatchLandedHandles {
 }
 
 /**
- * Driver: global config → market → vault → profile → vault deposit → curator
+ * Driver: global config → market → vault → subVault → vault deposit → curator
  * ask → borrower seat → borrower collateral deposit → borrower IOC bid that
  * crosses the ask. Returns the handles + the matched-loan sequence that the
  * cranker can promote in the next ix.
  *
  * Default parameters mirror the Rust `vault_ask_crossed_by_borrower_bid_full_fill`
  * integration test — tiny atom amounts so the LTV gate is trivially below
- * the 80% profile cap regardless of the dumped mainnet oracle prices. Pass
+ * the 80% subVault cap regardless of the dumped mainnet oracle prices. Pass
  * `overrides` when a test needs larger atoms (e.g. partial liquidation
  * requires `outstanding ≥ 1000 atoms`).
  */

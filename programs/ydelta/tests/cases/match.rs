@@ -4,10 +4,10 @@
 //! always a borrower IOC bid. These
 //! tests pin the cross mechanics — best-ask-first ordering, the
 //! term-incompatible walk-past, partial fills, and the vault-side
-//! match-time encumbrance bump — using one ask per (profile, market).
+//! match-time encumbrance bump — using one ask per (sub_vault, market).
 //!
 //! Setup mirrors `vault_match.rs`: a vault is funded, one or more risk
-//! profiles each post an open-ended ask, and a borrower bids to cross
+//! sub_vaults each post an open-ended ask, and a borrower bids to cross
 //! them.
 
 use solana_sdk::signer::Signer;
@@ -19,10 +19,10 @@ use crate::test_utils::{mainnet, MarketFixture};
 /// Returns the borrower keypair after seeding its wSOL collateral seat.
 ///
 /// Vault asks are unbounded in the quote-only model — each cross is
-/// capped only by the profile's live idle balance (`idle_atoms` here).
+/// capped only by the sub_vault's live idle balance (`idle_atoms` here).
 async fn vault_with_asks(
     fixture: &MarketFixture,
-    profile_specs: &[(u16, u32, u64)],
+    sub_vault_specs: &[(u16, u32, u64)],
 ) -> solana_sdk::signature::Keypair {
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
@@ -37,7 +37,7 @@ async fn vault_with_asks(
     fixture.refresh_blockhash().await;
     fixture.create_vault(&admin).await.unwrap();
 
-    for (i, (rate_bps, term_seconds, idle_atoms)) in profile_specs.iter().enumerate() {
+    for (i, (rate_bps, term_seconds, idle_atoms)) in sub_vault_specs.iter().enumerate() {
         let sub_vault_id = (i as u16) + 1;
         let curator = fixture.create_trader().await;
         fixture.refresh_blockhash().await;
@@ -97,7 +97,7 @@ async fn vault_with_asks(
 #[tokio::test]
 async fn match_partial_fill_leaves_vault_ask_resting() {
     let fixture = MarketFixture::new().await;
-    // Single profile, ask at 500bps / 30d.
+    // Single sub_vault, ask at 500bps / 30d.
     let borrower = vault_with_asks(&fixture, &[(500, 30 * 86_400, 100_000_000)]).await;
 
     // Bid for 1M atoms (vault ask is open-ended; only the bid size and
@@ -127,8 +127,8 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
     );
 
     // Vault encumbrance bumped by exactly the matched principal.
-    let profile = fixture.read_sub_vault(1).await;
-    assert_eq!(profile.encumbered_in_orders_atoms, principal_atoms);
+    let sub_vault = fixture.read_sub_vault(1).await;
+    assert_eq!(sub_vault.encumbered_in_orders_atoms, principal_atoms);
     // Borrower seat's collateral STAYS encumbered — it backs the open
     // loan and is released only at close. The single Fixed cross also
     // ticks `open_borrow_count` to 1.
@@ -147,11 +147,11 @@ async fn match_partial_fill_leaves_vault_ask_resting() {
         50_000_000,
         "Σ MatchedLoan.collateral_atoms == bid collateral"
     );
-    // Vault-idle invariant on the crossed profile.
+    // Vault-idle invariant on the crossed sub_vault.
     fixture.assert_vault_idle_invariant(1).await;
 }
 
-/// Three profiles post asks at 500 / 600 / 700 bps. A small borrower
+/// Three sub_vaults post asks at 500 / 600 / 700 bps. A small borrower
 /// bid must cross the *best* (lowest-rate) ask first — the matching
 /// engine walks the asks tree from `asks_best_index`, which under the
 /// `RestingOrder` Ord direction is the cheapest ask.
@@ -161,15 +161,15 @@ async fn match_picks_best_ask_first() {
     let borrower = vault_with_asks(
         &fixture,
         &[
-            (700, 30 * 86_400, 100_000_000), // profile 0 — worst rate
-            (500, 30 * 86_400, 100_000_000), // profile 1 — best rate
-            (600, 30 * 86_400, 100_000_000), // profile 2
+            (700, 30 * 86_400, 100_000_000), // sub_vault 0 — worst rate
+            (500, 30 * 86_400, 100_000_000), // sub_vault 1 — best rate
+            (600, 30 * 86_400, 100_000_000), // sub_vault 2
         ],
     )
     .await;
 
     // Bid 1M atoms at 800bps — crosses exactly one ask. The engine
-    // should hit profile 1 (500bps), the cheapest.
+    // should hit sub_vault 1 (500bps), the cheapest.
     fixture
         .place_order_with_flags(
             &borrower,
@@ -187,7 +187,7 @@ async fn match_picks_best_ask_first() {
     let market = fixture.read_market_fixed().await;
     assert_eq!(market.matched_loan_sequence, 1, "one fill");
 
-    // Only profile 1 (the 500bps ask) was encumbered.
+    // Only sub_vault 1 (the 500bps ask) was encumbered.
     let p0 = fixture.read_sub_vault(1).await;
     let p1 = fixture.read_sub_vault(2).await;
     let p2 = fixture.read_sub_vault(3).await;
@@ -204,7 +204,7 @@ async fn match_picks_best_ask_first() {
         50_000_000,
         "Σ MatchedLoan.collateral_atoms == bid collateral"
     );
-    // Vault-idle invariant must hold on every profile.
+    // Vault-idle invariant must hold on every sub_vault.
     fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(2).await;
@@ -219,14 +219,14 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
     let borrower = vault_with_asks(
         &fixture,
         &[
-            (500, 7 * 86_400, 100_000_000), // profile 0 — best rate, term too short
-            (700, 60 * 86_400, 100_000_000), // profile 1 — worse rate, long term
+            (500, 7 * 86_400, 100_000_000), // sub_vault 0 — best rate, term too short
+            (700, 60 * 86_400, 100_000_000), // sub_vault 1 — worse rate, long term
         ],
     )
     .await;
 
-    // Bid term = 30d. Profile 0's 7d ask is term-incompatible
-    // (bid_term 30d > ask_term 7d) → skipped. Profile 1's 60d ask
+    // Bid term = 30d. SubVault 0's 7d ask is term-incompatible
+    // (bid_term 30d > ask_term 7d) → skipped. SubVault 1's 60d ask
     // accepts it.
     fixture
         .place_order_with_flags(
@@ -245,7 +245,7 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
     let market = fixture.read_market_fixed().await;
     assert_eq!(
         market.matched_loan_sequence, 1,
-        "exactly one fill (profile 1)"
+        "exactly one fill (sub_vault 1)"
     );
 
     let p0 = fixture.read_sub_vault(1).await;
@@ -258,7 +258,7 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
         p1.encumbered_in_orders_atoms, 1_000_000,
         "compatible worse-rate ask must be crossed"
     );
-    // Vault-idle invariant on both profiles.
+    // Vault-idle invariant on both sub_vaults.
     fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
 }
@@ -268,7 +268,7 @@ async fn match_skips_term_incompatible_best_and_walks_on() {
 #[tokio::test]
 async fn match_sweeps_multiple_vault_asks() {
     let fixture = MarketFixture::new().await;
-    // Two profiles, both at the same rate/term — the bid crosses both.
+    // Two sub_vaults, both at the same rate/term — the bid crosses both.
     let borrower = vault_with_asks(
         &fixture,
         &[
@@ -278,9 +278,9 @@ async fn match_sweeps_multiple_vault_asks() {
     )
     .await;
 
-    // Each profile has only 50M idle. A 70M bid fully consumes
-    // profile 0's idle (50M) and partially fills profile 1 (20M);
-    // the unbounded asks let the bid sweep across both profiles.
+    // Each sub_vault has only 50M idle. A 70M bid fully consumes
+    // sub_vault 0's idle (50M) and partially fills sub_vault 1 (20M);
+    // the unbounded asks let the bid sweep across both sub_vaults.
     fixture
         .place_order_with_flags(
             &borrower,
@@ -303,10 +303,10 @@ async fn match_sweeps_multiple_vault_asks() {
         "the bid swept both vault asks — one MatchedLoan each"
     );
 
-    // Total encumbrance across the two profiles equals the bid size
-    // minus the matching engine's per-profile marginfi-rounding
-    // reserve (`MARGINFI_ROUNDING_RESERVE_ATOMS = 1`). Profile 0 was
-    // idle-capped at its 50M − 1 reserve = 49_999_999; profile 1
+    // Total encumbrance across the two sub_vaults equals the bid size
+    // minus the matching engine's per-sub_vault marginfi-rounding
+    // reserve (`MARGINFI_ROUNDING_RESERVE_ATOMS = 1`). SubVault 0 was
+    // idle-capped at its 50M − 1 reserve = 49_999_999; sub_vault 1
     // absorbs the remainder.
     use ydelta::state::market_helpers::MARGINFI_ROUNDING_RESERVE_ATOMS;
     let p0 = fixture.read_sub_vault(1).await;
@@ -320,13 +320,13 @@ async fn match_sweeps_multiple_vault_asks() {
     );
     assert_eq!(
         p0.encumbered_in_orders_atoms, p0_expected,
-        "profile 0 idle-capped at 50M minus the marginfi-rounding reserve"
+        "sub_vault 0 idle-capped at 50M minus the marginfi-rounding reserve"
     );
     assert_eq!(
         p1.encumbered_in_orders_atoms, p1_expected,
-        "profile 1 absorbs the residual after profile 0's reserved cap"
+        "sub_vault 1 absorbs the residual after sub_vault 0's reserved cap"
     );
-    // Vault-idle invariant must hold on both profiles after the
+    // Vault-idle invariant must hold on both sub_vaults after the
     // double-cross.
     fixture.assert_vault_idle_invariant(1).await;
     fixture.assert_vault_idle_invariant(1).await;
@@ -340,7 +340,7 @@ async fn match_sweeps_multiple_vault_asks() {
 /// `collateral_encumbered_shares` (un-withdrawable, unattributed to any
 /// loan). The matcher sweeps ALL remaining collateral into the last cross.
 ///
-/// Setup: two profiles split a 70M-atom bid 50M / 20M. With 3 SOL of
+/// Setup: two sub_vaults split a 70M-atom bid 50M / 20M. With 3 SOL of
 /// collateral the pro-rata split is `3e9 × 50/70` and `3e9 × 20/70` —
 /// neither divides evenly, so a plain floored sum is 2_999_999_999
 /// (1 atom of dust). The dust sweep makes the sum exactly 3_000_000_000
@@ -348,8 +348,8 @@ async fn match_sweeps_multiple_vault_asks() {
 #[tokio::test]
 async fn match_multi_cross_full_fill_freezes_no_collateral_dust() {
     let fixture = MarketFixture::new().await;
-    // Two profiles, same rate/term — the bid crosses both. 50M idle on
-    // profile 0, plenty on profile 1, so a 70M bid fully fills.
+    // Two sub_vaults, same rate/term — the bid crosses both. 50M idle on
+    // sub_vault 0, plenty on sub_vault 1, so a 70M bid fully fills.
     let borrower = vault_with_asks(
         &fixture,
         &[

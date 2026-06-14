@@ -136,7 +136,7 @@ impl MarketFixture {
     }
 
     /// Stand up a second `(USDC, wSOL)` market on this fixture. Used by
-    /// the multi-market sub-vault test that asserts a profile in two
+    /// the multi-market sub-vault test that asserts a sub_vault in two
     /// markets earns the SUM of both lender interests. After calling,
     /// `second_market_pubkey()` returns the second market's address.
     pub async fn create_second_market(&self) {
@@ -1700,7 +1700,7 @@ impl MarketFixture {
         self.process(ix, &[&kp]).await
     }
 
-    /// Curator place_order_for_sub_vault. Risk-profile orders are non-expiring
+    /// Curator place_order_for_sub_vault. Risk-sub_vault orders are non-expiring
     /// — only the curator can remove them via cancel_order_for_sub_vault.
     /// `self.payer` is used as the ix's fee_payer (covers tx fee + any
     /// rent for vault node-block expansion); curator only signs.
@@ -1796,7 +1796,7 @@ impl MarketFixture {
     /// vault sub-vault that rests an unbounded ask on the market:
     ///   1. `create_vault` (idempotent — skipped if already created)
     ///   2. `create_sub_vault`
-    ///   3. `global_vault_deposit` (funds the profile's idle pool)
+    ///   3. `global_vault_deposit` (funds the sub_vault's idle pool)
     ///   4. `place_order_for_sub_vault` (unbounded ask at rate/term)
     ///
     /// The depositor's debt-token account is created/funded with the
@@ -2013,7 +2013,7 @@ impl MarketFixture {
             (p.deployed_principal_atoms as u128) + (p.encumbered_in_orders_atoms as u128);
         assert!(
             (p.total_principal_atoms as u128) >= deployed_plus_encumbered,
-            "vault_idle invariant violated on profile {}: \
+            "vault_idle invariant violated on sub_vault {}: \
              total_principal({}) < deployed({}) + encumbered({}) = {}",
             sub_vault_id,
             p.total_principal_atoms,

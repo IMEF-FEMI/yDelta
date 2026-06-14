@@ -33,7 +33,7 @@ interface Input {
 async function main(): Promise<void> {
   const input = readJson<Input>('vault-cancel-order-input.json');
   const markets = readJson<Record<string, MarketDump>>('markets.json');
-  const subVaults = readJson<Record<string, SubVaultDump[]>>('risk-profiles.json');
+  const subVaults = readJson<Record<string, SubVaultDump[]>>('sub-vaults.json');
   const curators = readJson<CuratorDump[]>('curators.json');
 
   const market = markets[input.marketLabel];

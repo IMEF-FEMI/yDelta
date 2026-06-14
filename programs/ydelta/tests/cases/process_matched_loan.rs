@@ -56,7 +56,7 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
     let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await; // borrower
 
-    // Lender side: a vault profile funded with 10 USDC, resting an
+    // Lender side: a vault sub_vault funded with 10 USDC, resting an
     // unbounded ask at 600bps / 30d.
     fixture
         .provide_vault_liquidity(
@@ -183,16 +183,16 @@ async fn promote_matched_loan_credits_borrower_and_frees_node() {
     // origination_bps defaulted to 0, so no fee accrued.
     assert_eq!(header_post.accumulated_protocol_fee_shares, 0);
 
-    // Vault-idle invariant — vault profile's encumbered_in_orders
+    // Vault-idle invariant — vault sub_vault's encumbered_in_orders
     // got drained into deployed_principal_atoms at crank time.
     fixture.assert_vault_idle_invariant(1).await;
-    let profile = fixture.read_sub_vault(1).await;
+    let sub_vault = fixture.read_sub_vault(1).await;
     assert_eq!(
-        profile.deployed_principal_atoms, principal_atoms,
+        sub_vault.deployed_principal_atoms, principal_atoms,
         "promote must increment deployed_principal_atoms by the loan's principal"
     );
     assert_eq!(
-        profile.encumbered_in_orders_atoms, 0,
+        sub_vault.encumbered_in_orders_atoms, 0,
         "promote must drain encumbered_in_orders to 0"
     );
 }

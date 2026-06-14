@@ -36,7 +36,7 @@ const PRINCIPAL_ATOMS: u64 = 1_000_000;
 const COLLATERAL_ATOMS: u64 = 100_000_000;
 const TERM_SECONDS: u32 = 30 * 86_400;
 
-/// Stand up a funded vault profile (lender side) + a borrower whose
+/// Stand up a funded vault sub_vault (lender side) + a borrower whose
 /// IOC bid has crossed the vault ask into a promoted Fixed loan.
 /// Returns `(borrower, borrower_usdc)`.
 async fn match_one_loan(fixture: &MarketFixture) -> (solana_sdk::signature::Keypair, Pubkey) {
@@ -45,7 +45,7 @@ async fn match_one_loan(fixture: &MarketFixture) -> (solana_sdk::signature::Keyp
     let curator = fixture.create_trader().await;
     let borrower = fixture.create_trader().await;
 
-    // Lender side: vault profile rests an unbounded ask at 600bps/30d.
+    // Lender side: vault sub_vault rests an unbounded ask at 600bps/30d.
     fixture
         .provide_vault_liquidity(
             &admin,

@@ -6,7 +6,7 @@ import { claimSeatInstruction } from './claimSeat.js';
 
 /**
  * Scan a market's `claimed_seats` RB-tree for a user-side seat owned by
- * `owner` (the canonical `OWNER_KIND_USER, risk_profile_id = 0` shape the
+ * `owner` (the canonical `OWNER_KIND_USER, risk_subVault_id = 0` shape the
  * `deposit` ix's seat lookup requires). Pure — pass pre-fetched market
  * account data.
  *
@@ -49,7 +49,7 @@ export function hasUserSeat(marketData: Uint8Array | Buffer, owner: PublicKey): 
  *
  * Notes:
  *   - The seat lookup mirrors the on-chain `get_seat_index_with_hint`
- *     probe (`OWNER_KIND_USER, risk_profile_id = 0`). Risk-profile seats
+ *     probe (`OWNER_KIND_USER, risk_subVault_id = 0`). Risk-subVault seats
  *     are addressed by a separate ix path; this helper is for user
  *     deposits only.
  *   - If the market account doesn't exist (RPC returns null), this

@@ -43,7 +43,7 @@ pub struct ClaimRepaymentForSubVaultParams {
 /// once those ixs land Phase 2B), withdraws the underlying atoms from the
 /// per-market `lender_marginfi_account`, and deposits them into this
 /// vault's per-vault `global_vault_integration_account`. Then decrements
-/// the seat shares and `profile.pending_claim_atoms` by the amount swept.
+/// the seat shares and `sub_vault.pending_claim_atoms` by the amount swept.
 ///
 /// Per-loan economic facts (principal, rate, curator_fee_bps, started_at)
 /// were already applied to the sub-vault by `repay`/`liquidate_loan`/
@@ -261,7 +261,7 @@ pub fn process_claim_repayment_for_sub_vault(
             .saturating_sub(actual_shares_burned);
     }
 
-    // (6) Decrement profile.pending_claim_atoms — the atoms have physically
+    // (6) Decrement sub_vault.pending_claim_atoms — the atoms have physically
     // left lender_marginfi_account and arrived in this vault's integration
     // account, so the in-transit counter shrinks. saturating_sub: partial
     // repays don't bump pending_claim, so the swept atoms may exceed it.
@@ -270,18 +270,18 @@ pub fn process_claim_repayment_for_sub_vault(
         let (fixed_bytes, dynamic) = vault_data.split_at_mut(GLOBAL_VAULT_FIXED_SIZE);
         let header: &GlobalVaultFixed = bytemuck::from_bytes(fixed_bytes);
         let probe = SubVault::new_empty(sub_vault_id, Pubkey::default(), 1, 1);
-        let profile_idx = {
+        let sub_vault_idx = {
             let tree = SubVaultTreeReadOnly::new(dynamic, header.sub_vaults_root_index, NIL);
             tree.lookup_index(&probe)
         };
         require!(
-            profile_idx != NIL,
+            sub_vault_idx != NIL,
             YdeltaError::SubVaultNotFound,
             "claim: sub_vault_id {} not found on global_vault",
             sub_vault_id,
         )?;
-        let profile = get_mut_helper_sub_vault(dynamic, profile_idx).get_mut_value();
-        profile.pending_claim_atoms = profile
+        let sub_vault = get_mut_helper_sub_vault(dynamic, sub_vault_idx).get_mut_value();
+        sub_vault.pending_claim_atoms = sub_vault
             .pending_claim_atoms
             .saturating_sub(actual_atoms);
     }

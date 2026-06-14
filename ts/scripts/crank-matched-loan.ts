@@ -7,7 +7,7 @@
  *     marketLabel: string,
  *     sequence: string | number,
  *     matchedLoanIndexHint?: number | null,
- *     vaultSettle?: boolean        // true if the matched lender is a vault profile
+ *     vaultSettle?: boolean        // true if the matched lender is a vault subVault
  *   }
  */
 import { PublicKey } from '@solana/web3.js';

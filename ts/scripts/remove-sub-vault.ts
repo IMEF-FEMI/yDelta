@@ -10,7 +10,7 @@
  *   .local/vaults.json
  *
  * Updates (after success):
- *   .local/risk-profiles.json   (removes the entry under [mint])
+ *   .local/sub-vaults.json   (removes the entry under [mint])
  *
  * ## Safety
  *
@@ -69,22 +69,22 @@ async function main(): Promise<void> {
   const sig = await sendIxs(conn, signer, [ix]);
   log(`[remove-sub-vault] signature = ${sig}`);
 
-  // Strip the entry from risk-profiles.json so downstream scripts can't
+  // Strip the entry from sub-vaults.json so downstream scripts can't
   // resolve it any more. The chain is the source of truth; this is just
   // local artifact hygiene.
   const subVaultsByMint =
-    readJsonOptional<Record<string, SubVaultDump[]>>('risk-profiles.json') ?? {};
+    readJsonOptional<Record<string, SubVaultDump[]>>('sub-vaults.json') ?? {};
   const existing = subVaultsByMint[input.mint] ?? [];
   const next = existing.filter((p) => p.subVaultId !== input.subVaultId);
   if (next.length !== existing.length) {
     subVaultsByMint[input.mint] = next;
-    writeJson('risk-profiles.json', subVaultsByMint);
+    writeJson('sub-vaults.json', subVaultsByMint);
     log(
-      `[remove-sub-vault] removed subVaultId=${input.subVaultId} from risk-profiles.json[${input.mint}]`,
+      `[remove-sub-vault] removed subVaultId=${input.subVaultId} from sub-vaults.json[${input.mint}]`,
     );
   } else {
     log(
-      `[remove-sub-vault] note: subVaultId=${input.subVaultId} was not present in risk-profiles.json — tx succeeded on-chain, local artifact unchanged`,
+      `[remove-sub-vault] note: subVaultId=${input.subVaultId} was not present in sub-vaults.json — tx succeeded on-chain, local artifact unchanged`,
     );
   }
 

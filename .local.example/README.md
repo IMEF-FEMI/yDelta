@@ -12,7 +12,7 @@ writes its result back as a sibling JSON file:
 | `yarn create-global-config` | `protocol.json`                | `global-config.json`  |
 | `yarn create-curators`  | `curators-input.json`              | `curators.json`       |
 | `yarn create-vault`     | `vault-input.json`                 | `vaults.json`         |
-| `yarn setup-curator-profiles` | `setup-curator-profiles-input.json` | `curator-setup.json` + `risk-profiles.json` |
+| `yarn setup-curator-sub-vaults` | `setup-curator-sub-vaults-input.json` | `curator-setup.json` + `sub-vaults.json` |
 | `yarn init-market`      | `markets-input.json`               | `markets.json`        |
 | `yarn bootstrap`        | (chains the above)                 | `tx-log.json`         |
 | `yarn vault:place-ask`  | `vault-place-ask-input.json`       | (sig logged)          |
@@ -48,8 +48,8 @@ copying stale or wrong values surfaces immediately rather than during
 a signed transaction.
 
 For your current intended setup, keep exactly one curator in
-`curators-input.json` and point all three profiles at that label via the
-top-level `curatorLabel` in `setup-curator-profiles-input.json`.
+`curators-input.json` and point all three sub-vaults at that label via the
+top-level `curatorLabel` in `setup-curator-sub-vaults-input.json`.
 
 ## Bootstrap order
 
@@ -57,7 +57,7 @@ top-level `curatorLabel` in `setup-curator-profiles-input.json`.
 yarn deploy            # writes .local/protocol.json (idempotent — skips if already deployed)
 yarn bootstrap         # runs every step below, idempotent on each:
 #                       create-global-config → create-curators → create-vault
-#                       → setup-curator-profiles → init-market
+#                       → setup-curator-sub-vaults → init-market
 ```
 
 `tx-log.json` accumulates every signed tx (with oracle-crank sigs nested

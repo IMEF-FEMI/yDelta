@@ -9,7 +9,7 @@ use ydelta::program::YdeltaError;
 
 use crate::test_utils::{mainnet, MarketFixture};
 
-async fn setup_vault_with_profile(
+async fn setup_vault_with_sub_vault(
     fixture: &MarketFixture,
     admin: &solana_sdk::signature::Keypair,
     curator_pk: solana_program::pubkey::Pubkey,
@@ -35,7 +35,7 @@ async fn sunset_blocks_new_deposits() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, depositor.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, depositor.pubkey()).await;
     sunset(&fixture, &admin, 1).await;
 
     let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
@@ -57,7 +57,7 @@ async fn sunset_blocks_new_orders() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, curator.pubkey()).await;
     sunset(&fixture, &admin, 1).await;
 
     let result = fixture
@@ -71,7 +71,7 @@ async fn sunset_blocks_param_update() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, curator.pubkey()).await;
     sunset(&fixture, &admin, 1).await;
 
     // v1 D15: update is curator-gated, so even the CURATOR's update must
@@ -95,7 +95,7 @@ async fn sunset_allows_withdrawals() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, depositor.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, depositor.pubkey()).await;
 
     let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
     fixture.put_token_account(
@@ -127,7 +127,7 @@ async fn sunset_allows_curator_cancel() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, curator.pubkey()).await;
 
     fixture
         .place_order_for_sub_vault(&curator, 1, 500, 30 * 86_400, 0)
@@ -154,7 +154,7 @@ async fn resume_restores_active_state() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let depositor = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, depositor.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, depositor.pubkey()).await;
     sunset(&fixture, &admin, 1).await;
 
     let depositor_token = fixture.signer_debt_token(&depositor.pubkey());
@@ -187,7 +187,7 @@ async fn admin_cancel_requires_sunset() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, curator.pubkey()).await;
 
     fixture
         .place_order_for_sub_vault(&curator, 1, 500, 30 * 86_400, 0)
@@ -210,7 +210,7 @@ async fn admin_cancel_works_during_sunset() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, curator.pubkey()).await;
 
     fixture
         .place_order_for_sub_vault(&curator, 1, 500, 30 * 86_400, 0)
@@ -236,7 +236,7 @@ async fn remove_requires_sunset() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, curator.pubkey()).await;
 
     let remove_ix = remove_sub_vault_instruction(&mainnet::usdc_bank(), &admin.pubkey(), 1);
     let result = fixture.process(remove_ix, &[&admin]).await;
@@ -248,7 +248,7 @@ async fn remove_succeeds_after_sunset() {
     let fixture = MarketFixture::new().await;
     let admin = fixture.create_trader().await;
     let curator = fixture.create_trader().await;
-    setup_vault_with_profile(&fixture, &admin, curator.pubkey()).await;
+    setup_vault_with_sub_vault(&fixture, &admin, curator.pubkey()).await;
     sunset(&fixture, &admin, 1).await;
 
     let remove_ix = remove_sub_vault_instruction(&mainnet::usdc_bank(), &admin.pubkey(), 1);
@@ -338,6 +338,6 @@ async fn sunset_skips_matching() {
     let post = fixture.read_sub_vault(1).await;
     assert_eq!(
         post.encumbered_in_orders_atoms, 0,
-        "borrower bid must NOT match against a sunset profile's ask"
+        "borrower bid must NOT match against a sunset sub_vault's ask"
     );
 }

@@ -1,5 +1,5 @@
 //! Builds the `YdeltaInstruction::GlobalVaultDeposit` instruction: lender
-//! moves atoms from their wallet ATA into a sub-vault, minting profile
+//! moves atoms from their wallet ATA into a sub-vault, minting sub_vault
 //! shares against the vault NAV.
 
 use borsh::BorshSerialize;

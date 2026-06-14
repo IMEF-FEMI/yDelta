@@ -1,13 +1,13 @@
 //! End-to-end smoke + multi-loan isolation for the quote-only model.
 //!
 //! `lifecycle_smoke` runs the entire happy path top-to-bottom in one
-//! test (create_vault → fund profile → rest ask → borrower bid →
-//! crank → repay → claim) and asserts that the vault profile recovers
+//! test (create_vault → fund sub_vault → rest ask → borrower bid →
+//! crank → repay → claim) and asserts that the vault sub_vault recovers
 //! its principal (plus realised lender interest) and the loan PDA is
 //! closed.
 //!
 //! `two_independent_loans` exercises cross-loan isolation: one funded
-//! vault profile rests a single unbounded ask, two borrowers each
+//! vault sub_vault rests a single unbounded ask, two borrowers each
 //! cross it into a distinct Fixed loan, both cranked + repaid +
 //! claimed independently. Tests that the matched-loan tree, the Loan
 //! PDAs, and the seat bookkeeping all stay disjoint per loan.
@@ -28,7 +28,7 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
     let curator = fixture.create_trader().await;
     let bob = fixture.create_trader().await;
 
-    // Lender side: a vault profile funded with 10 USDC, resting an
+    // Lender side: a vault sub_vault funded with 10 USDC, resting an
     // unbounded ask at 600 bps / 30d.
     let lender_deposit_atoms: u64 = 10_000_000;
     fixture
@@ -90,13 +90,13 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
     fixture.assert_loan_conservation_holds(0).await;
     fixture.refresh_blockhash().await;
 
-    let profile_pre_claim = fixture.read_sub_vault(1).await;
+    let sub_vault_pre_claim = fixture.read_sub_vault(1).await;
     let pre_drift =
-        (profile_pre_claim.total_principal_atoms as i128 - lender_deposit_atoms as i128).abs();
+        (sub_vault_pre_claim.total_principal_atoms as i128 - lender_deposit_atoms as i128).abs();
     assert!(
         pre_drift <= 4,
-        "profile total_principal {} drifted > 4 atoms from the deposit {}",
-        profile_pre_claim.total_principal_atoms,
+        "sub_vault total_principal {} drifted > 4 atoms from the deposit {}",
+        sub_vault_pre_claim.total_principal_atoms,
         lender_deposit_atoms,
     );
 
@@ -107,21 +107,21 @@ async fn lifecycle_smoke_create_match_crank_repay_claim() {
         .await
         .unwrap();
 
-    // Vault profile recovered its principal plus realised lender
+    // Vault sub_vault recovered its principal plus realised lender
     // interest, and the active-loan tracking zeroed out.
-    let profile_post = fixture.read_sub_vault(1).await;
+    let sub_vault_post = fixture.read_sub_vault(1).await;
     assert!(
-        profile_post.total_principal_atoms + 2 >= lender_deposit_atoms,
-        "profile total_principal {} fell below initial deposit {} after lifecycle",
-        profile_post.total_principal_atoms,
+        sub_vault_post.total_principal_atoms + 2 >= lender_deposit_atoms,
+        "sub_vault total_principal {} fell below initial deposit {} after lifecycle",
+        sub_vault_post.total_principal_atoms,
         lender_deposit_atoms,
     );
     assert_eq!(
-        profile_post.deployed_principal_atoms, 0,
+        sub_vault_post.deployed_principal_atoms, 0,
         "all loans repaid → deployed_principal must be 0",
     );
     assert_eq!(
-        profile_post.encumbered_in_orders_atoms, 0,
+        sub_vault_post.encumbered_in_orders_atoms, 0,
         "encumbered_in_orders must zero out after the loan is claimed",
     );
     // Vault-idle invariant post-claim.
@@ -149,7 +149,7 @@ async fn two_independent_loans_remain_disjoint() {
     let bob = fixture.create_trader().await;
     let carol = fixture.create_trader().await;
 
-    // One vault profile funds both loans (unbounded ask, 20 USDC idle).
+    // One vault sub_vault funds both loans (unbounded ask, 20 USDC idle).
     fixture
         .provide_vault_liquidity(
             &admin,
@@ -257,11 +257,11 @@ async fn two_independent_loans_remain_disjoint() {
     // Conservation must hold on both independent loans.
     fixture.assert_loan_conservation_holds(0).await;
     fixture.assert_loan_conservation_holds(1).await;
-    // Both loans share the same lender (vault profile 0); their
-    // principals must sum to the profile's deployed_principal_atoms.
-    let profile_mid = fixture.read_sub_vault(1).await;
+    // Both loans share the same lender (vault sub_vault 0); their
+    // principals must sum to the sub_vault's deployed_principal_atoms.
+    let sub_vault_mid = fixture.read_sub_vault(1).await;
     assert_eq!(
-        profile_mid.deployed_principal_atoms,
+        sub_vault_mid.deployed_principal_atoms,
         loan0.principal_debt_atoms + loan1.principal_debt_atoms,
         "deployed_principal_atoms must equal Σ active loans' principals"
     );
@@ -304,7 +304,7 @@ async fn two_independent_loans_remain_disjoint() {
         // single sub-vault seat (sub_vault_id=0). The new claim is a
         // seat sweep, not per-loan; the previous-call form
         // .claim_repayment_for_sub_vault(&stranger, 1, …) is now
-        // expressed as a second sweep on the same profile.
+        // expressed as a second sweep on the same sub_vault.
         .claim_repayment_for_sub_vault(&stranger, 1)
         .await
         .unwrap();
@@ -319,7 +319,7 @@ async fn two_independent_loans_remain_disjoint() {
         assert!(acc.is_none(), "loan {} should be collected", seq);
     }
 
-    // Profile fully settled.
-    let profile_final = fixture.read_sub_vault(1).await;
-    assert_eq!(profile_final.deployed_principal_atoms, 0);
+    // SubVault fully settled.
+    let sub_vault_final = fixture.read_sub_vault(1).await;
+    assert_eq!(sub_vault_final.deployed_principal_atoms, 0);
 }

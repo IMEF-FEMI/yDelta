@@ -10,7 +10,7 @@
  *   1. create-global-config.ts
  *   2. create-curators.ts            (1 curator by default)
  *   3. create-vault.ts               (USDC vault)
- *   4. setup-curator-profiles.ts     (3 profiles in the USDC vault)
+ *   4. setup-curator-sub-vaults.ts     (3 subVaults in the USDC vault)
  *   5. init-market.ts                (USDC/SOL + USDC/JitoSOL)
  *
  * `deploy.ts` is intentionally separate — bootstrap assumes
@@ -20,7 +20,7 @@
  * the defaults provided by `.local.example`):
  *   curators-input.json          (required)
  *   vault-input.json             (required: { mint: <USDC> })
- *   setup-curator-profiles-input.json (required: { mint, profiles: [...] })
+ *   setup-curator-sub-vaults-input.json (required: { mint, subVaults: [...] })
  *   markets-input.json           (required: { markets: [...] })
  */
 import { spawnSync } from 'node:child_process';
@@ -50,9 +50,9 @@ const INPUT_FILES: BootstrapInputCheck[] = [
   },
   { filename: 'vault-input.json', required: true, description: 'USDC vault input' },
   {
-    filename: 'setup-curator-profiles-input.json',
+    filename: 'setup-curator-sub-vaults-input.json',
     required: true,
-    description: 'curator + 3 risk profiles config',
+    description: 'curator + 3 sub-vaults config',
   },
   { filename: 'markets-input.json', required: true, description: 'market init input' },
 ];
@@ -94,7 +94,7 @@ interface BootstrapStep {
   /**
    * Returns true only when the step is FULLY complete, so the orchestrator
    * can skip it without spawning. Omit for steps whose own per-item skip
-   * (e.g. per-profile-row) should always run — passing a partial output here
+   * (e.g. per-subVault-row) should always run — passing a partial output here
    * would wrongly skip the remaining items.
    */
   complete?: () => boolean;
@@ -118,8 +118,8 @@ const STEPS: BootstrapStep[] = [
       return !!input && !!vaults && vaults[input.mint] !== undefined;
     },
   },
-  // Per-profile-row idempotent — always delegate so partial setups finish.
-  { script: 'setup-curator-profiles.ts' },
+  // Per-subVault-row idempotent — always delegate so partial setups finish.
+  { script: 'setup-curator-sub-vaults.ts' },
   {
     // Done only when every requested market label is already recorded;
     // a partial set falls through so the remaining markets get created.
@@ -148,7 +148,7 @@ function main(): void {
   const protocol = readJsonOptional<unknown>('protocol.json');
   const config = readJsonOptional<unknown>('global-config.json');
   const vaults = readJsonOptional<Record<string, unknown>>('vaults.json') ?? {};
-  const profiles = readJsonOptional<Record<string, unknown[]>>('risk-profiles.json') ?? {};
+  const subVaults = readJsonOptional<Record<string, unknown[]>>('sub-vaults.json') ?? {};
   const markets = readJsonOptional<Record<string, unknown>>('markets.json') ?? {};
 
   log('\n[bootstrap] === summary ===');
@@ -156,7 +156,7 @@ function main(): void {
   log(`global-config: ${config ? 'OK' : 'MISSING'}`);
   log(`vaults: ${Object.keys(vaults).length}`);
   log(
-    `profiles: ${Object.values(profiles).reduce((acc, arr) => acc + (arr?.length ?? 0), 0)}`,
+    `subVaults: ${Object.values(subVaults).reduce((acc, arr) => acc + (arr?.length ?? 0), 0)}`,
   );
   log(`markets: ${Object.keys(markets).length}`);
   log(`\n[bootstrap] done.`);
