@@ -1,458 +1,383 @@
 # yDelta
 
-**Optimized fixed-rate lending on Solana.**
+**Fixed-rate lending on Solana — where your money never sits still.**
 
-> This README is published on npm as the docs for [`@ydelta/sdk`](https://www.npmjs.com/package/@ydelta/sdk). The protocol explainer is below; the install + SDK-usage quickstart is here.
-
-## `@ydelta/sdk` — install
-
-```bash
-yarn add @ydelta/sdk
-# or
-npm install @ydelta/sdk
-```
-
-Works with `@solana/web3.js ^1.95`.
-
-## Quickstart
-
-```ts
-import { Connection, PublicKey } from '@solana/web3.js';
-import {
-  YDELTA_PROGRAM_ID,
-  fetchMarket,
-  fetchVault,
-  placeOrderInstruction,
-} from '@ydelta/sdk';
-
-const conn = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
-const market = await fetchMarket(conn, new PublicKey('9mSq5qvdKPJdNE8T8UMALrkuLxisw9eed87z33sWCUcv'));
-// Vaults are keyed by the marginfi BANK (the market's debt-side lending pool),
-// not by mint.
-const vault  = await fetchVault(conn, market.header.debtLendingPool);
-```
-
-The SDK ships:
-
-- **Instruction builders** for every yDelta instruction (`placeOrderInstruction`, `repayInstruction`, `convertP2poolToFixedInstruction`, …).
-- **Account decoders** (`decodeMarket`, `decodeGlobalVault`, `decodeLoanFixed`, …) over the raw `getAccountInfo` bytes.
-- **Helpers** for LTV math, marginfi share/atom conversion, oracle price reads.
-- **The IDL** (`ts/idl/ydelta.json`) for off-chain tooling.
-
-See the on-chain program under `programs/ydelta/` and the source under `ts/src/` in the [GitHub repo](https://github.com/IMEF-FEMI/yDelta).
+> **Looking for the TypeScript SDK?** Install and usage docs for
+> [`@ydelta/sdk`](https://www.npmjs.com/package/@ydelta/sdk) live in
+> **[`ts/README.md`](ts/README.md)** — that's what's published to npm. This
+> README is the story of how the protocol works. Engineers who want the
+> byte-level contract should head to [`docs/protocol-design.md`](docs/protocol-design.md).
 
 ---
 
-yDelta runs a **two-sided** fixed-rate orderbook. The ask side holds
-lender quotes, and those quotes come only from vault **sub-vaults** —
-curator-run (Pool) or owner-run (Private). The bid side holds borrower
-orders: a borrow request crosses resting asks immediately, and any
-unfilled remainder can fall through to a marginfi backstop, rest on the
-book as a standing bid, or drop.
+Most on-chain lending is a savings account with mood swings. You deposit, and
+the interest rate drifts with the market — good today, who-knows tomorrow, never
+something you can build a plan around. Borrowers get the mirror image: a rate
+that can lurch against them mid-loan, and a "take whatever's available" fill that
+can leave them short of what they asked for.
 
-yDelta is fixed-rate, fixed-term lending built on four ideas:
+yDelta does it the way credit actually works in the real world. Two sides meet on
+an open market and agree on a **fixed rate** for a **fixed term**. The lender
+knows exactly what they'll earn, and for how long. The borrower knows exactly
+what they'll owe. No drift, no surprises.
 
-1. **Two-sided orderbook** — sub-vaults quote asks, borrowers post bids; but every ask is still backed by vault capital, never a bare wallet maker
-2. **Yield-alive capital** — no atom sits idle; everything earns through marginfi
-3. **Strategy sub-vaults** — one vault per bank runs many curator strategies
-4. **`p0` backstop** — marginfi as the always-available fallback when book liquidity is thin
+And underneath the whole thing runs a quiet trick that makes it all pay:
+**no token ever sits idle.** Every dollar waiting for a match, every bit of
+collateral backing a loan, even money that's already been borrowed — all of it
+keeps earning yield in the background until the very moment it's doing something
+else.
 
-Sub-vault curators post asks priced as a **spread over the live bank
-rate** (`bank lending APR + spread`, term-capped, unbounded size).
-Borrowers place bids (`rate × term × principal × collateral`) that fill
-immediately and optionally rest their residual. A matching engine crosses
-them into discrete loans with the terms baked in. Everything in between —
-idle vault capital waiting to match, collateral backing an active loan or
-a resting bid, principal waiting to be claimed — sits in marginfi banks
-earning supply yield.
-
----
+That's the pitch. Here's how it works.
 
 ## Table of contents
 
-- [yDelta](#ydelta)
-  - [Table of contents](#table-of-contents)
-  - [1. What yDelta does differently](#1-what-ydelta-does-differently)
-  - [2. Two-sided credit](#2-two-sided-credit)
-  - [3. Yield-alive capital](#3-yield-alive-capital)
-  - [4. Strategy sub-vaults: the lending optimizer](#4-strategy-sub-vaults-the-lending-optimizer)
-  - [5. `p0` as backstop](#5-p0-as-backstop)
-  - [6. 0-CPI fast-path](#6-0-cpi-fast-path)
-  - [7. Partial liquidations](#7-partial-liquidations)
-  - [8. Anatomy of a loan](#8-anatomy-of-a-loan)
-  - [9. Architecture](#9-architecture)
-    - [Two marginfi accounts per market](#two-marginfi-accounts-per-market)
-    - [The seat-share invariant](#the-seat-share-invariant)
-  - [10. Under the hood](#10-under-the-hood)
-    - [Yield decomposition](#yield-decomposition)
-    - [Unbounded sub-vault asks + match-time atomicity](#unbounded-sub-vault-asks--match-time-atomicity)
-    - [Two-step admin transfers + market/global pause](#two-step-admin-transfers--marketglobal-pause)
-    - [Oracle integration](#oracle-integration)
-  - [11. Build \& test](#11-build--test)
+- [1. The problem yDelta solves](#1-the-problem-ydelta-solves)
+- [2. Your money never sleeps](#2-your-money-never-sleeps)
+- [3. A real marketplace for credit](#3-a-real-marketplace-for-credit)
+- [4. Deposit, pick a strategy, earn](#4-deposit-pick-a-strategy-earn)
+- [5. A backstop, not a trap](#5-a-backstop-not-a-trap)
+- [6. Borrow on your own terms](#6-borrow-on-your-own-terms)
+- [7. Built to be cheap, fast, and fair](#7-built-to-be-cheap-fast-and-fair)
+- [8. A loan, from start to finish](#8-a-loan-from-start-to-finish)
+- [9. Under the hood](#9-under-the-hood)
+- [10. Build \& test](#10-build--test)
 
 ---
 
-## 1. What yDelta does differently
+## 1. The problem yDelta solves
 
-yDelta is fixed-rate, fixed-term lending built around two ideas that are hard to combine: a real orderbook for price discovery, and a yield rail underneath so capital is never idle. Most fixed-rate protocols ship a subset of what's below. yDelta is designed so all of it is **structural** — not curator-toggles, not optional features, not bolt-ons.
+Lending protocols today ask you to accept one of two bad deals.
 
-1. **Capital is yield-alive for the entire lifecycle.** Every deposit immediately routes into marginfi at the program level. Resting asks, encumbered collateral, idle vault liquidity, and even borrowed principal earn supply APY by default — until the user actively withdraws to a wallet. Even a borrower's bid that merely *rests* on the book keeps its collateral earning. There is no "atoms in escrow earning nothing" state anywhere in the protocol.
+**If you lend,** your capital has a lot of dead time. It sits in a pool waiting
+for someone to borrow it. The rate floats, so you can't quote a return to anyone.
+And when a loan is repaid, your money waits *again* to be redeployed. Most of the
+time, most of your capital is either idle or earning a number nobody promised you.
 
-2. **The orderbook has a built-in variable-rate backstop, and the variable portion is upgradeable.** When fixed-rate liquidity doesn't fill a bid, the residual can fall through to `marginfi.borrow` so the borrower walks away with full requested principal — no partial-fill cliff. Later, `convert_p2pool_to_fixed` lets the borrower walk the asks tree and migrate the variable portion back to fixed-rate when better terms appear. The fallback is a backstop, not a one-way commitment.
+**If you borrow,** you're at the mercy of a rate that moves while you sleep, and
+of whatever liquidity happens to be sitting in the pool at your price. Ask for
+$100k and the pool only has $60k at your rate? Tough — you take $60k or nothing.
 
-3. **Vaults run multiple curator strategies on one capital pool per bank.** A single `GlobalVault` per marginfi **bank** hosts many `SubVault` entries, each with its own operator, spread, LTV ceiling, liquidation threshold and term cap. Sub-vaults come in two kinds — **Pool** (admin-created, curator-run, pooled deposits) and **Private** (permissionless, single-owner). A depositor can hold seats in multiple sub-vaults inside the same vault; a sub-vault can quote on any market whose debt side is that bank, with no fixed cap on how many.
+yDelta's answer is to treat credit like a market with a safety net:
 
-4. **The book is two-sided, but asks are vault-only.** Ask-side quotes come only from vault sub-vaults — there are no wallet makers and no market-direct asks. A borrower posts a bid that crosses resting asks immediately; its unfilled residual chooses one of three fates — fall through to the variable-rate backstop, **rest** on the bid side of the book, or drop. A resting bid is later crossed by a fresh or repriced sub-vault ask (which *takes* on placement) or by anyone running the permissionless `MatchCrank`. Self-trading is blocked at the **owner** level: a wallet's bid never fills against a sub-vault that same wallet curates — that pair is skipped, not aborted.
+- A **two-sided marketplace** where lenders post offers and borrowers post bids,
+  and a matching engine pairs them into real loans with the terms locked in.
+- A **yield rail underneath** (the marginfi money market) so capital is productive
+  in *every* state — waiting, working, or being paid back.
+- A **backstop** so a borrower who can't be fully filled on the market doesn't hit
+  a cliff — the leftover can fall through to a variable-rate loan, and even be
+  upgraded back to fixed later.
 
-5. **Rates are a spread over the live bank rate.** A sub-vault stores a `spread_bps`; at placement the program reads the debt bank's live marginfi lending APR and stores `lending_APR + spread` in the order. Repricing a market is a parameterless re-sync. A **fill-time floor** enforces the same idea on the way out: the engine skips any resting ask whose stored rate has fallen below the *current* bank lending APR, so a stale quote never fills below market.
+Everything below is built from those three ideas working together — not as
+separate features bolted on, but as one design.
 
-6. **LTV is the curator's, decoupled from marginfi.** A fixed loan's collateral is an *asset* on marginfi (it carries no marginfi liability), so marginfi's risk weights were only ever a self-imposed reference. Origination gates on the sub-vault's `max_ltv_bps` alone — which may sit **above** marginfi's implied LTV, extending more borrowing power than marginfi itself would. Liquidation triggers on a per-sub-vault `liquidation_ltv_bps`, and both LTVs are **stamped onto the loan at match** so curator updates never move thresholds on open loans. Marginfi weights still gate one path — the variable-rate fallback, which opens a real marginfi borrow.
+## 2. Your money never sleeps
 
-7. **Fixed terms genuinely run to maturity.** A loan opens at the locked rate, accrues for the full term, and resolves on borrower repay or keeper settlement after grace. There is no auto-rolling into shorter terms, and no prepayment fee — early repay is free. Repricing is opt-in via `convert_p2pool_to_fixed` (and only for borrowers on the variable-rate fallback), never imposed by the protocol.
+This is the part most people underestimate, so we lead with it.
 
-8. **Curators reprice for free.** `place_order_for_sub_vault`, `cancel_order_for_sub_vault`, and `update_order_for_sub_vault` fire **zero external CPIs** — a vault ask is a pure-memory bookkeeping entry on the market account; it carries no fixed principal and takes no seat encumbrance. Even when a placement *takes* a crossable resting bid, the fill is recorded as a queued node and the atom movement is deferred to a permissionless cranker. Curators can reprice continuously without paying compute tax for each adjustment.
-
-Taken together: yDelta prices credit on a two-sided orderbook, backstops it with marginfi, keeps every atom productive in every state, and lets curators run real strategies — all built on the same set of mechanisms rather than separate paths bolted together.
-
----
-
-## 2. Two-sided credit
-
-Most lending protocols pool deposits and let the protocol set one risk model for everyone. yDelta prices credit on an orderbook instead — two-sided, but with asks backed only by vault capital.
-
-**Only vault sub-vaults quote the ask side.** Every ask belongs to a `SubVault` inside a `GlobalVault`. Each sub-vault carries a curator-set `spread_bps`, a `max_ltv_bps` origination ceiling, a `liquidation_ltv_bps` trigger, and a `max_term_seconds` cap. The matching engine reads these **live** from the sub-vault at match time, so a curator's policy change takes effect immediately with no per-seat re-sync.
-
-**Spread-over-bank rates.** A sub-vault does not post an absolute rate. At placement the program reads the debt bank's live marginfi lending APR and stores `bank_APR + spread_bps` in the order — the sort tree still orders by the stored rate. A **fill-time floor** then skips, on the way out, any resting ask whose stored rate has fallen below the *current* live bank lending APR, so a stale quote never fills below market. The fix is a parameterless `update_order_for_sub_vault` re-sync that re-reads the bank.
-
-**Borrowers post bids that can rest.** A borrow request crosses resting asks immediately; whatever it doesn't fill is handled by the borrower's chosen `residual_mode` — **P2PoolFallback** (open a variable-rate marginfi borrow), **Rest** (leave a standing bid whose collateral keeps earning), or **Drop**. A resting bid is crossed by a later sub-vault ask placement/re-sync (which *takes*) or by the permissionless `MatchCrank`; the borrower can `CancelOrder` or `UpdateOrder` it. A book can sit **crossed at rest** — that is legal; the invariant is that no *fillable* cross survives a taking instruction.
-
-**Rate matching.** A bid crosses any ask whose `ask_rate ≤ bid_rate` and whose `max_term ≥ bid_term`. On a cross the loan is stamped:
-
-```
-lender_rate   = ask_rate
-borrower_rate = max(bid_rate, ask_rate + protocol_fee_bps_floor)
-```
-
-The bid rate is a *ceiling on the lender rate*; the protocol fee floor is always guaranteed on top. So with `protocol_fee_bps_floor = 50` and a 500 bps bid: an ask at 480 yields `lender_rate = 480`, `borrower_rate = max(500, 530) = 530`; an ask at 400 yields `lender_rate = 400`, `borrower_rate = max(500, 450) = 500`. The borrower can pay up to the floor (50 bps) above their stated bid — they accept the protocol floor as a fee added on top. An ask at 510 does not cross a 500 bid.
-
-**The match checks the sub-vault's LTV.** Every cross verifies `actual_ltv ≤ sub_vault.max_ltv_bps` at oracle prices — and nothing else (marginfi weights are not consulted for fixed fills). A bid whose collateral doesn't satisfy a sub-vault's cap simply skips that ask and walks on to one whose cap it does satisfy.
-
----
-
-## 3. Yield-alive capital
-
-Fixed-rate orderbooks have a structural problem: lender capital has dead time. Idle vault liquidity waits for a bid to cross (could be hours, could be days). The borrower's collateral sits in escrow until the loan matures. After repay, the lender's principal sits in escrow until it is claimed. Existing fixed-term protocols accept this as the cost of doing business.
-
-yDelta routes **every atom** through marginfi for the entire lifecycle. Vault lenders, borrowers, idle vault liquidity, post-repay claims — all of it sits in marginfi banks earning supply APY by default. Even a borrower's collateral behind a *resting bid* keeps earning while the bid waits to be crossed.
+In a normal fixed-term protocol, capital has three stretches of dead time: while a
+lender's offer waits to be taken, while a borrower's collateral is locked up, and
+while a repaid loan waits to be claimed. yDelta erases all three. **Every token in
+the system is parked in a marginfi lending pool, earning supply yield, right up
+until the instant it's needed elsewhere.**
 
 ```
    ┌──────────────────┐
    │ Vault depositor  │
    └────────┬─────────┘
-            │ deposit USDC into a SubVault
+            │ deposit USDC into a strategy
             ▼
    ┌──────────────────────┐
-   │  marginfi USDC bank  │  ◄── atoms earn supply APY:
-   │  (vault integration) │     while asks rest, while
-   └──────────┬───────────┘     loans run, while waiting
-              │ shares           for claim
+   │  marginfi USDC pool  │  ◄── these atoms earn yield the whole time:
+   │  (earning supply APY)│      while offers rest, while loans run,
+   └──────────┬───────────┘      while a repayment waits to be claimed
+              │ shares
               ▼
    ┌──────────────────────┐
-   │  SubVault pool       │
-   │  idle_principal      │  ◄── a resting ask takes NO
-   │  deployed_principal  │     encumbrance; the idle pool
-   └──────────────────────┘     caps each cross at match time
+   │  Strategy vault      │
+   │  idle  → deployed    │  ◄── a resting offer locks up nothing;
+   └──────────────────────┘      the idle pool backs every match
               │
-              │ match: idle → deployed; loan PDA records who owes what
+              │ match: idle becomes deployed; a loan records who owes what
               ▼
-        Loan accrues
-   ┌──────────────────────┐
-   │ borrower repays      │  ◄── atoms re-enter marginfi →
-   │ atoms route through  │     claim moves them to the
-   │ marginfi             │     vault → withdraw
-   └──────────────────────┘
+        Loan accrues at the fixed rate
+              │ borrower repays → atoms re-enter marginfi → claimed back to the vault
+              ▼
 ```
 
-**Place / cancel / re-sync a vault ask:** nothing moves. A vault ask carries no fixed principal and takes no seat encumbrance — it is a pure bookkeeping entry. The sub-vault's `idle_principal` pool is the backing, read at match time. Yield keeps accruing.
+The upshot for a lender: even the boring states pay. Your deposit earns market
+yield while it waits, and earns the fixed loan rate while it's lent — and a
+borrower's collateral *also* earns yield while it backs their loan. There is
+simply no "sitting in escrow doing nothing" anywhere in the protocol.
 
-**Match a bid against a vault ask:** the sub-vault's `idle_principal` decrements and `deployed_principal` increments; the loan PDA records who owes what. The borrower's withdrawn principal also lands on marginfi (credited to the borrower's seat), so even **borrowed atoms earn supply yield until the borrower pulls them to their wallet**.
+> **Under the hood.** Balances are tracked as marginfi *shares*, not raw token
+> amounts. A share's value grows as the pool earns, so yield accrues uniformly
+> whether the shares are free or locked. Each trader's balance is just
+> `withdrawable_shares + encumbered_shares`, and share counts are conserved through
+> every deposit, match, repay and claim — which is what lets the accounting stay
+> exact while everything underneath keeps compounding.
 
-There is no "atoms in escrow earning nothing" state in the entire protocol.
+## 3. A real marketplace for credit
 
-The bookkeeping invariant that makes it work:
+yDelta prices credit on an order book with two sides.
+
+**The lender side** is made entirely of **strategy vaults** (more on those in the
+next section). A vault posts an *offer* — "I'll lend at this rate, up to this
+term" — and that offer rests on the book. There are no anonymous wallet lenders;
+every offer is backed by real vault capital.
+
+**The borrower side** is people who want a loan. A borrower posts a *bid* — "I want
+to borrow this much, at no more than this rate, for this term, and here's my
+collateral." The moment it lands, the engine sweeps the offers and fills the bid
+against the cheapest ones that qualify.
+
+**Rates aren't pulled out of thin air — they track the live market.** A vault
+doesn't post a hard number; it posts a *spread*. When its offer is placed, the
+program reads the current marginfi lending rate for that asset and stores
+`market_rate + spread`. So a lender is always quoting a premium over the
+money-market rate, and that quote re-prices with one parameterless refresh. A
+**fill-time floor** keeps it honest on the way out: if a stale offer has drifted
+below the *current* market rate, the engine skips it rather than let it fill
+below market.
+
+> **Under the hood — how a match is priced.** A bid crosses any offer whose rate
+> is at or below the bid's rate and whose max term covers the bid's term. On a
+> cross the loan is stamped:
+> ```
+> lender_rate   = offer_rate
+> borrower_rate = max(bid_rate, offer_rate + protocol_fee_floor)
+> ```
+> The bid rate is a *ceiling on the lender's cut*; the small protocol fee floor is
+> always collected on top. The gap between what the borrower pays and what the
+> lender earns is the protocol's revenue.
+
+## 4. Deposit, pick a strategy, earn
+
+Most people don't want to run an order book for a living. They don't want to
+decide what spread to quote, which markets to quote in, or when to reprice. They
+want to deposit, pick a risk style, and earn. That's what **strategy vaults** are
+for — and since the lender side of the book is *only* vaults, they're how all
+lending liquidity reaches the market.
+
+One vault sits on top of one marginfi pool (say, USDC) and hosts many independent
+**strategies**, each run by a curator with its own spread, loan-to-value ceiling,
+liquidation threshold and term cap. Deposit into the conservative one, the
+aggressive one, or several at once — all under a single deposit.
 
 ```
-Per-trader balance = marginfi shares on seat
-                   = withdrawable_shares + encumbered_shares
-
-Atoms held         = shares × bank.asset_share_value
-Yield accrual      = bank.asset_share_value growth
-```
-
-Share counts are conserved through `deposit / withdraw / match / repay / claim`. marginfi handles the yield arithmetic by share-price growth, which applies uniformly regardless of which seat-bucket the shares live in.
-
----
-
-## 4. Strategy sub-vaults: the lending optimizer
-
-Most depositors don't want to operate like an orderbook market maker. They don't want to decide what spread to quote, which markets to quote in, when to cancel and reprice, or how to balance idle versus deployed capital. They want to deposit, pick a risk style, and earn.
-
-**Strategy sub-vaults are the only way liquidity reaches the book.** Because the ask side is vault-only, every lender ask comes from a curator-managed sub-vault. Depositors fund the sub-vaults; curators do the quoting.
-
-A `GlobalVault` is keyed to one marginfi **bank** and holds many curator-managed **sub-vaults**, where each sub-vault is a distinct lending strategy. What's distinctive: **a single deposit can back multiple strategies at once, and each sub-vault lends across many markets simultaneously.**
-
-```
-                          GlobalVault (USDC bank)
+                          USDC vault
                           ┌──────────────────┐
                           │ idle: $10,000,000│
                           ├──────────────────┤
-                          │ SubVault A       │  Pool, 60% max_ltv,
-                          │ (conservative)   │  30-day max term
+                          │ Strategy A       │  conservative: 60% max LTV,
+                          │ (pooled)         │  30-day max term
                           ├──────────────────┤
-                          │ SubVault B       │  Private, 75% max_ltv,
+                          │ Strategy B       │  aggressive: 75% max LTV,
                           │ (owner-run)      │  90-day max term
                           └────────┬─────────┘
-                                   │
+                                   │  one strategy quotes into many markets
                   ┌────────────────┼────────────────┐
-                  │                │                │
                   ▼                ▼                ▼
-       ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-       │ USDC/SOL mkt │  │ USDC/JTO mkt │  │USDC/JUP mkt  │
-       │  Ask (idle)  │  │  Ask (idle)  │  │  Ask (idle)  │
-       └──────────────┘  └──────────────┘  └──────────────┘
+          USDC/SOL market   USDC/JTO market   USDC/JUP market
 ```
 
-A sub-vault may quote any market whose debt side is the vault's bank — there is no fixed cap on the count. Each ask is **unbounded** ("quote all idle"): it carries no principal, and every cross against it is sized at match time by the sub-vault's live `idle_principal`. The matching engine reads + mutates `GlobalVault` state at match time atomically, so a sub-vault can never accidentally over-commit even with concurrent matches against different markets — the match gate is `sub_vault_idle ≥ matched_principal`.
+**One basket, every pair.** This is where it beats a spot order book. On a spot
+book you can quote one token against many others, but your capital is trapped per
+book: dollars resting on the SOL/USDC book can't fill a JTO/USDC order, so to make
+markets everywhere you have to fragment your capital across every pair — and watch
+most of it sit idle on each. A yDelta strategy is *one* basket of liquidity that
+backs offers on every market its asset trades against, all at once. Nothing is
+pre-allocated; a match is drawn from the live idle balance only when it actually
+fills, and it's atomic, so two markets can never spend the same dollar twice. You
+get the spot-book reach across many pairs — minus the capital fragmentation, and
+(since every idle dollar is still earning on marginfi) minus the idle drag.
 
-The vault-owned `ClaimedSeat` a sub-vault uses in a market is **auto-created** on the first `place_order_for_sub_vault` in that market — there is no separate claim-seat step.
+A single deposit can back several strategies, and there are two flavours: **Pool**
+strategies (curator-run, anyone can deposit) and **Private** strategies (one owner,
+permissionless to spin up). Either way, the depositor's experience is the one they
+already expect from a lending app: deposit, choose, earn, withdraw.
 
-For the depositor, the experience is what they expect from any lending protocol: deposit, choose a sub-vault, earn, withdraw.
+And they earn from *two* streams at the same time — supply yield on the idle
+portion, and the fixed loan rate on the deployed portion — both flowing into the
+same share price, so there's never a trade-off between "liquid" and "earning."
 
-**Two yield streams, accrued continuously.** A sub-vault earns from two sources at once:
+> **Under the hood.** Per-depositor accounting is O(1) no matter how many loans a
+> strategy has open: a running weighted-rate aggregate plus Aave-style cumulative
+> indices mean a strategy with 10,000 active loans accrues in the same handful of
+> cycles as one with 10. No iteration, ever.
 
-- **Supply yield on idle capital** — funds waiting for matches sit on marginfi and earn supply APY through share-price growth
-- **Lender-rate yield on deployed capital** — matched loans earn the locked-in fixed rate
+## 5. A backstop, not a trap
 
-Both stream into the same share-price, so depositors don't have to choose between "idle but liquid" and "earning but locked." Both states are productive. Loan yield is credited **net of `curator_fee_bps`** so the curator's management fee is not double-counted into the share price. The curator fee is a sub-vault property — set by the admin at Pool creation, zero for Private, and immutable thereafter.
-
-**O(1) per-depositor accounting.** A running aggregate `total_weighted_rate_bps = Σ(P_i × R_i)` across all open loans, plus Aave-style cumulative yield indices, makes deposit and withdraw O(1) regardless of how many loans the sub-vault has open. A sub-vault with 10,000 active loans accrues yield in the same number of CPU cycles as one with 10. No iteration, ever.
-
-**Vault-wide aggregates.** `GlobalVaultFixed` carries vault-wide aggregates maintained in lockstep with the per-sub-vault fields. Withdraws are gated per-sub-vault (`total_principal − deployed − encumbered ≥ atoms_out`) and against the vault-wide marginfi balance. Each sub-vault also tracks `open_orders_count` and `open_loans_count`, and can only be removed once both are zero.
-
-A user holds seats in multiple sub-vaults inside the same vault — different strategies, different risk-return tradeoffs, all under one deposit.
-
----
-
-## 5. `p0` as backstop
-
-Strategy sub-vaults give passive lenders a productive home. `p0` — marginfi — gives the *protocol* a productive home, in two ways.
-
-**As a yield rail.** This is the substrate beneath yield-alive capital (Section 3). Every atom not actively committed to a counterparty sits on marginfi. The orderbook is the optimised path; marginfi is the always-available path *for capital*.
-
-**As a liquidity backstop.** When a borrower's bid exceeds available orderbook liquidity at their rate, the borrower's `residual_mode` decides the fate of the unfilled remainder:
+Here's the borrower's worst moment in a normal protocol: they ask for $100k, the
+book only has $70k at their price, and they're stuck. yDelta removes the cliff.
+When a bid can't be fully filled on the market, the borrower decides up front what
+happens to the leftover:
 
 ```
-borrow request (bid crosses resting asks)
+borrow request (bid sweeps the resting offers)
     │
-    ├── fully filled                   →  fixed loan(s)
+    ├── fully filled                   →  fixed-rate loan(s), done
     │
-    └── residual remains:
-          ├── P2PoolFallback  →  marginfi.borrow for the residual (variable rate)
-          ├── Rest            →  a standing bid at the limit price
-          └── Drop            →  cancel the residual, release its collateral
+    └── leftover remains:
+          ├── Fall through  →  borrow the rest from marginfi at a variable rate
+          ├── Rest          →  leave a standing bid on the book at your price
+          └── Drop          →  cancel the rest, get that collateral back
 ```
 
-The **P2Pool fallback** is the only path that opens a *real* marginfi borrow, so it is the only path marginfi's own risk weights gate: the residual is pre-checked against marginfi's init-weight collateral requirement and rejected with a clear error rather than letting the borrow CPI fail opaquely. With **Rest**, the residual becomes a standing bid (prunable by a `last_valid_unix_ts` expiry); with **Drop**, it cancels and releases its collateral.
+The **fall-through** path is what makes the cliff disappear: the borrower walks
+away with the *full* amount they asked for, with the unmatched slice funded by a
+plain variable-rate marginfi loan.
 
-**Voluntary P2Pool repayment.** A borrower on the fallback can repay the variable-rate debt at any time via `repay`. The repayment is made against the borrower marginfi liability directly; full repay re-reads the live liability and retires it to exactly zero. The P2Pool loan PDA closes only once the post-CPI live liability is zero.
+And it's a backstop, not a trap. A borrower who took the variable rate isn't stuck
+with it — **`convert-to-fixed`** walks the offer book and migrates that variable
+debt back into fixed-rate loans the moment better terms show up. They can repay
+the variable portion any time, with no penalty.
 
-**Upgrade path: variable → fixed.** A borrower who took the fallback isn't stuck on the variable rate. `convert_p2pool_to_fixed` walks the asks tree and crosses every compatible vault sub-vault ask whose `rate_bps ≤ max_acceptable_rate_bps` AND `term_seconds ≥ remaining_term`, converting the variable-rate P2Pool debt into fresh fixed-rate `MatchedLoan` queue nodes. Each cross emits a match; the unfilled residual stays on the original P2Pool loan body. Full conversion closes the P2Pool PDA — again, only when the live liability is zero. So the fallback is genuinely a backstop, not a trap.
+> The strategic posture in one line: **the order book is where credit gets
+> *priced*; marginfi is where credit gets *backstopped*.** The two layers
+> complement each other instead of competing.
 
-This is yDelta's strategic posture: **the orderbook is where credit gets priced; marginfi is where credit gets backstopped.** The two layers complement rather than compete.
+## 6. Borrow on your own terms
 
----
+A borrower's collateral is their own risk, so yDelta gives them the controls.
 
-## 6. 0-CPI fast-path
+**Set your own safety margin.** Every strategy publishes a maximum loan-to-value —
+the most it's willing to lend against your collateral. But you might not want to
+borrow right up to that ceiling; the closer you start to the limit, the less room
+you have before a price dip puts you at risk of liquidation. So a bid can carry an
+optional **LTV buffer**: a slider that says "originate me at least *this far* below
+the strategy's ceiling."
 
-A curator repricing a vault ask does **zero external CPIs**. Most lending protocols fire 4-6 CPIs per order mutation (deposit, oracle reads, allocation, etc.). The orders-of-magnitude difference comes from the design: a vault ask is a pure-memory bookkeeping entry — it carries no principal and takes no encumbrance, so placing, cancelling and re-syncing it never touches a bank.
+This is a clean control because of what it does *and doesn't* do. As you tighten
+the buffer, one of two visible things happens: either you need to post a bit more
+collateral, or you match against fewer offers — and your requested principal is
+**never silently shrunk** to make a risky fill fit. Whatever the tighter limit
+leaves unfilled just follows your fall-through / rest / drop choice, exactly like
+any other leftover. The buffer rides along on a resting bid and through edits, so
+a position you set up to be safe stays that way even when it's matched later.
 
-| Operation | CPIs | Notes |
+**No nasty term surprises.** A fixed loan runs for its full term at the locked
+rate — it never auto-rolls into something shorter. There's **no prepayment
+penalty**: pay early, for free, whenever you like. The only repricing is the one
+*you* opt into with `convert-to-fixed`.
+
+> **Under the hood.** The buffer tightens the origination gate to
+> `effective_cap = strategy_max_ltv − buffer` and that same number is stamped onto
+> the loan as its origination LTV. The liquidation trigger is the strategy's,
+> stamped separately at match time — so a curator changing their thresholds later
+> never moves the goalposts on a loan that's already open.
+
+## 7. Built to be cheap, fast, and fair
+
+**Repricing is free.** A curator can place, cancel and refresh offers all day
+without paying for it. A resting offer is a pure bookkeeping entry — it holds no
+locked principal and fires **zero** external calls — so a market with thousands of
+live offers costs a fraction of what it would in a protocol that round-trips
+through a bank on every tweak.
+
+| Operation | External calls |
+|---|---|
+| Place / cancel / refresh an offer | **0** |
+| Place a bid that crosses an offer | 0 (the atom movement is deferred to a permissionless cranker) |
+| Cancel / edit a resting bid | **0** |
+| Deposit / withdraw / repay | 1 each |
+
+**Liquidations are partial by default and fair to everyone.** A keeper can repay
+as much or as little as they have liquidity for; the loan stays open until it's
+square. The borrower gets any surplus collateral back, and a tiered keeper bonus
+means liquidations get done promptly the same way arbitrage does — permissionlessly.
+
+| Outcome | Liquidator takes | Borrower gets back |
 |---|---|---|
-| `place_order_for_sub_vault` | **0** | Pure-memory ask insert; auto-creates the vault seat; takes crossable resting bids |
-| `cancel_order_for_sub_vault` / `update_order_for_sub_vault` | **0** | Pure bookkeeping (re-sync re-reads bank APR + spread) |
-| `place_order` (borrower bid) crossing a vault ask | 0 (place); 3 (cranker) | Atom migration deferred to a permissionless cranker step |
-| `place_order` with P2Pool fallback firing | 2 (`borrow + deposit`) | Residual borrows from marginfi and re-deposits |
-| `cancel_order` / `update_order` (borrower bid) | **0** | Pure bookkeeping; releases / re-keys the resting bid |
-| `match_crank` | **0** | Permissionless sweep of a crossed-at-rest book |
-| `deposit` / `withdraw` | 1 each | + 1 SPL transfer |
-| `repay` | 1 (`marginfi.deposit` or `marginfi.repay`) | + 1 SPL transfer |
-| `claim_repayment_for_sub_vault` | 3 | Drains realised atoms back into the vault's marginfi account |
-| `process_matched_loan` | 0–3 | Keeper mints the loan PDA (+ atom migration for fixed matches) |
-| `settle_matured_loan` / `liquidate_loan` | 4 | Partial-by-default |
+| Healthy collateral (typical) | the debt value + a bonus | the rest of their collateral |
+| Underwater | the collateral (capped) | nothing; the shortfall is logged |
 
-A market with thousands of active vault asks, where every cancel-and-reprice fires zero CPIs, has dramatically lower compute and rent costs than one where each operation roundtrips through the bank.
+**The liquidation line doesn't move under your feet.** A loan becomes liquidatable
+against the threshold that was *stamped when it was made* — not a live number a
+curator can change after the fact. And every strategy must keep a minimum gap
+between its lending ceiling and its liquidation line, so no loan is ever born one
+tick from liquidation.
 
----
+## 8. A loan, from start to finish
 
-## 7. Partial liquidations
+Walk one all the way through — 100 USDC borrowed at 8% for 30 days, against 0.5 SOL.
 
-Both `liquidate_loan` and `settle_matured_loan` accept `repay_atoms_max`. A keeper can settle whatever liquidity they have; the loan stays `Active` until outstanding hits 0.
+1. **A lender funds a strategy.** They deposit 100 USDC into a vault strategy. From
+   that second, the money is earning marginfi supply yield.
+2. **The curator posts an offer.** No rate typed in by hand — the program quotes
+   `market_rate + spread`. The offer rests on the book, backing itself with the
+   strategy's idle pool. Nothing is locked.
+3. **The borrower posts collateral and bids.** 0.5 SOL goes in (earning yield too),
+   and a bid lands: 100 USDC, ≤ 8%, 30 days. The engine finds the offer, checks the
+   collateral clears the strategy's LTV, and pairs them into a loan.
+4. **A keeper finalizes the match.** Anyone can promote the match into a loan
+   record; they front the rent and get it back when the loan closes.
+5. **The loan accrues.** Interest is computed on demand — no upkeep transactions.
+   The borrower's debt and the lender's claim both grow at their locked rates; the
+   spread between them accrues to the protocol.
+6. **The borrower repays.** The money flows back through marginfi, the collateral
+   is released, and the loan record closes.
+7. **The vault sweeps it up.** A permissionless cranker pulls the repaid funds back
+   into the vault, ready to back the next offer.
 
-| Outcome | Liquidator seizes | Surplus to borrower | Bad-debt gap |
-|---|---|---|---|
-| Over-collateralized (typical) | `repay_value + bonus` | `collateral - seized` returned to borrower's seat | 0 |
-| Exactly collateralized | `collateral` (full) | 0 | 0 |
-| Under-collateralized | `collateral` (capped) | 0 | `(repay_value + bonus) - collateral` logged via `BadDebtLog` |
+And if the borrower goes quiet? After maturity (plus a grace window) a keeper can
+settle it; if the collateral ever falls below the stamped liquidation line, a
+keeper can liquidate it — partially or fully — and the lender is made whole.
 
-**The liquidation trigger is stamped, not live.** A fixed loan is liquidatable when its live oracle LTV breaches the `liquidation_ltv_bps` that was **stamped from the sub-vault at match time** — not marginfi maintenance weights, and not the sub-vault's current value. A curator who later changes the sub-vault's thresholds does not move the trigger on any open loan. Sub-vault create/update enforce `liquidation_ltv_bps ≥ max_ltv_bps + MIN_LIQ_GAP_BPS`, so no loan is ever born liquidatable. (P2Pool fallback positions are the exception — they hold a real marginfi liability, so their health is still measured against marginfi maintenance weights.)
+## 9. Under the hood
 
-Tiered keeper bonus (`bonus_atoms = debt_value_in_collateral × liquidation_keeper_bps / 10_000`) is admin-tunable per market. Keepers race on liquidations the same way they race on Solana arb opportunities — permissionless, performance-optimal. The liquidator's repaid atoms net of the liquidation protocol fee are deposited to the lender side so the fee accumulator stays fully backed.
-
-Two read-only simulation gates — `check_ltv_liquidatable` and `check_maturity_liquidatable` — let keepers and UIs confirm a settlement would succeed before sending the real transaction.
-
----
-
-## 8. Anatomy of a loan
-
-Consider a 100 USDC loan at 8% APR for 30 days, collateralised with 0.5 SOL.
-
-**1. A depositor funds a sub-vault.** `global_vault_deposit(100 USDC, sub_vault_id)`. Atoms hop into the vault's marginfi integration account; the sub-vault's `idle_principal` pool grows and the depositor is credited with vault shares. **From this moment, the atoms accrue marginfi supply APY.**
-
-**2. The curator posts a vault ask.** `place_order_for_sub_vault(sub_vault_id)` — no rate or term parameter; the program computes `bank lending APR + sub_vault.spread_bps` and uses `sub_vault.max_term_seconds`. The vault-owned `ClaimedSeat` for this market is auto-created on first use, then an unbounded `RestingOrder` is inserted into the asks tree. **No external CPI fires, no principal is committed, no encumbrance is taken** — the sub-vault's idle pool is the backing. The placement also *takes* any crossable resting bids.
-
-**3. Borrower deposits collateral.** `deposit(0.5 SOL, is_debt=false)`. Atoms hop into the market's borrower-side marginfi account; the borrower's seat is credited with collateral shares. **Collateral atoms also start earning marginfi supply APY.**
-
-**4. Borrower places a bid.** `place_order(rate=8%, term=30d, principal=100, collateral=0.5, residual_mode)`. The matching engine walks the asks tree, finds the curator's ask (`ask_rate 8% ≤ bid_rate 8%`), checks `actual_ltv ≤ sub_vault.max_ltv_bps`, sizes the cross against the sub-vault's idle pool, debits `idle_principal`, credits `deployed_principal`, and inserts a `MatchedLoan` queue node stamping the LTV pair. Any unfilled residual follows the borrower's `residual_mode` (fallback / rest / drop).
-
-**5. A keeper promotes the match.** Anyone can call `process_matched_loan(sequence)`. The keeper allocates a fresh `Loan` PDA, stamps the loan's terms (including `lender_rate`, `borrower_rate`, and the origination/liquidation LTV pair), and zeroes the queue node. The keeper pays the PDA rent and is reimbursed at loan close.
-
-**6. The loan accrues.** Time passes. The loan's `outstanding_debt_atoms` and `lender_claimable_atoms` accrue at the fixed rate. **No on-chain interaction is required for accrual** — interest is computed on demand at any read or mutation:
-
-```
-elapsed_seconds = now - loan.last_accrued_unix
-new_borrower_interest = principal × borrower_rate × elapsed / SECONDS_PER_YEAR / 10_000
-new_lender_interest   = principal × lender_rate   × elapsed / SECONDS_PER_YEAR / 10_000
-spread                = new_borrower_interest - new_lender_interest
-
-loan.outstanding_debt_atoms      += new_borrower_interest
-loan.lender_claimable_atoms      += new_lender_interest
-loan.accumulated_protocol_fee    += spread
-loan.last_accrued_unix            = now
-```
-
-Spread between borrower rate and lender rate accrues to a market-level protocol-fee bucket, drained periodically by the market admin; the curator fee accrues to the sub-vault.
-
-**7. Borrower repays.** `repay(loan, atoms)`. Atoms route into the per-market lender marginfi account via `marginfi.deposit`; the loan's `outstanding_debt_atoms` decrements. On **full** repay the same instruction (a) credits the vault-owned seat's `debt_withdrawable_shares` with the repaid asset shares, (b) decrements the sub-vault's `deployed_principal`, weighted-rate accumulators, and curator-fee accumulator, (c) bumps `pending_claim_atoms` so a permissionless sweeper knows there's something to claim, (d) sweeps the per-loan protocol-fee bucket onto the market accumulator, and (e) closes the loan PDA — refunding rent to the keeper from step 5. The borrower's collateral encumbrance is released back to their seat.
-
-**8. The vault sweeps the repaid atoms.** A permissionless cranker calls `claim_repayment_for_sub_vault(sub_vault_id)` on the relevant `(market, vault, sub_vault)` triple. This is a **stateless seat-to-vault sweeper** — it never reads the loan PDA, never re-accrues, and never touches sub-vault-level accounting. It just `marginfi.withdraw`s the vault seat's `debt_withdrawable_shares` from the per-market lender marginfi account into the vault's own `global_vault_integration_account` (so the atoms can back new asks), and decrements `pending_claim_atoms` by the swept amount.
-
-**9. Or, if the borrower stops responding…** A keeper invokes `settle_matured_loan` (after maturity + grace period) or `liquidate_loan` (if live oracle LTV breaches the loan's stamped `liquidation_ltv_bps`). Both accept `repay_atoms_max` for partial settlements; both seize collateral, pay off the lender's vault, and return any surplus to the borrower's seat. On full close they run the same per-loan close-out as step 7 — the cranker's sweeper in step 8 then realises the atoms.
-
----
-
-## 9. Architecture
+This is the deep end — skip it if you came for the pitch.
 
 ```
                  ┌──────────────────┐                 ┌──────────────┐
                  │  Vault depositor │                 │   Borrower   │
                  │  + curator       │                 │   wallet     │
                  └────────┬─────────┘                 └──────┬───────┘
-                          │ deposit USDC into a              │ deposit SOL
-                          │ SubVault; curator quotes         │
+                          │ deposit + quote                  │ deposit collateral
                           ▼                                  ▼
        ┌─────────────────────────┐          ┌─────────────────────────┐
        │  marginfi (lender side) │          │ marginfi (borrower side)│
        │  — earns supply APY     │          │  — earns supply APY     │
        └────────────┬────────────┘          └────────────┬────────────┘
-                    │ shares                             │ shares
-                    ▼                                    ▼
+                    ▼                                     ▼
        ┌──────────────────────────────────────────────────────────────┐
-       │                          Market PDA                           │
-       │                                                                │
-       │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐  │
-       │  │   Bids tree  │ │   Asks tree  │ │    Seats tree        │  │
-       │  │ (borrower    │ │ (vault sub-  │ │  (per-trader balance │  │
-       │  │  RestingOrder│ │  vault       │ │   bookkeeping)       │  │
-       │  │  nodes)      │ │  RestingOrder│ └──────────────────────┘  │
-       │  └──────┬───────┘ │  nodes)      │                            │
-       │         │         └──────┬───────┘                            │
-       │   matching engine ◄──────┘  (bid take · ask take · crank)     │
+       │                          Market                                │
+       │   ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐  │
+       │   │  Bids tree   │ │  Offers tree │ │   Seats (balances)   │  │
+       │   └──────┬───────┘ └──────┬───────┘ └──────────────────────┘  │
+       │          └─ matching engine ─┘   (bid takes · offer takes · crank) │
        │                       │                                        │
-       │            ┌──────────▼──────────┐                             │
-       │            │   MatchedLoan queue │                             │
-       │            └──────────┬──────────┘                             │
-       └───────────────────────┼────────────────────────────────────────┘
-                               │ keeper promotes
-                               ▼
-                     ┌─────────────────────┐
-                     │     Loan PDA        │
-                     │  (fixed-rate,       │
-                     │   fixed-term)       │
-                     └─────────────────────┘
+       │              ┌────────▼────────┐                               │
+       │              │  Matched-loan   │ ─ keeper promotes ─► Loan record  │
+       │              │     queue       │      (fixed rate, fixed term)   │
+       └──────────────────────────────────────────────────────────────┘
 ```
 
-The book has **two trees of resting orders** — the asks tree (vault sub-vault quotes) and the bids tree (borrower residuals that chose to rest). A borrower bid crosses the asks tree on placement; its unfilled residual may rest in the bids tree, where a later ask placement or the `MatchCrank` crosses it.
+A few design choices worth calling out:
 
-### Two marginfi accounts per market
+- **Two marginfi accounts per market.** One holds the lent asset, the other holds
+  the borrower's collateral and any variable-rate debt. The split sidesteps a
+  marginfi rule (one account can't hold both an asset and a liability on the same
+  pool) and keeps every flow unconditional.
+- **LTV is the curator's, decoupled from marginfi.** A fixed loan's collateral is a
+  pure asset on marginfi — it carries no marginfi liability — so marginfi's own
+  risk weights were never the right gate. Origination is gated only by the
+  strategy's ceiling (which can sit *above* marginfi's implied LTV, extending more
+  borrowing power than marginfi itself would), and liquidation by a separately
+  stamped threshold. Marginfi's weights still gate exactly one thing: the
+  variable-rate fall-through, which opens a real marginfi borrow.
+- **Offers are unbounded; matches are atomic.** An offer says "lend all my idle
+  capital," carries no fixed size, and every cross against it is sized at match
+  time from the strategy's live idle balance — so concurrent matches across
+  different markets can never over-commit the same pool.
+- **Oracles are conservative.** Pyth and Switchboard feeds are decoded directly,
+  with confidence-interval and staleness rejection; a volatile, unconfident or
+  stale reading fails the LTV check rather than producing a wrong number.
 
-A market wraps **two** marginfi-account PDAs, not one:
+For the byte-level contract — account layouts, the matching engines, the full
+decision log — see [`docs/protocol-design.md`](docs/protocol-design.md) and
+[`docs/v1-spec.md`](docs/v1-spec.md).
 
-- **Lender side** holds the debt-mint asset (USDC).
-- **Borrower side** holds the collateral asset (SOL) and any P2Pool debt liability.
-
-The split sidesteps a marginfi v0.1.8 invariant: a single marginfi account can't simultaneously hold an asset position and a liability position on the same bank. By keeping the lender's USDC asset and the borrower's USDC liability on separate accounts, both flows become unconditional. A `market_signer` PDA at `[b"market_signer", market]` is the authority on both, and on the market's per-mint debt/collateral staging vaults.
-
-### The seat-share invariant
-
-```
-Per-trader balance = marginfi shares on ClaimedSeat
-   {debt, collateral} × {withdrawable, encumbered}
-```
-
-- **Borrower deposits collateral** → `withdrawable + X` on the collateral side
-- **Bid rests** → collateral shares move `withdrawable → encumbered` and keep earning while the bid waits
-- **Match** → on the borrower's seat, collateral stays encumbered against the loan; the loan PDA records who owes what (atoms unchanged on chain)
-- **Repay** → atoms flow back from the borrower's wallet via `marginfi.deposit`; the vault lender's claim realises onto the vault-owned seat via `claim_repayment_for_sub_vault`
-
-A vault ask takes **no seat encumbrance** — it is backed by the sub-vault's idle pool, sized at match time. Share counts are conserved through the loan lifecycle. Share-price appreciation of the underlying marginfi position accrues continuously to the share holder regardless of bucket.
-
----
-
-## 10. Under the hood
-
-### Yield decomposition
-
-The protocol decomposes lender yield into two streams so a UI can show them separately:
-
-**Stream 1 — Supply yield (variable, marginfi-driven).** Earned on any atoms sitting on a marginfi account. Yield accrues uniformly by share-price growth on the underlying bank, regardless of whether shares are `withdrawable` or `encumbered`. A depositor whose 100 USDC sits idle while the USDC bank earns 4% supply APY for a month now holds shares worth ≈ 100.33 USDC.
-
-**Stream 2 — Lender-rate yield (fixed, loan-driven).** Earned on the loan's `lender_rate_bps` while the loan is open, credited net of `curator_fee_bps`. Computed lazily at every read/mutation. Because each ask is stored at `bank_APR + spread` and the fill-time floor blocks anything below the live bank lending APR, a fixed loan is always struck at or above the bank's lending rate *at origination*.
-
-**The single rule:** atoms can only earn one stream at a time. Idle on marginfi → supply yield. Committed to a loan → lender rate. Borrowers earn supply yield on borrowed atoms while they're parked on the lender side, naturally hedging their fixed liability against the variable supply rate.
-
-### Unbounded sub-vault asks + match-time atomicity
-
-A vault sub-vault ask rests on the market with **no fixed principal and no per-seat encumbrance** — it is the "quote all idle" model. The sub-vault's `idle_principal` pool is the backing, and there is at most one live ask per (sub-vault, market).
-
-When a borrower's bid crosses a vault ask, the matching engine reads the `GlobalVault` state, checks the gate `sub_vault_idle ≥ matched_principal`, verifies `actual_ltv ≤ sub_vault.max_ltv_bps` at oracle prices, and atomically moves `idle_principal → deployed_principal` — all in the same transaction. **Concurrent matches from different markets see the locked pool** because the match-time read-modify-write is single-tx atomic. After the match, atoms migrate `vault.integration → market.lender_integration` via a 3-CPI cranker step.
-
-### Two-step admin transfers + market/global pause
-
-Every admin role (market admin, vault admin, sub-vault curator, protocol-wide admin) has a two-step transfer pattern: an `initiate` ix sets `pending_admin`, an `accept` ix (signed by the new admin) commits. Prevents accidental transfer to a non-controlled key.
-
-Market and protocol-wide pause flags gate every state-mutating ix at the loader level. **Markets are live at creation** — `CreateMarketParams` carries the full fee config, so there is no unconfigured setup window and no paused-by-default handshake. The pause switches exist for *emergencies* — a market that loses oracle freshness, a vault accounting anomaly, a marginfi-side issue — and can be contained at the affected scope without redeploying code. Sub-vaults additionally support sunset/resume for orderly wind-down.
-
-### Oracle integration
-
-- **Pyth-Push** (`OracleSetup::PythPushOracle`) — single oracle account, decoded via offset reads on the `PriceUpdateV2` layout. Enforces `MIN_PYTH_PUSH_VERIFICATION_LEVEL = Full`. Partial-verified updates are rejected outright.
-- **Switchboard-Pull** (`OracleSetup::SwitchboardPull`) — single oracle account, decoded from `PullFeedAccountData.result.value`.
-- **StakedWithPythPush** — three oracle accounts (Pyth feed + LST mint + stake state). The Pyth SOL price is adjusted by `(sol_pool_balance - 1 SOL) / lst_supply` to derive the LST exchange rate.
-
-Confidence-interval rejection on both Pyth (`2.12σ`) and Switchboard (`1.96σ`). Threshold = `bank.config.oracle_max_confidence × price` (default 10%). A bounded future-skew gate rejects readings stamped too far ahead of the clock. A volatile, unconfident, or skewed oracle reading rejects the LTV check — both the origination gate (sub-vault `max_ltv_bps`) and the stamped liquidation gate — rather than producing a bogus number.
-
----
-
-## 11. Build & test
+## 10. Build & test
 
 ```bash
 # Native unit + integration tests (fast)
@@ -473,21 +398,21 @@ Workspace layout:
 
 ```
 .
-├── README.md
+├── README.md                         # this file — the protocol story
 ├── programs/
-│   ├── ydelta/                       # The ydelta on-chain program
-│   ├── ydelta-test-harness/          # SBF test harness program
-│   └── marginfi-mocks/               # marginfi v0.1.8 type mocks
-├── lib/                              # Shared libs (hypertree)
+│   ├── ydelta/                       # the on-chain program
+│   ├── ydelta-test-harness/          # SBF test harness
+│   └── marginfi-mocks/               # marginfi type mocks
+├── lib/                              # shared libs (hypertree)
 ├── ts/
-│   ├── src/                          # `@ydelta/sdk` TypeScript source
+│   ├── README.md                     # @ydelta/sdk docs (published to npm)
+│   ├── src/                          # @ydelta/sdk TypeScript source
 │   ├── idl/ydelta.json               # IDL shipped with the npm package
-│   ├── scripts/                      # Operator scripts (bootstrap, cranks, debug)
+│   ├── scripts/                      # operator scripts (bootstrap, cranks, debug)
 │   └── tests/                        # SDK + integration tests
 ├── docs/
-│   ├── v1-spec.md                    # The v1 decision log (D1–D17) and contract
-│   └── protocol-design.md            # Engineering companion to this README
-├── dist/                             # Built SDK output (npm publish target)
+│   ├── v1-spec.md                    # the decision log (D1–D18) and contract
+│   └── protocol-design.md            # engineering companion to this README
 └── scripts/
     ├── build-program.sh
     ├── deploy-program.sh
