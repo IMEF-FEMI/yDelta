@@ -69,6 +69,21 @@ if [[ -z "$program_id" ]]; then
     exit 1
 fi
 
+# Pin OtterSec's remote rebuild to the same toolchain image as
+# scripts/build-verifiable.sh (from [package.metadata.solana].solana-version).
+# 2.2.x ships cargo 1.84, which can't parse edition-2024 deps; pin >= 2.3.0.
+solana_version=$(awk '
+    /^\[package\.metadata\.solana\]/ {in_section=1; next}
+    /^\[/ {in_section=0}
+    in_section && /^solana-version[[:space:]]*=/ {
+        if (match($0, /"[^"]*"/)) { print substr($0, RSTART + 1, RLENGTH - 2); exit }
+    }
+' "$ROOT/programs/ydelta/Cargo.toml")
+base_image_args=()
+if [[ -n "$solana_version" ]]; then
+    base_image_args=(--base-image "solanafoundation/solana-verifiable-build:$solana_version")
+fi
+
 cluster="${YDELTA_RPC_URL:-https://api.mainnet-beta.solana.com}"
 
 local_hash=$(solana-verify get-executable-hash "$artifact")
@@ -138,6 +153,7 @@ solana-verify verify-from-repo \
     --skip-prompt \
     --url "$cluster" \
     --library-name ydelta \
+    "${base_image_args[@]}" \
     --program-id "$program_id" \
     --commit-hash "$commit" \
     "$git_remote"
