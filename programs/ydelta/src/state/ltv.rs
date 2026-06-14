@@ -99,6 +99,17 @@ pub fn required_collateral_at_ltv_cap(
     )
 }
 
+/// A borrower may attach an optional `ltv_buffer_bps` to their bid to
+/// originate strictly tighter than a sub-vault's published `max_ltv_bps`.
+/// The effective origination cap is the sub-vault cap reduced by the
+/// buffer, saturating at 0 — a zero cap fails the collateral gate closed,
+/// so an over-large buffer simply means "do not fill me here". Used both
+/// for the match-time collateral gate and for the stamped
+/// `origination_ltv_bps`.
+pub fn effective_origination_cap_bps(sub_vault_max_ltv_bps: u16, borrower_buffer_bps: u16) -> u16 {
+    sub_vault_max_ltv_bps.saturating_sub(borrower_buffer_bps)
+}
+
 /// Reads the borrower's marginfi liability-share count against
 /// `debt_bank_pk`. Returns 0 when the borrower has no balance in that
 /// bank.

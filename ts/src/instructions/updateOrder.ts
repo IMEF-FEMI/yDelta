@@ -20,6 +20,12 @@ export interface UpdateOrderArgs {
   newTermSeconds: number;
   newLastValidUnixTs: bigint | BN | number;
   seatIndexHint?: number | null;
+  /**
+   * New borrower LTV buffer (bps, 0..=10_000). Persists on the rested bid so a
+   * later ask / MatchCrank cross honors the updated `effective_cap`. Defaults
+   * to `0` (no buffer) when omitted.
+   */
+  newLtvBufferBps?: number;
 }
 
 export function updateOrderInstruction(args: UpdateOrderArgs): TransactionInstruction {
@@ -30,6 +36,7 @@ export function updateOrderInstruction(args: UpdateOrderArgs): TransactionInstru
     .u16(args.newRateBps)
     .u32(args.newTermSeconds)
     .i64(args.newLastValidUnixTs)
+    .u16(args.newLtvBufferBps ?? 0)
     .toBuffer();
 
   return ydeltaIx(

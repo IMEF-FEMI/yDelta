@@ -37,6 +37,7 @@ pub fn convert_p2pool_to_fixed_instruction(
     marginfi_group: &Pubkey,
     marginfi_program: &Pubkey,
     max_acceptable_rate_bps: u16,
+    ltv_buffer_bps: u16,
 
     cranker_refund: &Pubkey,
 ) -> Instruction {
@@ -48,6 +49,7 @@ pub fn convert_p2pool_to_fixed_instruction(
     let mut data = YdeltaInstruction::ConvertP2PoolToFixed.to_vec();
     ConvertP2PoolToFixedParams {
         max_acceptable_rate_bps,
+        ltv_buffer_bps,
     }
     .serialize(&mut data)
     .unwrap();

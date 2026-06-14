@@ -37,6 +37,9 @@ pub struct UpdateOrderParams {
     pub new_term_seconds: u32,
     /// Replacement expiry; `0` = never, otherwise must be in the future.
     pub new_last_valid_unix_ts: i64,
+    /// Replacement borrower LTV buffer in bps (0 disables). Lets the
+    /// borrower tighten or relax their resting bid's origination ceiling.
+    pub new_ltv_buffer_bps: u16,
 }
 
 /// Borrower-signed cancel-and-replace of a resting bid.
@@ -46,6 +49,12 @@ pub fn process_update_order(
     data: &[u8],
 ) -> ProgramResult {
     let params = UpdateOrderParams::try_from_slice(data)?;
+    require!(
+        params.new_ltv_buffer_bps <= 10_000,
+        YdeltaError::InvalidArgument,
+        "new_ltv_buffer_bps {} exceeds 10000",
+        params.new_ltv_buffer_bps
+    )?;
     let CancelOrderContext {
         payer,
         market,
@@ -90,6 +99,7 @@ pub fn process_update_order(
             params.new_rate_bps,
             params.new_term_seconds,
             params.new_last_valid_unix_ts,
+            params.new_ltv_buffer_bps,
             now,
         )?;
         (

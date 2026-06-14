@@ -24,6 +24,7 @@ pub fn update_order_instruction(
     new_rate_bps: u16,
     new_term_seconds: u32,
     new_last_valid_unix_ts: i64,
+    new_ltv_buffer_bps: u16,
 ) -> Instruction {
     let mut data = YdeltaInstruction::UpdateOrder.to_vec();
     UpdateOrderParams {
@@ -32,6 +33,7 @@ pub fn update_order_instruction(
         new_rate_bps,
         new_term_seconds,
         new_last_valid_unix_ts,
+        new_ltv_buffer_bps,
     }
     .serialize(&mut data)
     .unwrap();

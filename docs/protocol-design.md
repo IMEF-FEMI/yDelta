@@ -212,6 +212,53 @@ not a property of the bid. (Marginfi's weights do still gate one path —
 the variable-rate fallback — because that path opens a real marginfi
 borrow. See §14 and §17.)
 
+### 2.1 Borrower LTV buffer
+
+The LTV gate above is the *lender's* ceiling. A borrower can also choose
+to originate strictly below it by attaching an optional `ltv_buffer_bps`
+to the bid. The engine then gates on:
+
+```text
+effective_cap = sub_vault.max_ltv_bps.saturating_sub(buffer)
+```
+
+and that `effective_cap` is what both the collateral gate and the stamped
+`origination_ltv_bps` use. The `liquidation_ltv_bps` stamp is unchanged
+(still the sub-vault's). `buffer = 0` reproduces the prior behavior
+exactly.
+
+This is **gate, not shrink.** A buffered bid only fills against asks whose
+cap it clears *with* the buffer; an ask it would have cleared at the bare
+`max_ltv_bps` but not at `effective_cap` is skipped, exactly like any
+other per-ask gate. Whatever principal the tightened gate leaves unfilled
+follows the borrower's `residual_mode` (fallback / rest / drop) — it is
+**never silently reduced**. So a UI LTV slider that tightens the buffer
+either raises the collateral a given principal needs or narrows the set of
+asks that fill, with the requested principal preserved.
+
+The buffer is honored uniformly in all three matching engines —
+`match_order` (borrower take), `match_resting_bids` (ask take), and
+`match_p2pool_residual_against_asks` (the `convert_p2pool_to_fixed`
+refinance scan) — at **both** the collateral gate and the stamped
+`origination_ltv_bps`. Each engine sources the buffer from its own
+intent: `match_order` from `PlaceOrderParams`, `match_resting_bids` from
+the resting bid node, and the refinance scan from
+`ConvertP2PoolToFixedParams`. The single P2Pool **fallback** path is the
+exception — it opens a real marginfi borrow and is gated by marginfi's
+init weights, not the buffer.
+
+Because a buffered bid can rest, the buffer **persists on the
+`RestingOrder`** (a `u16` at offset 66, absorbed into the struct's
+existing reserved bytes — total size unchanged) so a later ask cross or
+`MatchCrank` honors the same buffer the borrower chose at placement. It is
+editable via `UpdateOrder`. All three entry points
+(`PlaceOrderParams`, `UpdateOrderParams`, `ConvertP2PoolToFixedParams`)
+validate `ltv_buffer_bps ≤ 10_000`.
+
+Helper: `crate::state::ltv::effective_origination_cap_bps(max_ltv_bps,
+buffer)` centralizes the saturating subtraction so every engine computes
+the same cap.
+
 ---
 
 ## 3. Yield-alive capital
@@ -988,7 +1035,7 @@ The codebase maps closely to the design:
 - `programs/ydelta/tests/cases/` — lifecycle and mechanism coverage,
   including bids, the take path, the crank, self-cross, LTV decoupling, and
   liquidation
-- `docs/v1-spec.md` — the decision log (D1–D17) and the authoritative v1
+- `docs/v1-spec.md` — the decision log (D1–D18) and the authoritative v1
   contract this document describes
 
 ---

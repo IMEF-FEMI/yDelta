@@ -528,6 +528,10 @@
         {
           "name": "collateralAtoms",
           "type": "u64"
+        },
+        {
+          "name": "ltvBufferBps",
+          "type": "u16"
         }
       ]
     },
@@ -2411,6 +2415,10 @@
         {
           "name": "maxAcceptableRateBps",
           "type": "u16"
+        },
+        {
+          "name": "ltvBufferBps",
+          "type": "u16"
         }
       ]
     },
@@ -2866,6 +2874,10 @@
         {
           "name": "newLastValidUnixTs",
           "type": "i64"
+        },
+        {
+          "name": "newLtvBufferBps",
+          "type": "u16"
         }
       ]
     }

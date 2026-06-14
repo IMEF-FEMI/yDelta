@@ -373,6 +373,11 @@ pub struct MatchArgs {
     /// the processor. Asks whose stored rate is below this are skipped
     /// (fill-time floor). 0 disables the floor (degenerate bank).
     pub ask_floor_rate_bps: u16,
+
+    /// Borrower-set LTV buffer in bps. The collateral gate (and the
+    /// stamped origination LTV) use `sub_vault.max_ltv_bps − this`, so a
+    /// bid only fills against asks whose cap it clears with the buffer.
+    pub ltv_buffer_bps: u16,
 }
 
 /// Output of a single [`match_order`] / [`match_borrower_bid`] call.
@@ -579,12 +584,18 @@ pub fn match_order(
         // cap is per-ask policy, not a property of the bid: a stricter
         // profile skips and the scan walks on to asks whose cap the
         // bid's collateral does satisfy. A zero cap fails closed (skip).
+        // Borrower's buffer tightens the per-ask cap; the same effective
+        // cap is stamped onto the loan below.
+        let effective_cap_bps = crate::state::ltv::effective_origination_cap_bps(
+            profile_max_ltv_bps,
+            args.ltv_buffer_bps,
+        );
         {
             let required_at_profile_cap = crate::state::ltv::required_collateral_at_ltv_cap(
                 matched_principal,
                 args.debt_oracle_price_fp48,
                 args.collateral_oracle_price_fp48,
-                profile_max_ltv_bps,
+                effective_cap_bps,
                 fixed.debt_mint_decimals,
                 fixed.collateral_mint_decimals,
             )?;
@@ -667,9 +678,9 @@ pub fn match_order(
         // the curator fee lives on the sub-vault, snapshotted at
         // match so later changes never touch open loans.
         node.curator_fee_bps_snapshot = profile_curator_fee_bps;
-        // stamp the sub-vault's LTV pair — curator updates never
-        // move thresholds on open loans.
-        node.origination_ltv_bps = profile_max_ltv_bps;
+        // stamp the LTV pair — curator updates never move thresholds on
+        // open loans. Origination reflects the borrower's buffer.
+        node.origination_ltv_bps = effective_cap_bps;
         node.liquidation_ltv_bps = profile_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 = lender_debt_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 = borrower_collateral_snapshot;
@@ -955,6 +966,11 @@ pub struct PlaceOrderArgs {
 
     /// Live marginfi lending APR in bps (ceil) — the ask floor.
     pub ask_floor_rate_bps: u16,
+
+    /// Borrower-set LTV buffer in bps (default 0). Tightens the
+    /// origination cap to `sub_vault.max_ltv_bps − this`; carried onto a
+    /// rested residual so later crosses keep honoring it.
+    pub ltv_buffer_bps: u16,
 }
 
 /// Inputs to [`rest_vault_ask`].
@@ -1089,6 +1105,7 @@ pub fn match_borrower_bid(
             debt_oracle_price_fp48: args.debt_oracle_price_fp48,
             collateral_oracle_price_fp48: args.collateral_oracle_price_fp48,
             ask_floor_rate_bps: args.ask_floor_rate_bps,
+            ltv_buffer_bps: args.ltv_buffer_bps,
         },
         vault_ai,
     )?;
@@ -1233,6 +1250,7 @@ pub fn match_borrower_bid(
                 match_result.remaining_collateral,
                 args.last_valid_unix_ts,
                 0,
+                args.ltv_buffer_bps,
                 snapshot,
             );
             let mut market = MarketRefMut { fixed, dynamic };
@@ -1325,6 +1343,8 @@ pub fn rest_vault_ask(
         0,
         super::constants::NO_EXPIRATION_LAST_VALID_UNIX_TS,
         args.flags,
+        // vault asks carry no borrower LTV buffer
+        0,
         crate::math::Fp48::ZERO,
     );
     let mut market = MarketRefMut { fixed, dynamic };
@@ -1438,6 +1458,7 @@ pub fn update_user_bid(
     new_rate_bps: u16,
     new_term_seconds: u32,
     new_last_valid_unix_ts: i64,
+    new_ltv_buffer_bps: u16,
     now_unix_ts: i64,
 ) -> Result<u64, ProgramError> {
     let order: RestingOrder = *get_helper_order(dynamic, order_index).get_value();
@@ -1488,6 +1509,7 @@ pub fn update_user_bid(
         order.collateral_atoms,
         new_last_valid_unix_ts,
         order.flags,
+        new_ltv_buffer_bps,
         order.share_price_snapshot(),
     );
     let mut market = MarketRefMut { fixed, dynamic };
@@ -1543,6 +1565,11 @@ pub struct MatchP2PoolRefinanceArgs {
 
     /// Live marginfi lending APR in bps (ceil) — the ask floor.
     pub ask_floor_rate_bps: u16,
+
+    /// Borrower-set LTV buffer in bps (default 0). Tightens the
+    /// origination cap on each refinance cross to
+    /// `sub_vault.max_ltv_bps − this`.
+    pub ltv_buffer_bps: u16,
 }
 
 /// One fill produced by [`match_p2pool_residual_against_asks`]; the
@@ -1713,7 +1740,10 @@ pub fn match_p2pool_residual_against_asks(
                         matched_principal,
                         args.debt_oracle_price_fp48,
                         args.collateral_oracle_price_fp48,
-                        profile_max_ltv_bps,
+                        crate::state::ltv::effective_origination_cap_bps(
+                            profile_max_ltv_bps,
+                            args.ltv_buffer_bps,
+                        ),
                         args.debt_mint_decimals,
                         args.collateral_mint_decimals,
                     )?;
@@ -1785,8 +1815,11 @@ pub fn match_p2pool_residual_against_asks(
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_PRESETTLED
             | crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
         node.curator_fee_bps_snapshot = profile_curator_fee_bps;
-        // stamp the sub-vault's LTV pair.
-        node.origination_ltv_bps = profile_max_ltv_bps;
+        // stamp the LTV pair; origination reflects the borrower's buffer.
+        node.origination_ltv_bps = crate::state::ltv::effective_origination_cap_bps(
+            profile_max_ltv_bps,
+            args.ltv_buffer_bps,
+        );
         node.liquidation_ltv_bps = profile_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 = maker_snapshot;
         node.borrower_collateral_share_price_snapshot_fp48 =
@@ -2043,7 +2076,12 @@ pub fn match_resting_bids(
                 fill,
                 args.debt_oracle_price_fp48,
                 args.collateral_oracle_price_fp48,
-                args.profile_max_ltv_bps,
+                // the resting bid carries its owner's LTV buffer; honor it
+                // when a later ask crosses it.
+                crate::state::ltv::effective_origination_cap_bps(
+                    args.profile_max_ltv_bps,
+                    bid.ltv_buffer_bps,
+                ),
                 args.debt_mint_decimals,
                 args.collateral_mint_decimals,
             )?;
@@ -2109,8 +2147,11 @@ pub fn match_resting_bids(
         node.loan_type = 0;
         node.flags = crate::state::market::MATCHED_LOAN_FLAG_VAULT_LENDER;
         node.curator_fee_bps_snapshot = args.ask_curator_fee_bps;
-        // stamp the sub-vault's LTV pair.
-        node.origination_ltv_bps = args.profile_max_ltv_bps;
+        // stamp the LTV pair; origination reflects the bid's buffer.
+        node.origination_ltv_bps = crate::state::ltv::effective_origination_cap_bps(
+            args.profile_max_ltv_bps,
+            bid.ltv_buffer_bps,
+        );
         node.liquidation_ltv_bps = args.profile_liquidation_ltv_bps;
         node.lender_debt_share_price_snapshot_fp48 =
             args.lender_debt_share_price_snapshot_fp48;

@@ -644,7 +644,56 @@ impl MarketFixture {
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            flags, // residual_mode (v1 D6)
+            0, // ltv_buffer_bps (off)
+            flags, // residual_mode
+            0,     // last_valid_unix_ts: rested bids never expire by default
+            None,
+        );
+        let _ = (side, order_type);
+        let kp = signer.insecure_clone();
+        self.process(ix, &[&kp]).await
+    }
+
+    /// Variant of `place_order_with_flags` that also exposes
+    /// `ltv_buffer_bps` (the borrower-set origination-LTV buffer).
+    /// Mirrors `place_order_with_flags` exactly; only `ltv_buffer_bps`
+    /// is threaded through to the builder.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn place_order_with_buffer(
+        &self,
+        signer: &Keypair,
+        side: Side,
+        order_type: OrderType,
+        rate_bps: u16,
+        term_seconds: u32,
+        principal_atoms: u64,
+        collateral_atoms: u64,
+        ltv_buffer_bps: u16,
+        flags: u8,
+    ) -> Result<(), solana_program_test::BanksClientError> {
+        self.refresh_oracle_freshness().await;
+        let debt_bank_lva = mainnet::liquidity_vault_authority(mainnet::usdc_bank());
+        let borrower_debt_token = self.signer_debt_token(&signer.pubkey());
+        let ix = place_order_instruction(
+            &self.market.pubkey(),
+            &signer.pubkey(),
+            &mainnet::marginfi_group(),
+            &mainnet::usdc_bank(),
+            &mainnet::sol_bank(),
+            &[mainnet::usdc_oracle()],
+            &[mainnet::sol_oracle()],
+            &mainnet::usdc_liquidity_vault(),
+            &debt_bank_lva,
+            &borrower_debt_token,
+            &mainnet::usdc_mint(),
+            &spl_token::id(),
+            &marginfi_mocks::ID,
+            rate_bps,
+            term_seconds,
+            principal_atoms,
+            collateral_atoms,
+            ltv_buffer_bps,
+            flags, // residual_mode
             0,     // last_valid_unix_ts: rested bids never expire by default
             None,
         );
@@ -688,7 +737,8 @@ impl MarketFixture {
             term_seconds,
             principal_atoms,
             collateral_atoms,
-            flags, // residual_mode (v1 D6)
+            0, // ltv_buffer_bps (off)
+            flags, // residual_mode
             0,     // last_valid_unix_ts: rested bids never expire by default
             None,
         );
@@ -1172,6 +1222,7 @@ impl MarketFixture {
             &mainnet::marginfi_group(),
             &marginfi_mocks::ID,
             max_acceptable_rate_bps,
+            0, // ltv_buffer_bps (off)
             &cranker_refund,
         );
         let kp = borrower.insecure_clone();

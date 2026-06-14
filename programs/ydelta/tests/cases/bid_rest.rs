@@ -157,6 +157,7 @@ async fn update_order_replaces_in_place() {
         /*new_rate_bps=*/ 2_500,
         /*new_term_seconds=*/ TERM * 2,
         /*new_last_valid_unix_ts=*/ 0,
+        /*new_ltv_buffer_bps=*/ 0,
     );
     fixture
         .process_ixs(&[update_ix], &[&borrower.insecure_clone()])
