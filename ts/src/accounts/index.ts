@@ -64,6 +64,7 @@ export {
   decodeMarket,
   decodeMarketHeader,
   iterAsks,
+  iterBids,
   iterClaimedSeats,
   iterMatchedLoans,
   iterFreeList,
