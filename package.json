@@ -57,6 +57,7 @@
     "vault:deposit": "tsx ts/scripts/vault-deposit.ts",
     "vault:withdraw": "tsx ts/scripts/vault-withdraw.ts",
     "vault:place-ask": "tsx ts/scripts/vault-place-ask.ts",
+    "vault:update-order": "tsx ts/scripts/vault-update-order.ts",
     "vault:cancel-order": "tsx ts/scripts/vault-cancel-order.ts",
     "seat:deposit": "tsx ts/scripts/seat-deposit.ts",
     "seat:withdraw": "tsx ts/scripts/seat-withdraw.ts",

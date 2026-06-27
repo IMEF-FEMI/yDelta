@@ -101,17 +101,23 @@ At the highest level, yDelta matches:
 The match creates a discrete loan rather than adding both sides to a
 pooled balance sheet.
 
-```text
-Lender quote (resting ask):
-  rate = live bank lending APR + sub_vault.spread_bps
-  term = sub_vault.max_term_seconds
-  placed by a sub-vault curator; unbounded principal
+```mermaid
+flowchart LR
+    SV["Sub-vault strategy<br/>spread, maximum term, and LTV policy"]
+    APR["Live marginfi<br/>lending APR"]
+    ASK["Standing vault ask<br/>rate = APR + spread<br/>no fixed principal reserved"]
+    BID["Borrower bid<br/>rate ceiling, term,<br/>principal, and collateral"]
+    SCAN["Match-time compatibility scan<br/>rate, term, available liquidity,<br/>LTV, expiry, and self-cross"]
+    QUEUE["Queued MatchedLoan"]
+    FIXED["Fixed loan<br/>terms stamped at match"]
+    RESIDUAL["Unfilled bid principal<br/>rest, P2Pool fallback, or drop"]
 
-Borrower intent (bid; fills now, residual rests / falls back / drops):
-  rate (ceiling), term, principal, collateral
-
-Match result:
-  fixed loan with locked terms
+    SV --> ASK
+    APR --> ASK
+    ASK --> SCAN
+    BID --> SCAN
+    SCAN -->|"matched principal, if any"| QUEUE --> FIXED
+    SCAN -->|"unfilled principal, if any"| RESIDUAL
 ```
 
 Both sides can rest, but they are not symmetric. Asks are **standing
@@ -267,18 +273,34 @@ CPIs; they are not the primary long-lived accounting layer.
 yDelta uses one `GlobalVault` per lending **bank** and supports multiple
 operator-managed sub-vaults inside that vault.
 
-```text
-                    GlobalVault
-              (one vault per marginfi bank)
-                           |
-        ------------------------------------------------
-        |                      |                      |
-    SubVault 0            SubVault 1             SubVault 2
-   Pool, low LTV         Pool, med LTV         Private, owner-run
-        |                      |                      |
-   market seats            market seats            market seats
-        |                      |                      |
-   quoted liquidity       quoted liquidity       quoted liquidity
+```mermaid
+flowchart TB
+    BANK["marginfi lending bank"]
+
+    subgraph GV["GlobalVault: one per lending bank"]
+        IA["Vault marginfi integration account<br/>shared custody rail for idle liquidity"]
+        P1["Pool sub-vault A<br/>independent shares, capital, policy, and accounting"]
+        P2["Pool sub-vault B<br/>independent shares, capital, policy, and accounting"]
+        PR["Private sub-vault<br/>single owner and independent accounting"]
+    end
+
+    subgraph MKTS["Compatible yDelta markets with the same debt-side bank"]
+        M1["Debt asset / Collateral X"]
+        M2["Debt asset / Collateral Y"]
+        M3["Debt asset / Collateral Z"]
+    end
+
+    BANK -->|"asset-share accounting"| IA
+    P1 ---|"idle accounting"| IA
+    P2 ---|"idle accounting"| IA
+    PR ---|"idle accounting"| IA
+
+    P1 -.->|"quotes"| M1
+    P1 -.->|"quotes"| M2
+    P2 -.->|"quotes"| M2
+    P2 -.->|"quotes"| M3
+    PR -.->|"quotes"| M1
+    PR -.->|"quotes"| M3
 ```
 
 Keying the vault by **bank** rather than by mint makes the
@@ -664,15 +686,25 @@ sub-vaults always use a zero curator fee.
 The orderbook is the primary venue for fixed-rate matching. The borrower chooses
 how the unfilled residual of a bid is handled:
 
-```text
-borrow request (IOC bid crosses resting asks)
-    │
-    ├── fully filled                   →  fixed loan(s)
-    │
-    └── residual remains, and the borrower's residual_mode decides:
-          ├── P2PoolFallback  →  open a variable-rate marginfi borrow
-          ├── Rest            →  leave a resting bid at the limit price
-          └── Drop            →  cancel the residual, release its collateral
+```mermaid
+flowchart TB
+    BID["Borrow request<br/>crosses compatible resting asks"]
+    FIXED["Fixed loan or loans<br/>for matched principal"]
+    REM{"Unfilled principal remains?"}
+    MODE{"Borrower's residual mode"}
+    REST["Resting bid<br/>collateral remains encumbered"]
+    LATER["Later ask placement,<br/>reprice, or MatchCrank"]
+    P2P["P2Pool fallback<br/>variable-rate marginfi liability"]
+    CONVERT["Must-full-fill conversion<br/>when compatible asks cover all live liability"]
+    DROP["Drop residual<br/>release unused collateral"]
+
+    BID -->|"matched principal, if any"| FIXED
+    BID --> REM
+    REM -->|"No"| DONE["Request fully handled"]
+    REM -->|"Yes"| MODE
+    MODE -->|"Rest"| REST --> LATER --> FIXED
+    MODE -->|"P2PoolFallback"| P2P --> CONVERT --> FIXED
+    MODE -->|"Drop"| DROP
 ```
 
 The **P2Pool fallback** is the only path that opens a *real* marginfi
@@ -732,27 +764,39 @@ fill-time floor and owner-level self-cross skip from the matching engine.
 The protocol can be pictured as two productive sides feeding a match
 engine.
 
-```text
- Lender wallet                            Borrower wallet
-      │                                         │
-      ▼                                         ▼
- vault sub-vault (debt-side)            productive collateral-side rail
-      │                                         │
-      ▼                                         ▼
- sub-vault market seat                    borrower seat
-      │                                         │
-      └────────────── orderbook / matcher ──────┘
-                             │
-                             ▼
-                        matched loan
-                             │
-           ┌─────────────────┴─────────────────────────┐
-           │                                           │
-           ▼                                           ▼
-      repayment path                          keeper intervention path
-           │                                           │
-           ▼                                           ▼
-   lender claimable balance                  partial settle / liquidate
+```mermaid
+flowchart TB
+    LENDER["Pool depositors or Private lender"]
+    BORROWER["Borrower"]
+
+    subgraph LRAIL["Lender-side rail"]
+        SUB["Independently accounted sub-vault"]
+        GVIA["Global Vault marginfi integration account<br/>idle lending liquidity"]
+        ASK["Vault ask in compatible market"]
+    end
+
+    subgraph BRAIL["Borrower-side rail"]
+        COLL["Borrower collateral position<br/>in market integration account"]
+        BID["Collateral-backed bid"]
+    end
+
+    MATCH["Orderbook matching<br/>creates queued MatchedLoan"]
+    PROCESS["ProcessMatchedLoan<br/>funds and promotes ordinary matches"]
+    LOAN["Active fixed-rate loan"]
+    RESOLVE{"Repay, liquidate,<br/>or settle after maturity"}
+    OPEN["Partially resolved<br/>loan remains active"]
+    CLAIM["Full close-out<br/>sub-vault accounting reconciled<br/>proceeds become pending claim"]
+    SWEEP["Permissionless repayment sweep"]
+
+    LENDER --> SUB
+    SUB --- GVIA
+    SUB --> ASK
+    BORROWER --> COLL --> BID
+    ASK --> MATCH
+    BID --> MATCH
+    MATCH --> PROCESS --> LOAN --> RESOLVE
+    RESOLVE -->|"Partial"| OPEN --> LOAN
+    RESOLVE -->|"Full"| CLAIM --> SWEEP --> GVIA
 ```
 
 This framing captures the real relationship more clearly than an
@@ -875,6 +919,32 @@ market:
 - a lender-side account that holds the debt-mint asset
 - a borrower-side account that holds the collateral asset and any P2Pool
   debt liability
+
+```mermaid
+flowchart TB
+    SIGNER["yDelta market_signer PDA<br/>authority for both marginfi accounts"]
+
+    subgraph MARKET["One yDelta debt / collateral market"]
+        LMA["Lender marginfi account"]
+        BMA["Borrower marginfi account"]
+        BOOK["Orderbook, seats,<br/>queued matches, and loans"]
+    end
+
+    DBANK["Debt-side marginfi bank"]
+    CBANK["Collateral-side marginfi bank"]
+    GV["Global Vault integration account"]
+    BORROWER["Borrower"]
+
+    SIGNER --> LMA
+    SIGNER --> BMA
+    LMA -->|"debt-asset position<br/>and repayments awaiting sweep"| DBANK
+    BMA -->|"P2Pool debt liability"| DBANK
+    BMA -->|"borrower collateral asset position"| CBANK
+    GV <-->|"fixed-loan funding and repayment sweeps"| LMA
+    BORROWER <-->|"collateral, draw, repay, and withdraw flows"| BMA
+    LMA --- BOOK
+    BMA --- BOOK
+```
 
 Both accounts have the same authority (`market_signer`), so the program
 can sign for either side. The split is invisible to users — they see a

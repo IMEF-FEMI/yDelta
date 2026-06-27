@@ -1,41 +1,30 @@
 /**
- * vault-place-ask.ts — `PlaceOrderForSubVault` (tag 12). Curator publishes
- * (or repositions) a vault ask on a market.
+ * vault-update-order.ts — `UpdateOrderForSubVault` (tag 13). Curator re-syncs
+ * (cancel + re-post) a vault ask: it loses price-time priority and re-quotes
+ * at the current `live bank APR + subVault.spreadBps`.
  *
- * v1: takes **no** rate or term — the processor computes
- * `live bank lending APR + subVault.spreadBps` and uses
- * `subVault.maxTermSeconds`. Only `flags` carries the order bitmask.
- *
- * Oracle freshness: when the posted ask CROSSES a resting bid, the processor
- * walks the bid tree and reads BOTH the debt and collateral marginfi oracles
- * to gate each cross on LTV (place_order_for_sub_vault.rs — the no-cross path
- * skips the read). A stale feed reverts the whole tx with Custom 102
- * (AdapterError::OracleStale). So we refresh exactly like borrower-place-bid:
- *   - Pyth-push feeds  → crank upfront in their own tx (conditional on
- *     staleness; a Pyth post is multi-tx so it can't be bundled).
- *   - Switchboard-pull → build an update ix and bundle it INTO the place-ask
- *     tx so the fresh price and the cross execute atomically (compressed by
- *     the market LUT to fit the 1232-byte limit).
- * An uncrossed post needs neither, but refreshing unconditionally is cheap
- * and keeps the crossing path correct.
+ * Re-posting walks the bid tree exactly like a fresh place, so when the
+ * re-quoted ask crosses a resting bid the processor reads BOTH the debt and
+ * collateral marginfi oracles to gate the cross on LTV — a stale feed reverts
+ * the whole tx with Custom 102 (AdapterError::OracleStale). Refresh exactly
+ * like vault-place-ask / borrower-place-bid: crank Pyth-push upfront when
+ * stale, bundle the Switchboard-pull update INTO this tx (market LUT compresses
+ * the account list under the 1232-byte limit).
  *
  * Reads:
- *   .local/vault-place-ask-input.json {
+ *   .local/vault-update-order-input.json {
  *     marketLabel: string,                   // .local/markets.json key
  *     mint: string,                          // debt mint (must equal market.debtMint)
  *     subVaultId: number,
- *     flags?: number
+ *     newFlags?: number
  *   }
- *   .local/markets.json
- *   .local/sub-vaults.json
- *   .local/curators.json
+ *   .local/markets.json, sub-vaults.json, curators.json
  *
- * The curator key is loaded from `curators.json` via the sub-vault's
- * `curatorLabel`. Fee payer = deployer (signer); curator co-signs.
+ * Fee payer = deployer (signer); curator co-signs.
  */
 import { ComputeBudgetProgram, PublicKey } from '@solana/web3.js';
 
-import { placeOrderForSubVaultInstruction } from '../src/instructions/index.js';
+import { updateOrderForSubVaultInstruction } from '../src/instructions/index.js';
 import { OracleSetup } from '../src/marginfi.js';
 import {
   appendTxLog,
@@ -59,11 +48,11 @@ interface Input {
   marketLabel: string;
   mint: string;
   subVaultId: number;
-  flags?: number;
+  newFlags?: number;
 }
 
 async function main(): Promise<void> {
-  const input = readJson<Input>('vault-place-ask-input.json');
+  const input = readJson<Input>('vault-update-order-input.json');
   const markets = readJson<Record<string, MarketDump>>('markets.json');
   const subVaults = readJson<Record<string, SubVaultDump[]>>('sub-vaults.json');
   const curators = readJson<CuratorDump[]>('curators.json');
@@ -87,12 +76,9 @@ async function main(): Promise<void> {
   const debtOracles = market.debtOracles.map((o) => new PublicKey(o));
   const collateralOracles = market.collateralOracles.map((o) => new PublicKey(o));
 
-  // Re-read bank state every run so oracle staleness reflects "now".
   const debtBankState = await readBankOnchain(conn, debtBank);
   const collateralBankState = await readBankOnchain(conn, collateralBank);
 
-  // Pyth feeds: crank conditionally in a separate upfront tx (skip when fresh;
-  // a Pyth post is multi-tx so it can't be bundled). Fee payer covers it.
   const crank = await crankStaleBankOracles(
     conn,
     feePayer,
@@ -102,15 +88,11 @@ async function main(): Promise<void> {
     ].filter((b) => isPyth(b.bank.oracleSetup)),
   );
 
-  // Switchboard feeds: always build an update ix and bundle it INTO the
-  // place-ask tx so the fresh price and the LTV cross execute atomically.
   const sbOracleKeys: PublicKey[] = [];
   if (isSwitchboard(debtBankState.oracleSetup)) sbOracleKeys.push(debtBankState.oracleKeys[0]);
   if (isSwitchboard(collateralBankState.oracleSetup)) sbOracleKeys.push(collateralBankState.oracleKeys[0]);
   const { ixs: sbIxs, luts: sbLuts } = await buildSwitchboardUpdateIxs(conn, feePayer, sbOracleKeys);
 
-  // The market LUT compresses place_order's account list so the bundle fits
-  // the 1232-byte tx limit.
   if (!market.lookupTable) {
     throw new Error(
       `markets.json[${market.label}] has no lookupTable — run \`yarn create-market-lut\` first`,
@@ -121,7 +103,7 @@ async function main(): Promise<void> {
     throw new Error(`market LUT ${market.lookupTable} not found on-chain (not yet active?)`);
   }
 
-  const ix = placeOrderForSubVaultInstruction({
+  const ix = updateOrderForSubVaultInstruction({
     feePayer: feePayer.publicKey,
     curator: curatorKp.publicKey,
     market: marketPk,
@@ -131,17 +113,17 @@ async function main(): Promise<void> {
     debtOracles,
     collateralOracles,
     subVaultId: input.subVaultId,
-    flags: input.flags,
+    newFlags: input.newFlags,
   });
 
   log(
-    `[vault-place-ask] market=${marketPk.toBase58()} subVaultId=${input.subVaultId} ` +
+    `[vault-update-order] market=${marketPk.toBase58()} subVaultId=${input.subVaultId} ` +
     `curator=${curatorKp.publicKey.toBase58()} (cranked ${crank.entries.length} pyth, ` +
     `bundling ${sbIxs.length} switchboard ix)`,
   );
 
-  // Switchboard ixs MUST lead the tx (their precompile references data by
-  // absolute instruction index). Order: SB, CU, place-ask.
+  // Switchboard ixs MUST lead the tx (precompile references data by absolute
+  // instruction index). Order: SB, CU, update-order.
   const cuIxs = [
     ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
@@ -152,9 +134,9 @@ async function main(): Promise<void> {
     [...sbIxs, ...cuIxs, ix],
     { luts: [lutRes.value, ...sbLuts], extraSigners: [curatorKp] },
   );
-  log(`[vault-place-ask] signature = ${sig} (bundled ${sbIxs.length} switchboard ix)`);
+  log(`[vault-update-order] signature = ${sig} (bundled ${sbIxs.length} switchboard ix)`);
   appendTxLog({
-    script: 'vault-place-ask',
+    script: 'vault-update-order',
     signatures: [sig],
     oracleCrank: crank.entries,
     summary: {
