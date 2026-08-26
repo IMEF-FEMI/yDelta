@@ -133,26 +133,43 @@ A book can sit **crossed at rest** — a resting bid whose rate would cross
 a resting ask — and that is legal. Crossability changes without order
 flow: a vault deposit replenishes a sub-vault's idle capital, a repayment
 frees capacity, an oracle move flips an LTV gate. The invariant is not
-"the book is never crossed" but "no *fillable* cross survives a taking
-instruction": after any bid placement, ask placement/re-sync, or match
-crank, every remaining (best-bid, best-ask) pair fails at least one gate
-(rate, term, sub-vault idle, LTV, floor, expiry, or self-cross).
+"the book is never crossed" but "a taking instruction never walks past a
+cross it can fill": within the orders it scans and the fill budget it is
+given, every pair the engine skips fails at least one gate (rate, term,
+sub-vault idle, LTV, floor, expiry, or self-cross).
+
+Two bounds scope that sweep. A bid placement or an ask placement/re-sync
+takes only for the order being placed, so a cross between two other
+resting orders is left untouched. `MatchCrank` takes a caller-supplied
+`max_fills` budget and stops once it is spent, so resolving a deeply
+crossed book can take several cranks.
 
 ---
 
 ## 2. Rate matching and the LTV gate
 
 Every ask belongs to a sub-vault, and the sub-vault carries the policy
-the engine reads live at match time: `spread_bps`, the `max_ltv_bps`
-origination ceiling, the `liquidation_ltv_bps` trigger, and the
-`max_term_seconds` cap. Reading these live means a curator's policy
-change takes effect immediately, with no per-seat re-sync.
+the engine reads live at match time: the `max_ltv_bps` origination
+ceiling, the `liquidation_ltv_bps` trigger, and `curator_fee_bps`.
+Reading these live means a curator's change to them takes effect on the
+next fill, with no per-seat re-sync.
+
+Two parameters are instead snapshotted onto the resting ask at placement.
+`spread_bps` is baked into the stored rate, and `max_term_seconds` is
+stored as the order's `term_seconds`. A lowered `max_term_seconds` bites
+immediately only on the bid-taking path, which re-reads the live cap and
+skips any ask whose stored term now exceeds it. The `MatchCrank` ask-take
+and the P2Pool refinance scan gate on the ask's stored `term_seconds`
+alone, so on those paths, as for raising the cap or changing
+`spread_bps`, the change reaches the book only when the curator re-places
+the ask: the parameterless `UpdateOrderForSubVault` re-sync, or a cancel
+followed by a fresh placement.
 
 A borrower's bid crosses an ask when the rate and term are compatible:
 
 ```text
 ask_rate ≤ bid_rate           (the bid's rate is a ceiling on the ask)
-bid_term ≤ ask.max_term        (the loan can't outlast the sub-vault's cap)
+bid_term ≤ ask.term_seconds   (the loan can't outlast the ask's term stamp)
 ```
 
 On a cross the loan is stamped:
@@ -257,6 +274,14 @@ collateral behind a resting bid   -> marginfi asset shares
 lender repayment awaiting claim   -> marginfi asset shares
 ```
 
+A wallet must hold a `ClaimedSeat` in a market before it can deposit,
+withdraw, or place a bid there. `ClaimSeat` inserts the seat and
+auto-creates the wallet's `UserAccountFixed` PDA on first use; nothing
+else creates a user seat, and the seat-taking instructions reject an
+unseated wallet with `NoSeatClaimed`. Sub-vault ask placement is the one
+exception: `PlaceOrderForSubVault` auto-creates the per-(sub-vault,
+market) seat itself.
+
 Borrower collateral is deposited into the market's borrower-side marginfi
 account before it is encumbered by an order or loan. Idle sub-vault liquidity
 is deposited into the global vault's marginfi integration account. Repaid
@@ -325,6 +350,12 @@ balance can back asks across multiple compatible markets. This reduces
 per-market liquidity fragmentation while preserving independent strategy and
 depositor accounting.
 
+Within any one market a sub-vault holds at most one resting ask. The
+vault keys its `SubVaultOrderRef` on `(market, sub_vault_id)` and rejects
+a second placement with `SubVaultOrderExists`, so a curator reprices
+through the re-sync rather than laddering several quotes in the same
+market. A ladder is expressed as several sub-vaults.
+
 The model supports two lender experiences:
 
 - pooled depositors select a curator-managed Pool sub-vault
@@ -340,13 +371,15 @@ idle_principal = total_principal - deployed_principal - encumbered_in_orders
 Where:
 
 - `deployed_principal` funds active loans
-- `encumbered_in_orders` backs fills reserved against resting bids
+- `encumbered_in_orders` holds principal committed to matched-but-not-yet-
+  promoted fills, released into `deployed_principal` by `ProcessMatchedLoan`
 - `idle_principal` remains available for new matches
 
-Each sub-vault also tracks two lifecycle counters — `open_orders_count`
+Each sub-vault also tracks two lifecycle counters: `open_orders_count`
 (live order refs) and `open_loans_count` (queued matches plus
-promoted-unclosed loans) — and a sub-vault can only be removed once both
-are zero, closing the orphaned-order-ref gap.
+promoted-unclosed loans). Both feed the emptiness test that removal
+requires, closing the orphaned-order-ref gap. Removal is gated on being
+sunset first; see §20.
 
 ---
 
@@ -419,10 +452,16 @@ formula is:
 
 ```text
 if total_shares == 0:
-    shares_minted = atoms_in
+    shares_minted = credited_atoms
 else:
-    shares_minted = atoms_in × total_shares / total_assets
+    shares_minted = credited_atoms × total_shares / total_assets
 ```
+
+`credited_atoms` is what marginfi acknowledges after its asset-share
+rounding floor, typically about one atom below the amount transferred in,
+and it is also the figure added to `total_principal_atoms` and
+`total_assets_atoms`. The division floors, and a deposit that rounds to
+zero credited atoms or zero shares is rejected.
 
 The lender owns a pro-rata claim on the sub-vault, not on one individual
 loan. In a Private sub-vault, the sole lender owns all outstanding shares.
@@ -546,14 +585,22 @@ recorded lender rate while the bank APR may later rise or fall.
 ### 9.4 Combined sub-vault growth
 
 ```text
-total_assets_delta = supply_value_delta + net_fixed_loan_yield
-total_assets_after = total_assets_before + total_assets_delta
+total_assets_delta     = supply_value_delta + net_fixed_loan_yield
+total_principal_delta  = supply_value_delta
+total_assets_after     = total_assets_before + total_assets_delta
 ```
 
 This is the core sub-vault asset-growth model. The undeployed and
 pending-claim-adjusted supply position follows marginfi share-value changes,
 while deployed principal accrues the fixed lender-rate estimate net of the
 curator fee.
+
+The two components land in different places. The supply component moves the
+realized principal basis as well as NAV, in both directions, so a share-value
+retrace marks both down and idle yield is immediately withdrawable. The
+fixed-loan estimate credits `total_assets_atoms` only; it reaches
+`total_principal_atoms` at close-out, when the estimate is replaced by realized
+interest. §11 explains what that split means for redemption.
 
 ---
 
@@ -587,11 +634,24 @@ across compatible collateral markets.
 When a depositor withdraws, the sub-vault computes:
 
 ```text
-atoms_out = shares_burned × total_assets_atoms / total_shares
+atoms_out = shares_burned × total_principal_atoms / total_shares   (floor)
 ```
 
-Withdrawal value is based on the depositor's pro-rata share of total
-economic assets. But there is an important liquidity constraint:
+Redemption pays the realized principal basis, not mark-to-market NAV.
+Note the asymmetry with §7: the deposit side mints against
+`total_assets_atoms`, so NAV is the entry price and the principal basis is
+the exit price. The accrued fixed-loan estimate lands only in
+`total_assets_atoms`. It becomes redeemable once the loan closes, its
+realized interest is rolled into `total_principal_atoms`, and the
+permissionless `ClaimRepaymentForSubVault` sweep moves the atoms out of
+`pending_claim_atoms` and back into the vault integration account. Until
+that sweep runs the value is on the books but is not backed by atoms in
+the integration account, so the payout fails the marginfi-balance
+precondition below whenever the vault's live balance, shared across its
+sub-vaults, cannot cover it. Idle supply yield is redeemable immediately,
+because §9.1's accrual moves both fields.
+
+There is also an important liquidity constraint:
 
 ```text
 idle_principal ≥ atoms_out
@@ -600,7 +660,16 @@ idle_principal ≥ atoms_out
 The protocol will not let a user withdraw capital that is currently:
 
 - deployed inside active loans
-- reserved against fills on resting bids
+- reserved against queued matches awaiting promotion
+
+Two further preconditions apply, all three reported as
+`VaultInsufficientIdleAtoms`. The global vault's live marginfi balance,
+shared across every sub-vault on that bank, must also cover `atoms_out`.
+And a burn that retires the sub-vault's last outstanding share
+additionally requires `deployed_principal == 0` and
+`encumbered_in_orders == 0`: the final exit cannot happen while any
+capital is in flight, even when idle would cover the payout. That last
+burn is also capped at the vault's live marginfi balance.
 
 This is an important distinction:
 
@@ -656,7 +725,7 @@ sub_vault_lender_return = supply_value_delta
 And the user's redeemable value is:
 
 ```text
-redeemable_value = user_shares / total_shares × total_assets_atoms
+redeemable_value = user_shares / total_shares × total_principal_atoms
 ```
 
 subject to:
@@ -751,11 +820,13 @@ Conversion is must-full-fill. The cumulative compatible asks must cover the
 entire live P2Pool liability at the borrower's rate cap, or the instruction
 aborts and leaves the original P2Pool loan unchanged.
 
-On success, each cross creates a pre-settled fixed `MatchedLoan` queue node. The
-processor uses sub-vault liquidity to repay the live marginfi liability, updates
-the crossed sub-vault accounting, and closes the P2Pool PDA when the remaining
-liability rounds to the accepted dust threshold. The refinance scan inherits the
-fill-time floor and owner-level self-cross skip from the matching engine.
+On success `convert_p2pool_to_fixed` itself uses sub-vault liquidity to repay
+the live marginfi liability, updates the crossed sub-vault accounting, and
+closes the P2Pool PDA when the remaining liability rounds to the accepted dust
+threshold. Each cross is left as a pre-settled fixed `MatchedLoan` queue node
+that `ProcessMatchedLoan` promotes without moving principal again. The refinance
+scan inherits the fill-time floor and owner-level self-cross skip from the
+matching engine.
 
 ---
 
@@ -826,6 +897,22 @@ Conceptually:
 - the curator fee is deducted from gross lender interest using the fee snapshot
 - the borrower/lender rate spread accrues to the protocol
 
+**The origination fee.** Alongside the rate spread, a market may charge
+`fee_config.origination_bps` on matched principal at match time, stamped
+onto the queued match as `origination_atoms`. Promoting a Fixed match
+credits it to the market's `accumulated_protocol_fee_shares`, which the
+protocol admin (`GlobalConfig.protocol_admin`) drains via
+`ProtocolFeeClaim`; a P2Pool residual node still carries the stamp but
+credits no protocol fee at promotion.
+
+The fee is taken out of the lender's deployed capital rather than added to
+the borrower's debt: the sub-vault deploys the gross `principal_atoms`,
+while the promoted loan opens with `outstanding_debt_atoms` and
+`lender_claimable_atoms` both set to `principal_atoms - origination_atoms`.
+The borrower receives, and owes, the net figure. The loan account carries no
+origination-fee field of its own; it keeps gross `principal_debt_atoms`
+alongside the net outstanding debt and lender claim.
+
 The product takeaway is that yDelta separates three things clearly:
 
 - the borrower's contractual fixed cost
@@ -839,7 +926,21 @@ The product takeaway is that yDelta separates three things clearly:
 
 Real markets need flexible unwind paths. yDelta supports partial
 settlement on debt repayment paths and partial liquidation on distressed
-paths — resolution does not have to be all-or-nothing.
+paths — resolution does not have to be all-or-nothing. Both keeper paths
+bound how small a partial can be: a repay that does not close the loan
+must cover at least `max(outstanding / 100, 1_000 atoms)`, and once live
+outstanding falls below 1,000 atoms the keeper must full-repay rather than
+chip at the residual. Borrower-initiated `Repay` carries no such floor.
+
+**Maturity settlement takes all remaining collateral on a full repay.**
+A partial settlement seizes collateral in proportion to the debt it
+retires, but a settlement that closes the loan transfers the entire
+remaining collateral to the keeper, however over-collateralized the loan
+was, and returns no surplus to the borrower. Settlement also pays no
+keeper bonus; `liquidation_keeper_bps` is read only on the liquidation
+path. Liquidation is the opposite on both counts: it pays the bonus, and
+a full liquidation credits the leftover collateral back to the borrower's
+seat.
 
 **The liquidation trigger is stamped, not live.** Decoupling LTV from
 marginfi (§2) cuts both ways: just as origination uses the sub-vault's
@@ -941,10 +1042,20 @@ flowchart TB
     BMA -->|"P2Pool debt liability"| DBANK
     BMA -->|"borrower collateral asset position"| CBANK
     GV <-->|"fixed-loan funding and repayment sweeps"| LMA
-    BORROWER <-->|"collateral, draw, repay, and withdraw flows"| BMA
+    BORROWER <-->|"collateral deposit / withdraw<br/>and P2Pool borrow / repay legs"| BMA
+    BORROWER <-->|"fixed-loan draw, debt-side withdraw,<br/>and fixed-loan repay"| LMA
     LMA --- BOOK
     BMA --- BOOK
 ```
+
+The debt mint appears on both accounts, in different roles. Every
+debt-mint *asset* balance a borrower holds sits on the lender-side
+account: a fixed-loan draw is deposited there and then credited to the
+borrower's seat as debt shares, a debt-side withdrawal is required to
+route through it, and even a P2Pool draw re-deposits there after the
+borrow CPI. The borrower-side account holds the collateral asset and the
+P2Pool debt *liability*, which is the exclusion this split exists to work
+around.
 
 Both accounts have the same authority (`market_signer`), so the program
 can sign for either side. The split is invisible to users — they see a
@@ -981,13 +1092,22 @@ read-only or simulation-oriented instruction remains available while paused.
 configuration, and fresh markets are not created in a paused state.
 
 **Sub-vault lifecycle.** A Pool or Private sub-vault can be *sunset*
-(blocks new deposits, new orders, order updates, and matches; withdrawals,
-fee claims, and cancellations stay open) and *resumed* by the vault admin.
-Curator-set parameters — `spread_bps`, the LTV pair, `max_term_seconds` —
-are editable via `UpdateSubVault` (curator-gated, owner for Private), but
-`curator_fee_bps` is fixed at creation and never editable. Removal of a
-sub-vault requires it to be empty *and* to carry zero open orders and zero
-open loans.
+(blocks new deposits, new orders, order updates, sub-vault parameter
+updates, and matches; withdrawals, fee claims, and cancellations stay
+open) and *resumed* by the vault admin. Curator-set parameters —
+`spread_bps`, the LTV pair, `max_term_seconds` — are editable via
+`UpdateSubVault` (curator-gated, owner for Private) while the sub-vault is
+active; during wind-down `UpdateSubVault` is rejected with
+`SubVaultSunset`. `curator_fee_bps` is fixed at creation and never
+editable.
+
+Removal requires the sub-vault to already be sunset (`is_sunset == 1`)
+*and* to be empty: zero shares, zero principal and zero mark-to-market
+assets, zero deployed and encumbered atoms, zero accumulated curator fee,
+zero pending claims, and zero open orders and open loans.
+`SunsetSubVault` is a mandatory first step with no bypass, so
+`RemoveSubVault` rejects an active sub-vault with `SubVaultNotSunset` even
+when it is already completely empty.
 
 ---
 
@@ -1005,10 +1125,14 @@ accepts three oracle shapes through the marginfi adapter:
   derive the LST exchange rate
 
 Every oracle read passes a confidence-interval check before LTV math runs.
-The threshold is `bank.config.oracle_max_confidence × price` (default
-10%). A bounded future-skew gate rejects readings stamped too far ahead of
-the on-chain clock. A volatile, unconfident, or skewed reading rejects the
-gate rather than producing a degraded number.
+The reported spread is first inflated (×2.12 for a Pyth confidence
+interval, ×1.96 for a Switchboard standard deviation), then compared
+against `price × bank.config.oracle_max_confidence / u32::MAX`, which
+falls back to 10% of price when the bank leaves the field at zero. At that
+default the gate admits a raw Pyth confidence of at most about 4.7% of
+price. A bounded future-skew gate rejects readings stamped too far ahead
+of the on-chain clock. A volatile, unconfident, or skewed reading rejects
+the gate rather than producing a degraded number.
 
 The design intent is uniform across feeds: a stale, low-confidence, or
 future-skewed price is rejected for LTV calculations. Both the origination gate
@@ -1048,8 +1172,10 @@ The codebase maps closely to the design:
   accounting
 - `programs/ydelta/src/state/loan.rs` — promoted fixed-loan state with the
   stamped LTV pair
-- `programs/ydelta/src/protocol/marginfi.rs` — marginfi v0.1.8 adapter,
-  oracle confidence checks
+- `programs/ydelta/src/protocol/marginfi.rs` — marginfi v0.1.8 adapter
+- `programs/ydelta/src/protocol/oracles.rs` — Pyth-push, Switchboard-pull,
+  and staked-LST decoders; the confidence-interval check and the
+  staleness / future-skew gates
 - `programs/ydelta/src/protocol/marginfi_rate_calc.rs` — the live bank
   lending APR used by the spread model and the fill-time floor
 - `programs/ydelta/tests/cases/` — lifecycle and mechanism coverage,

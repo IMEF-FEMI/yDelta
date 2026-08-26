@@ -34,7 +34,8 @@ The protocol is designed for:
 
 ### For Borrowers
 
-Borrowers deposit collateral and submit a bid containing:
+Borrowers first claim a market seat (`ClaimSeat`, which also creates their user
+account on first call), then deposit collateral and submit a bid containing:
 
 - the principal they want to borrow,
 - the loan term,
@@ -104,6 +105,10 @@ Curators can refresh asks as the underlying lending APR changes. The matching
 engine skips stale asks whose stored rate is below the current marginfi lending
 APR.
 
+A sub-vault holds at most one resting ask per market. A spread change reaches
+the book only through that refresh, and a curator who wants several price points
+in one market runs several sub-vaults rather than laddering quotes.
+
 ## Matching And Loan Pricing
 
 A bid and ask can match when:
@@ -131,6 +136,14 @@ Each resulting fixed loan records:
 - origination and liquidation LTV thresholds,
 - the curator-fee snapshot and fee-accrual balances.
 
+A market may charge an origination fee on matched principal. It is taken out of
+the lending sub-vault's deployed capital rather than added to the borrower's
+debt: the sub-vault deploys the gross principal, while the loan opens with both
+its outstanding debt and its lender claim set to principal minus the fee. The
+borrower receives, and owes, that net figure. The queued match carries the fee
+amount; at promotion it is added to the market's accumulated protocol fees,
+which the protocol admin claims.
+
 The recorded rates and LTV thresholds are fixed for the life of the loan. Later
 curator policy changes do not change them for existing loans.
 
@@ -157,12 +170,20 @@ marginfi liability.
 
 When a loan becomes unhealthy, a liquidator can repay some or all of its debt in
 exchange for collateral, including the configured keeper bonus. Full
-liquidations return any remaining collateral to the borrower.
+liquidations return any remaining collateral to the borrower. A partial
+liquidation must retire at least 1% of the outstanding debt, or 1,000 atoms
+if that is larger; below 1,000 atoms outstanding, only a full repay is
+accepted.
 
 ### Maturity Settlement
 
 After a loan's maturity and grace period, a keeper can repay some or all of the
-remaining debt and receive a proportional amount of collateral.
+remaining debt and receive the same fraction of the loan's collateral, subject
+to the same floor on a partial repay.
+
+Settlement differs from liquidation in two ways: it pays no keeper bonus, and it
+returns no surplus. A settlement that closes the loan transfers all remaining
+collateral to the keeper, however over-collateralized the loan was.
 
 Borrowers may repay fixed-rate and P2Pool loans before maturity without a
 prepayment penalty.
@@ -186,7 +207,8 @@ flowchart TB
     RESIDUAL -->|"Rest"| REST["Resting collateral-backed bid"]
     REST -->|"later ask placement or MatchCrank"| QUEUE
     RESIDUAL -->|"Drop"| DROP["Release unused collateral"]
-    RESIDUAL -->|"P2Pool fallback"| P2P["Active variable-rate<br/>marginfi-backed loan"]
+    RESIDUAL -->|"P2Pool fallback"| P2PQ["Queued P2Pool match<br/>marginfi borrow already funded"]
+    P2PQ --> PROCESS --> P2P["Active variable-rate<br/>marginfi-backed loan"]
     P2P -->|"must-full-fill conversion<br/>when compatible asks exist"| QUEUE
 
     FIXED --> REPAY["Borrower repayment"]
@@ -206,9 +228,11 @@ One bid can produce multiple fixed loans and a residual outcome. Fixed-rate
 matching and loan funding are separate steps: each successful cross first
 creates a queued matched-loan record, then a permissionless processor promotes
 it into an active loan. For ordinary order-book matches, processing also
-completes funding. P2Pool conversions create pre-settled queued matches because
-the conversion instruction has already used sub-vault liquidity to repay the
-marginfi liability.
+completes funding. Two paths queue matches that are already funded and so need
+only the promotion step: a P2Pool fallback, which opened its marginfi borrow
+during order placement, and a P2Pool conversion, where the conversion
+instruction has already used sub-vault liquidity to repay the marginfi
+liability.
 
 Repayment, liquidation, and maturity settlement may resolve only part of a
 fixed loan. On full resolution, the sub-vault's economic accounting is
@@ -286,6 +310,10 @@ fee accounting.
 Markets use seats to track participant balances and open-position counts.
 Balances are recorded as withdrawable or encumbered shares. User accounts provide
 an index of a wallet's market positions, vault positions, orders, and loans.
+
+A wallet must claim its seat with `ClaimSeat` before it can deposit, withdraw, or
+place a bid in that market; the seat-taking instructions reject an unseated
+wallet. Sub-vault ask placement is the exception and creates its own seat.
 
 ### Loans
 
@@ -370,7 +398,7 @@ yarn lint
 |-- programs/
 |   |-- ydelta/                 # on-chain program
 |   |-- ydelta-test-harness/    # test-only CPI harness
-|   `-- marginfi-mocks/         # marginfi test types and CPI helpers
+|   `-- marginfi-mocks/         # vendored marginfi v0.1.8 CPI types (production dep)
 |-- lib/                        # shared hypertree implementation
 |-- ts/
 |   |-- src/                    # TypeScript SDK
