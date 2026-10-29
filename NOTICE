@@ -1,0 +1,22 @@
+yDelta
+Copyright (C) 2026 Femi Bolaji
+
+yDelta is licensed under the GNU General Public License v3.0 (see LICENSE).
+The TypeScript SDK (ts/) is licensed under the Apache License 2.0 (see
+LICENSE-APACHE).
+
+This repository includes work from the following projects.
+
+Manifest (https://github.com/Bonasa-Tech/manifest)
+Licensed under the GNU General Public License v3.0.
+- lib/ is Manifest's hypertree crate (red-black tree, free list, and node
+  helpers), modified for yDelta in 2026.
+- programs/ydelta/ is a modified version of the Manifest program, changed
+  for yDelta in 2026. It builds on Manifest's market account layout (a fixed
+  header followed by a hypertree region), claimed seats, resting orders,
+  account validation, and instruction builders.
+
+marginfi v2 (https://github.com/mrgn-labs/marginfi-v2)
+Licensed under the Apache License 2.0.
+- programs/ydelta/tests/fixtures/marginfi.so and marginfi.idl.json are the
+  marginfi v0.1.8 mainnet program binary and IDL, used as test fixtures.

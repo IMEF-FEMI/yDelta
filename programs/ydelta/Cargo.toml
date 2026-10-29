@@ -3,6 +3,7 @@ name = "ydelta"
 version = "0.1.0"
 edition = "2021"
 description = "Fixed-rate / fixed-term lending protocol with risk-tiered orderbook on Solana"
+license.workspace = true
 
 # Read by `solana-verify` so `scripts/build-verifiable.sh` and
 # `scripts/verify-program.sh` don't need the program id passed each call.

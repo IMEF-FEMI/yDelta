@@ -5,7 +5,7 @@ edition = "2021"
 repository = "https://github.com/Bonasa-Tech/manifest"
 authors = ["Britt Cyr <britt@cks.systems>"]
 description = "Data structures for Manifest"
-license-file = "LICENSE"
+license.workspace = true
 
 [features]
 colored = ["dep:colored"]

@@ -59,4 +59,6 @@ e.g. `yarn bootstrap`, `yarn match-crank`, `yarn liquidate`. See
 
 ## License
 
-See the [yDelta repository](https://github.com/IMEF-FEMI/yDelta).
+The SDK is licensed under Apache-2.0. The on-chain program and the rest of the
+[yDelta repository](https://github.com/IMEF-FEMI/yDelta) are licensed under
+GPL-3.0.

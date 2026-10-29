@@ -399,7 +399,7 @@ yarn lint
 |   |-- ydelta/                 # on-chain program
 |   |-- ydelta-test-harness/    # test-only CPI harness
 |   `-- marginfi-mocks/         # vendored marginfi v0.1.8 CPI types (production dep)
-|-- lib/                        # shared hypertree implementation
+|-- lib/                        # hypertree, vendored from Manifest
 |-- ts/
 |   |-- src/                    # TypeScript SDK
 |   |-- scripts/                # operator scripts
@@ -409,3 +409,19 @@ yarn lint
 |   `-- deployment-runbook.md
 `-- scripts/                    # build, test, deploy, and verification scripts
 ```
+
+## Acknowledgements
+
+yDelta is built on [Manifest](https://github.com/Bonasa-Tech/manifest), the
+Solana orderbook by CKS Systems. The `lib/` crate is Manifest's `hypertree`
+with modifications, and the program's market account layout, seats, resting
+orders, and account validation build on Manifest's program. See
+[`NOTICE`](NOTICE) for details.
+
+## License
+
+The on-chain program and the rest of this repository are licensed under the
+[GNU General Public License v3.0](LICENSE), as required by the Manifest code
+they include. The TypeScript SDK (`ts/`, published as `@ydelta/sdk`) is
+licensed under the [Apache License 2.0](LICENSE-APACHE). Third-party files keep
+their own licenses, listed in [`NOTICE`](NOTICE).

@@ -11,6 +11,9 @@ members = [
 # members explicitly with `-p <crate>`.
 default-members = ["programs/ydelta"]
 
+[workspace.package]
+license = "GPL-3.0-only"
+
 [workspace.dependencies]
 shank = "0.4.2"
 spl-token = { version = "8.0.0", features = ["no-entrypoint"] }

@@ -3,6 +3,7 @@ name = "marginfi-mocks"
 version = "0.1.0"
 edition = "2021"
 description = "Slim vendored types and CPI builders for marginfi v0.1.8 (mainnet). Used by yDelta's MarginfiV18Adapter to construct CPIs WITHOUT taking marginfi as a crate dependency."
+license.workspace = true
 
 [lib]
 crate-type = ["lib"]

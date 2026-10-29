@@ -3,6 +3,7 @@ name = "ydelta-test-harness"
 version = "0.1.0"
 edition = "2021"
 description = "Test-only wrapper program around yDelta's MarginfiV18Adapter. Loaded next to marginfi.so + ydelta.so in integration tests so the trait methods can be invoked through real CPI without polluting ydelta's production ix surface."
+license.workspace = true
 
 [lib]
 crate-type = ["cdylib", "lib"]
